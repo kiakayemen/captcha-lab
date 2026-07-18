@@ -277,17 +277,20 @@ def load_tile_groups(path: Path) -> list[TileGroup]:
                     f"{tile_text!r}"
                 ) from error
 
-            # Invalid predictions are deliberately ignored here.
-            if not is_valid_prediction(raw_prediction):
-                continue
+            # Register every tile before filtering predictions. This keeps
+            # tiles with zero valid three-digit predictions in the evaluation,
+            # where they correctly count as no-prediction errors.
+            key = (image, tile, tile_path, ground_truth)
+            grouped[key]
 
-            grouped[(image, tile, tile_path, ground_truth)].append(
-                Prediction(
-                    variant=variant,
-                    value=raw_prediction,
-                    confidence=safe_float(row.get("confidence")),
+            if is_valid_prediction(raw_prediction):
+                grouped[key].append(
+                    Prediction(
+                        variant=variant,
+                        value=raw_prediction,
+                        confidence=safe_float(row.get("confidence")),
+                    )
                 )
-            )
 
     tile_groups = [
         TileGroup(
@@ -302,9 +305,7 @@ def load_tile_groups(path: Path) -> list[TileGroup]:
     tile_groups.sort(key=lambda item: (item.image, item.tile))
 
     if not tile_groups:
-        raise RuntimeError(
-            f"No tiles with valid three-digit predictions were found in {path}"
-        )
+        raise RuntimeError(f"No benchmark tiles were found in {path}")
 
     return tile_groups
 

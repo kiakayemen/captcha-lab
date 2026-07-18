@@ -68,6 +68,12 @@ fusion_results.csv
 fusion_leaderboard.csv
 preprocessing_results.csv
 preprocessing_leaderboard.csv
+/fusion_errors
+fusion_errors.csv
+tesseract_results.csv
+tesseract_leaderboard.csv
+fusion_error_analysis.csv
+fusion_errors.zip
 
 # =========================
 # Jupyter
