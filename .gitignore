@@ -64,6 +64,10 @@ preprocessing_results.csv
 preprocessing_leaderboard.csv
 ocr_results.csv
 predictions.csv
+fusion_results.csv
+fusion_leaderboard.csv
+preprocessing_results.csv
+preprocessing_leaderboard.csv
 
 # =========================
 # Jupyter
