@@ -2,199 +2,349 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
-import joblib
-import numpy as np
-import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GroupKFold
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+
+DEFAULT_RESULTS_PATH = Path("preprocessing_results.csv")
+DEFAULT_VARIANT_LEADERBOARD_PATH = Path("preprocessing_leaderboard.csv")
+DEFAULT_FUSION_RESULTS_PATH = Path("fusion_results.csv")
+DEFAULT_FUSION_LEADERBOARD_PATH = Path("fusion_leaderboard.csv")
+
+# Added once for every extra agreeing variant after the first.
+# Example: three agreeing variants receive 2 * AGREEMENT_BONUS.
+AGREEMENT_BONUS = 0.25
 
 
 @dataclass(frozen=True)
-class OCRResult:
+class Prediction:
     variant: str
-    prediction: str
+    value: str
     confidence: float
 
 
-def _is_valid_prediction(value: str) -> bool:
+@dataclass(frozen=True)
+class TileGroup:
+    image: str
+    tile: int
+    tile_path: str
+    ground_truth: str
+    predictions: tuple[Prediction, ...]
+
+
+@dataclass(frozen=True)
+class FusionDecision:
+    prediction: str
+    score: float
+    votes: int
+    variants: str
+
+
+FusionStrategy = Callable[
+    [tuple[Prediction, ...], dict[str, float]],
+    FusionDecision,
+]
+
+
+def is_valid_prediction(value: str) -> bool:
+    """A valid OCR result must be exactly three decimal digits."""
     return len(value) == 3 and value.isdigit()
 
 
-def candidate_features(
-    results: Iterable[OCRResult],
+def safe_float(value: str | None) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def candidate_groups(
+    predictions: Iterable[Prediction],
+) -> dict[str, list[Prediction]]:
+    grouped: dict[str, list[Prediction]] = defaultdict(list)
+    for prediction in predictions:
+        if is_valid_prediction(prediction.value):
+            grouped[prediction.value].append(prediction)
+    return dict(grouped)
+
+
+def empty_decision() -> FusionDecision:
+    return FusionDecision("", 0.0, 0, "")
+
+
+def make_decision(
     candidate: str,
-    variants: list[str],
-) -> dict[str, float]:
-    matches = [r for r in results if r.prediction == candidate]
-    confidences = [r.confidence for r in matches]
-
-    features: dict[str, float] = {
-        "vote_count": float(len(matches)),
-        "confidence_sum": float(sum(confidences)),
-        "confidence_max": float(max(confidences, default=0.0)),
-        "confidence_mean": float(np.mean(confidences) if confidences else 0.0),
-        "valid_three_digits": float(_is_valid_prediction(candidate)),
-    }
-
-    by_variant = {r.variant: r for r in matches}
-    for variant in variants:
-        result = by_variant.get(variant)
-        features[f"{variant}__present"] = float(result is not None)
-        features[f"{variant}__confidence"] = result.confidence if result else 0.0
-
-    return features
+    score: float,
+    grouped: dict[str, list[Prediction]],
+) -> FusionDecision:
+    matches = grouped[candidate]
+    variants = ",".join(sorted(item.variant for item in matches))
+    return FusionDecision(
+        prediction=candidate,
+        score=score,
+        votes=len(matches),
+        variants=variants,
+    )
 
 
-class FusionSelector:
-    def __init__(self, model: Pipeline, variants: list[str], feature_names: list[str]):
-        self.model = model
-        self.variants = variants
-        self.feature_names = feature_names
+def choose_best(
+    grouped: dict[str, list[Prediction]],
+    score_fn: Callable[[str, list[Prediction]], float],
+) -> FusionDecision:
+    """
+    Pick the candidate with the highest strategy score.
 
-    def predict(self, results: Iterable[OCRResult]) -> tuple[str, float]:
-        results = [r for r in results if r.prediction]
-        candidates = sorted({r.prediction for r in results})
-        if not candidates:
-            return "", 0.0
+    Tie-breakers:
+    1. More agreeing variants
+    2. Higher maximum OCR confidence
+    3. Higher summed OCR confidence
+    4. Lexicographically smaller prediction for deterministic output
+    """
+    if not grouped:
+        return empty_decision()
 
-        frame = pd.DataFrame(
-            [candidate_features(results, candidate, self.variants) for candidate in candidates]
-        ).reindex(columns=self.feature_names, fill_value=0.0)
-
-        probabilities = self.model.predict_proba(frame)[:, 1]
-        best_index = int(np.argmax(probabilities))
-        return candidates[best_index], float(probabilities[best_index])
-
-    def save(self, path: Path) -> None:
-        joblib.dump(
-            {
-                "model": self.model,
-                "variants": self.variants,
-                "feature_names": self.feature_names,
-            },
-            path,
+    def rank(item: tuple[str, list[Prediction]]) -> tuple[float, int, float, float, str]:
+        candidate, matches = item
+        confidences = [match.confidence for match in matches]
+        return (
+            score_fn(candidate, matches),
+            len(matches),
+            max(confidences, default=0.0),
+            sum(confidences),
+            # max() is used, so invert the final lexical preference.
+            "".join(chr(255 - ord(char)) for char in candidate),
         )
 
-    @classmethod
-    def load(cls, path: Path) -> "FusionSelector":
-        payload = joblib.load(path)
-        return cls(
-            model=payload["model"],
-            variants=payload["variants"],
-            feature_names=payload["feature_names"],
+    candidate, matches = max(grouped.items(), key=rank)
+    return make_decision(candidate, score_fn(candidate, matches), grouped)
+
+
+def highest_confidence(
+    predictions: tuple[Prediction, ...],
+    variant_accuracies: dict[str, float],
+) -> FusionDecision:
+    del variant_accuracies
+    grouped = candidate_groups(predictions)
+    return choose_best(
+        grouped,
+        lambda _candidate, matches: max(
+            match.confidence for match in matches
+        ),
+    )
+
+
+def majority_vote(
+    predictions: tuple[Prediction, ...],
+    variant_accuracies: dict[str, float],
+) -> FusionDecision:
+    del variant_accuracies
+    grouped = candidate_groups(predictions)
+    return choose_best(
+        grouped,
+        lambda _candidate, matches: float(len(matches)),
+    )
+
+
+def benchmark_weighted_vote(
+    predictions: tuple[Prediction, ...],
+    variant_accuracies: dict[str, float],
+) -> FusionDecision:
+    grouped = candidate_groups(predictions)
+    return choose_best(
+        grouped,
+        lambda _candidate, matches: sum(
+            variant_accuracies.get(match.variant, 0.0)
+            for match in matches
+        ),
+    )
+
+
+def confidence_weighted_vote(
+    predictions: tuple[Prediction, ...],
+    variant_accuracies: dict[str, float],
+) -> FusionDecision:
+    del variant_accuracies
+    grouped = candidate_groups(predictions)
+    return choose_best(
+        grouped,
+        lambda _candidate, matches: sum(
+            match.confidence for match in matches
+        ),
+    )
+
+
+def agreement_bonus_vote(
+    predictions: tuple[Prediction, ...],
+    variant_accuracies: dict[str, float],
+) -> FusionDecision:
+    del variant_accuracies
+    grouped = candidate_groups(predictions)
+
+    def score(_candidate: str, matches: list[Prediction]) -> float:
+        confidence_sum = sum(match.confidence for match in matches)
+        bonus = AGREEMENT_BONUS * max(0, len(matches) - 1)
+        return confidence_sum + bonus
+
+    return choose_best(grouped, score)
+
+
+STRATEGIES: list[tuple[str, FusionStrategy]] = [
+    ("highest_confidence", highest_confidence),
+    ("majority_vote", majority_vote),
+    ("benchmark_weighted_vote", benchmark_weighted_vote),
+    ("confidence_weighted_vote", confidence_weighted_vote),
+    ("agreement_bonus_vote", agreement_bonus_vote),
+]
+
+
+def load_variant_accuracies(path: Path) -> dict[str, float]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing variant leaderboard: {path}\n"
+            "Run benchmark.py first."
         )
-
-
-def load_benchmark(path: Path):
-    grouped: dict[tuple[str, str, str, str], list[OCRResult]] = defaultdict(list)
-    variants: set[str] = set()
 
     with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            variant = row["variant"]
-            variants.add(variant)
-            grouped[(row["image"], row["tile"], row["ground_truth"], row["tile_path"])].append(
-                OCRResult(
+        reader = csv.DictReader(handle)
+        required = {"variant", "accuracy"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"{path} is missing required columns: {sorted(missing)}"
+            )
+
+        accuracies: dict[str, float] = {}
+        for row in reader:
+            variant = (row.get("variant") or "").strip()
+            if variant:
+                accuracies[variant] = safe_float(row.get("accuracy"))
+
+    if not accuracies:
+        raise RuntimeError(f"No variant accuracies found in {path}")
+
+    return accuracies
+
+
+def load_tile_groups(path: Path) -> list[TileGroup]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing benchmark results: {path}\n"
+            "Run benchmark.py first."
+        )
+
+    grouped: dict[
+        tuple[str, int, str, str],
+        list[Prediction],
+    ] = defaultdict(list)
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        required = {
+            "image",
+            "tile",
+            "tile_path",
+            "variant",
+            "prediction",
+            "confidence",
+            "ground_truth",
+        }
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"{path} is missing required columns: {sorted(missing)}"
+            )
+
+        for row_number, row in enumerate(reader, start=2):
+            image = (row.get("image") or "").strip()
+            tile_text = (row.get("tile") or "").strip()
+            tile_path = (row.get("tile_path") or "").strip()
+            ground_truth = (row.get("ground_truth") or "").strip()
+            variant = (row.get("variant") or "").strip()
+            raw_prediction = (row.get("prediction") or "").strip()
+
+            if not image or not tile_text or not variant or not ground_truth:
+                raise ValueError(
+                    f"Invalid required value in {path}, row {row_number}"
+                )
+
+            try:
+                tile = int(tile_text)
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid tile number in {path}, row {row_number}: "
+                    f"{tile_text!r}"
+                ) from error
+
+            # Invalid predictions are deliberately ignored here.
+            if not is_valid_prediction(raw_prediction):
+                continue
+
+            grouped[(image, tile, tile_path, ground_truth)].append(
+                Prediction(
                     variant=variant,
-                    prediction=row["prediction"].strip(),
-                    confidence=float(row["confidence"] or 0.0),
+                    value=raw_prediction,
+                    confidence=safe_float(row.get("confidence")),
                 )
             )
 
-    return grouped, sorted(variants)
+    tile_groups = [
+        TileGroup(
+            image=key[0],
+            tile=key[1],
+            tile_path=key[2],
+            ground_truth=key[3],
+            predictions=tuple(predictions),
+        )
+        for key, predictions in grouped.items()
+    ]
+    tile_groups.sort(key=lambda item: (item.image, item.tile))
+
+    if not tile_groups:
+        raise RuntimeError(
+            f"No tiles with valid three-digit predictions were found in {path}"
+        )
+
+    return tile_groups
 
 
-def build_training_table(grouped, variants: list[str]):
-    rows: list[dict[str, float]] = []
-    labels: list[int] = []
-    metadata: list[tuple[tuple[str, str, str, str], str]] = []
+def write_fusion_results(
+    path: Path,
+    tile_groups: list[TileGroup],
+    variant_accuracies: dict[str, float],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
 
-    for key, results in grouped.items():
-        ground_truth = key[2]
-        for candidate in sorted({r.prediction for r in results if r.prediction}):
-            rows.append(candidate_features(results, candidate, variants))
-            labels.append(int(candidate == ground_truth))
-            metadata.append((key, candidate))
+    for tile_group in tile_groups:
+        valid_prediction_count = len(tile_group.predictions)
+        distinct_prediction_count = len(
+            {prediction.value for prediction in tile_group.predictions}
+        )
 
-    frame = pd.DataFrame(rows).fillna(0.0)
-    return frame, np.asarray(labels), metadata
+        for strategy_name, strategy in STRATEGIES:
+            decision = strategy(
+                tile_group.predictions,
+                variant_accuracies,
+            )
+            rows.append(
+                {
+                    "image": tile_group.image,
+                    "tile": tile_group.tile,
+                    "tile_path": tile_group.tile_path,
+                    "ground_truth": tile_group.ground_truth,
+                    "strategy": strategy_name,
+                    "fusion_prediction": decision.prediction,
+                    "fusion_score": f"{decision.score:.6f}",
+                    "vote_count": decision.votes,
+                    "supporting_variants": decision.variants,
+                    "valid_prediction_count": valid_prediction_count,
+                    "distinct_prediction_count": distinct_prediction_count,
+                    "correct": decision.prediction == tile_group.ground_truth,
+                }
+            )
 
-
-def make_model() -> Pipeline:
-    return Pipeline(
-        [
-            ("scale", StandardScaler()),
-            (
-                "classifier",
-                LogisticRegression(
-                    max_iter=2_000,
-                    class_weight="balanced",
-                    random_state=42,
-                ),
-            ),
-        ]
-    )
-
-
-def cross_validated_predictions(frame, labels, metadata, folds: int = 5):
-    image_groups = np.asarray([key[0] for key, _ in metadata])
-    probabilities = np.zeros(len(frame), dtype=float)
-
-    splitter = GroupKFold(n_splits=folds)
-    for train_index, test_index in splitter.split(frame, labels, image_groups):
-        model = make_model()
-        model.fit(frame.iloc[train_index], labels[train_index])
-        probabilities[test_index] = model.predict_proba(frame.iloc[test_index])[:, 1]
-
-    selected: dict[tuple[str, str, str, str], tuple[float, str]] = {}
-    for probability, (key, candidate) in zip(probabilities, metadata):
-        if key not in selected or probability > selected[key][0]:
-            selected[key] = (float(probability), candidate)
-
-    return selected
-
-
-def confidence_sum_prediction(results: list[OCRResult]) -> str:
-    scores: dict[str, float] = defaultdict(float)
-    for result in results:
-        if result.prediction:
-            scores[result.prediction] += result.confidence
-    return max(scores, key=scores.get) if scores else ""
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Train and evaluate OCR prediction fusion.")
-    parser.add_argument("results_csv", type=Path)
-    parser.add_argument("--model-out", type=Path, default=Path("fusion_model.joblib"))
-    parser.add_argument("--predictions-out", type=Path, default=Path("fusion_predictions.csv"))
-    parser.add_argument("--folds", type=int, default=5)
-    args = parser.parse_args()
-
-    grouped, variants = load_benchmark(args.results_csv)
-    frame, labels, metadata = build_training_table(grouped, variants)
-
-    selected = cross_validated_predictions(frame, labels, metadata, folds=args.folds)
-    learned_correct = sum(
-        key in selected and selected[key][1] == key[2] for key in grouped
-    )
-    baseline_correct = sum(
-        confidence_sum_prediction(results) == key[2] for key, results in grouped.items()
-    )
-    total = len(grouped)
-
-    final_model = make_model()
-    final_model.fit(frame, labels)
-    selector = FusionSelector(final_model, variants, list(frame.columns))
-    selector.save(args.model_out)
-
-    with args.predictions_out.open("w", newline="", encoding="utf-8") as handle:
+    with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
@@ -202,31 +352,169 @@ def main() -> None:
                 "tile",
                 "tile_path",
                 "ground_truth",
+                "strategy",
                 "fusion_prediction",
                 "fusion_score",
+                "vote_count",
+                "supporting_variants",
+                "valid_prediction_count",
+                "distinct_prediction_count",
                 "correct",
             ],
         )
         writer.writeheader()
-        for key in sorted(grouped):
-            probability, prediction = selected.get(key, (0.0, ""))
+        writer.writerows(rows)
+
+    return rows
+
+
+def write_fusion_leaderboard(
+    path: Path,
+    result_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    totals: Counter[str] = Counter()
+    correct: Counter[str] = Counter()
+    no_prediction: Counter[str] = Counter()
+
+    for row in result_rows:
+        strategy = str(row["strategy"])
+        totals[strategy] += 1
+        correct[strategy] += int(bool(row["correct"]))
+        no_prediction[strategy] += int(not bool(row["fusion_prediction"]))
+
+    leaderboard: list[dict[str, object]] = []
+    for order, (strategy_name, _strategy) in enumerate(STRATEGIES):
+        total = totals[strategy_name]
+        correct_count = correct[strategy_name]
+        leaderboard.append(
+            {
+                "strategy": strategy_name,
+                "correct": correct_count,
+                "total": total,
+                "accuracy": correct_count / total if total else 0.0,
+                "wrong": total - correct_count,
+                "no_prediction": no_prediction[strategy_name],
+                "test_order": order + 1,
+            }
+        )
+
+    leaderboard.sort(
+        key=lambda row: (
+            -float(row["accuracy"]),
+            int(row["wrong"]),
+            int(row["test_order"]),
+        )
+    )
+
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "rank",
+                "strategy",
+                "correct",
+                "total",
+                "accuracy",
+                "wrong",
+                "no_prediction",
+                "test_order",
+            ],
+        )
+        writer.writeheader()
+        for rank, row in enumerate(leaderboard, start=1):
             writer.writerow(
                 {
-                    "image": key[0],
-                    "tile": key[1],
-                    "tile_path": key[3],
-                    "ground_truth": key[2],
-                    "fusion_prediction": prediction,
-                    "fusion_score": f"{probability:.6f}",
-                    "correct": prediction == key[2],
+                    "rank": rank,
+                    **row,
+                    "accuracy": f"{float(row['accuracy']):.8f}",
                 }
             )
 
-    print(f"Tiles: {total}")
-    print(f"Confidence-sum baseline: {baseline_correct}/{total} ({baseline_correct / total:.2%})")
-    print(f"Cross-validated learned fusion: {learned_correct}/{total} ({learned_correct / total:.2%})")
-    print(f"Saved model: {args.model_out}")
-    print(f"Saved predictions: {args.predictions_out}")
+    return leaderboard
+
+
+def print_summary(
+    tile_groups: list[TileGroup],
+    leaderboard: list[dict[str, object]],
+) -> None:
+    print(f"Tiles evaluated: {len(tile_groups)}")
+    print(f"Agreement bonus: {AGREEMENT_BONUS:.2f}")
+    print()
+
+    for rank, row in enumerate(leaderboard, start=1):
+        print(
+            f"{rank}. {row['strategy']:<26} "
+            f"{row['correct']}/{row['total']} "
+            f"({float(row['accuracy']):.2%})"
+        )
+
+    if leaderboard:
+        best = leaderboard[0]
+        print()
+        print(
+            f"Best measured strategy: {best['strategy']} "
+            f"({float(best['accuracy']):.2%})"
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Benchmark deterministic OCR fusion strategies using the output "
+            "from benchmark.py."
+        )
+    )
+    parser.add_argument(
+        "--results",
+        type=Path,
+        default=DEFAULT_RESULTS_PATH,
+        help=f"Benchmark detail CSV (default: {DEFAULT_RESULTS_PATH})",
+    )
+    parser.add_argument(
+        "--variant-leaderboard",
+        type=Path,
+        default=DEFAULT_VARIANT_LEADERBOARD_PATH,
+        help=(
+            "Variant accuracy CSV "
+            f"(default: {DEFAULT_VARIANT_LEADERBOARD_PATH})"
+        ),
+    )
+    parser.add_argument(
+        "--fusion-results",
+        type=Path,
+        default=DEFAULT_FUSION_RESULTS_PATH,
+        help=f"Per-tile output CSV (default: {DEFAULT_FUSION_RESULTS_PATH})",
+    )
+    parser.add_argument(
+        "--fusion-leaderboard",
+        type=Path,
+        default=DEFAULT_FUSION_LEADERBOARD_PATH,
+        help=(
+            "Strategy leaderboard CSV "
+            f"(default: {DEFAULT_FUSION_LEADERBOARD_PATH})"
+        ),
+    )
+    args = parser.parse_args()
+
+    variant_accuracies = load_variant_accuracies(
+        args.variant_leaderboard
+    )
+    tile_groups = load_tile_groups(args.results)
+
+    result_rows = write_fusion_results(
+        args.fusion_results,
+        tile_groups,
+        variant_accuracies,
+    )
+    leaderboard = write_fusion_leaderboard(
+        args.fusion_leaderboard,
+        result_rows,
+    )
+
+    print_summary(tile_groups, leaderboard)
+    print()
+    print(f"Detailed results: {args.fusion_results}")
+    print(f"Leaderboard: {args.fusion_leaderboard}")
 
 
 if __name__ == "__main__":
