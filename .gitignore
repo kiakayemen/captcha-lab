@@ -11,11 +11,6 @@ venv/
 env/
 ENV/
 
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-
 # =========================
 # IDEs
 # =========================
@@ -28,21 +23,23 @@ dist/
 .DS_Store
 
 # =========================
-# Logs
+# Logs & caches
 # =========================
 *.log
-
-# =========================
-# Python caches
-# =========================
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
+.ipynb_checkpoints/
 
 # =========================
-# Generated outputs
+# Environment variables
+# =========================
+.env
+
+# =========================
+# Generated data
 # =========================
 output/
 extracted/
@@ -50,37 +47,38 @@ debug/
 tmp/
 temp/
 
-# =========================
-# Models
-# =========================
-models/
+# Synthetic datasets
+data/synthetic*/
+data/synthetic/
+
+# CNN training outputs
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+cnn_training_history.csv
+cnn_full_training_history.csv
+
+# ML artifacts
 *.joblib
 
 # =========================
-# Generated benchmark files
+# Benchmark / analysis outputs
 # =========================
 fusion_predictions.csv
-preprocessing_results.csv
-preprocessing_leaderboard.csv
-ocr_results.csv
-predictions.csv
 fusion_results.csv
 fusion_leaderboard.csv
+fusion_error_analysis.csv
+
 preprocessing_results.csv
 preprocessing_leaderboard.csv
-/fusion_errors
-fusion_errors.csv
-tesseract_results.csv
-tesseract_leaderboard.csv
-fusion_error_analysis.csv
+
+ocr_results.csv
+predictions.csv
+
+fusion_errors/
 fusion_errors.zip
 
-# =========================
-# Jupyter
-# =========================
-.ipynb_checkpoints/
-
-# =========================
-# Environment variables
-# =========================
-.env
+tesseract_results.csv
+tesseract_leaderboard.csv
