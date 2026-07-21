@@ -11,6 +11,14 @@ venv/
 env/
 ENV/
 
+# Python tooling / build artifacts
+.python-version
+.tox/
+.nox/
+build/
+dist/
+*.egg-info/
+
 # =========================
 # IDEs
 # =========================
@@ -37,6 +45,8 @@ htmlcov/
 # Environment variables
 # =========================
 .env
+.env.*
+!.env.example
 
 # =========================
 # Generated data
@@ -49,7 +59,21 @@ temp/
 
 # Synthetic datasets
 data/synthetic*/
-data/synthetic/
+data/synthetic*.zip
+
+# Generated CAPTCHA assets and previews
+data/real_assets/
+data/digit_prototypes/
+data/glyph_style_analysis/
+data/style_bank/
+data/rendered_preview*/
+data/composed_preview*/
+
+# Local source samples and generated style reports
+real_sample/
+real_sample.zip
+captcha_style.json
+captcha_style_report.png
 
 # CNN training outputs
 *.pt
