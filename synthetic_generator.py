@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 """
-Synthetic 3-digit CAPTCHA generator.
+Synthetic CAPTCHA generator using authentic background texture patches.
 
-Outputs:
-    output/
-      images/
-        train/
-        val/
-      manifest.csv
+It scans real 200x200 CAPTCHA tiles, automatically extracts the cleanest corner
+patches, and builds synthetic backgrounds by mirror-tiling those real patches.
+Only the digits are rendered synthetically.
 
-Each manifest row contains:
-    path,label,split,seed,font_name,text_color,bg_color,rotation,scale,blur,underline
+Examples:
+    # Quick test
+    python synthetic_generator.py \
+      --real-tiles extracted \
+      --output data/synthetic_test \
+      --count 100 \
+      --seed 42
 
-Example:
-    python synthetic_generator.py --output data/synthetic --count 20000 --val-ratio 0.1 --seed 42
+    # Full dataset
+    python synthetic_generator.py \
+      --real-tiles extracted \
+      --output data/synthetic \
+      --count 20000 \
+      --seed 42
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import math
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -30,26 +35,26 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 
-# Adjust these defaults to match the real tile dimensions.
-DEFAULT_WIDTH = 96
-DEFAULT_HEIGHT = 48
+TILE_SIZE = 200
+PATCH_SIZE = 72
 
 TEXT_COLORS = [
-    (28, 96, 190),   # blue
-    (24, 120, 165),
-    (37, 137, 92),   # green
-    (47, 150, 111),
-    (35, 112, 150),
+    (42, 40, 132), (53, 64, 155), (25, 82, 121),
+    (0, 132, 164), (33, 180, 155), (64, 205, 176),
+    (27, 139, 93), (74, 205, 45), (134, 213, 36),
+    (211, 215, 26), (239, 212, 25), (194, 166, 34),
+    (145, 101, 29), (118, 63, 21), (113, 25, 34),
+    (167, 24, 28), (215, 15, 102), (194, 29, 177),
+    (126, 42, 197), (86, 42, 170), (92, 96, 84),
+    (129, 125, 102), (178, 170, 148), (220, 210, 196),
 ]
 
-BACKGROUND_COLORS = [
-    (236, 244, 250),
-    (242, 247, 239),
-    (245, 241, 248),
-    (249, 245, 235),
-    (235, 247, 244),
-    (242, 242, 248),
-]
+
+@dataclass(frozen=True)
+class BackgroundPatch:
+    image: np.ndarray
+    source: str
+    corner: str
 
 
 @dataclass(frozen=True)
@@ -58,18 +63,145 @@ class SampleMetadata:
     label: str
     split: str
     seed: int
+    background_source: str
+    background_corner: str
     font_name: str
+    font_size: int
     text_color: str
-    bg_color: str
-    rotation: float
-    scale: float
-    blur: float
-    underline: bool
+    underline_mode: str
+
+
+def rgb_string(rgb: tuple[int, int, int]) -> str:
+    return ",".join(map(str, rgb))
+
+
+def discover_real_tiles(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+        paths.extend(root.rglob(pattern))
+
+    tiles: list[Path] = []
+    for path in paths:
+        try:
+            with Image.open(path) as image:
+                if image.size == (TILE_SIZE, TILE_SIZE):
+                    tiles.append(path)
+        except (OSError, ValueError):
+            continue
+
+    return sorted(set(tiles))
+
+
+def patch_score(patch: np.ndarray) -> float:
+    """
+    Lower score means a patch is more likely to be clean background.
+
+    Text creates strong edges and localized color variation, while the woven
+    background has many small but relatively uniform repeating edges.
+    """
+    arr = patch.astype(np.float32)
+    gray = (
+        0.299 * arr[..., 0]
+        + 0.587 * arr[..., 1]
+        + 0.114 * arr[..., 2]
+    )
+
+    gx = np.abs(np.diff(gray, axis=1)).mean()
+    gy = np.abs(np.diff(gray, axis=0)).mean()
+
+    # Penalize unusually saturated or spatially uneven regions.
+    channel_spread = (arr.max(axis=2) - arr.min(axis=2))
+    high_saturation = np.percentile(channel_spread, 95)
+    block_means = []
+    for y in range(0, PATCH_SIZE, PATCH_SIZE // 3):
+        for x in range(0, PATCH_SIZE, PATCH_SIZE // 3):
+            block = gray[
+                y:min(y + PATCH_SIZE // 3, PATCH_SIZE),
+                x:min(x + PATCH_SIZE // 3, PATCH_SIZE),
+            ]
+            if block.size:
+                block_means.append(float(block.mean()))
+    unevenness = float(np.std(block_means))
+
+    return gx + gy + 0.12 * high_saturation + 0.35 * unevenness
+
+
+def extract_clean_patch(path: Path) -> BackgroundPatch:
+    image = Image.open(path).convert("RGB")
+    arr = np.asarray(image)
+
+    p = PATCH_SIZE
+    margin = 4
+    candidates = {
+        "top_left": arr[margin:margin+p, margin:margin+p],
+        "top_right": arr[margin:margin+p, -margin-p:-margin],
+        "bottom_left": arr[-margin-p:-margin, margin:margin+p],
+        "bottom_right": arr[-margin-p:-margin, -margin-p:-margin],
+    }
+
+    corner, patch = min(candidates.items(), key=lambda item: patch_score(item[1]))
+    return BackgroundPatch(
+        image=np.ascontiguousarray(patch),
+        source=path.name,
+        corner=corner,
+    )
+
+
+def build_background_library(real_tiles_root: Path) -> list[BackgroundPatch]:
+    tiles = discover_real_tiles(real_tiles_root)
+    if not tiles:
+        raise RuntimeError(
+            f"No {TILE_SIZE}x{TILE_SIZE} tile images found under {real_tiles_root}"
+        )
+
+    patches = [extract_clean_patch(path) for path in tiles]
+    print(f"Loaded {len(tiles):,} real tiles.")
+    print(f"Extracted {len(patches):,} authentic background patches.")
+    return patches
+
+
+def mirrored_texture(
+    patch: np.ndarray,
+    size: tuple[int, int],
+    rng: random.Random,
+) -> Image.Image:
+    """
+    Mirror-tile the real texture patch. Alternating flips avoid hard repeated
+    edges while preserving the source weave instead of inventing a new one.
+    """
+    height, width = size[1], size[0]
+    ph, pw = patch.shape[:2]
+
+    rows = height // ph + 4
+    cols = width // pw + 4
+    canvas = np.empty((rows * ph, cols * pw, 3), dtype=np.uint8)
+
+    for row in range(rows):
+        for col in range(cols):
+            tile = patch
+            if col % 2:
+                tile = tile[:, ::-1]
+            if row % 2:
+                tile = tile[::-1, :]
+            canvas[row*ph:(row+1)*ph, col*pw:(col+1)*pw] = tile
+
+    max_x = canvas.shape[1] - width
+    max_y = canvas.shape[0] - height
+    x = rng.randint(0, max_x)
+    y = rng.randint(0, max_y)
+    crop = canvas[y:y+height, x:x+width].copy()
+
+    image = Image.fromarray(crop, "RGB")
+
+    # Tiny real-world tint/brightness variation; texture remains authentic.
+    image = ImageEnhance.Brightness(image).enhance(rng.uniform(0.97, 1.03))
+    image = ImageEnhance.Color(image).enhance(rng.uniform(0.95, 1.05))
+    image = ImageEnhance.Contrast(image).enhance(rng.uniform(0.97, 1.04))
+    return image
 
 
 def discover_fonts(extra_dirs: Sequence[Path] = ()) -> list[Path]:
-    """Find usable TTF/OTF fonts on macOS, Linux, and Windows."""
-    candidates = [
+    roots = [
         Path("/System/Library/Fonts"),
         Path("/Library/Fonts"),
         Path.home() / "Library/Fonts",
@@ -79,462 +211,288 @@ def discover_fonts(extra_dirs: Sequence[Path] = ()) -> list[Path]:
         *extra_dirs,
     ]
 
-    fonts: list[Path] = []
-    for root in candidates:
+    paths: list[Path] = []
+    for root in roots:
         if not root.exists():
             continue
-        for pattern in ("*.ttf", "*.otf", "*.ttc"):
-            fonts.extend(root.rglob(pattern))
+        for pattern in ("*.ttf", "*.otf"):
+            paths.extend(root.rglob(pattern))
 
-    blocked_tokens = {
-        "emoji",
-        "symbol",
-        "dingbat",
-        "icons",
-        "wingdings",
-        "webdings",
-    }
-
-    filtered = [
-        path
-        for path in fonts
-        if not any(token in path.name.lower() for token in blocked_tokens)
+    blocked = (
+        "emoji", "symbol", "dingbat", "icon", "wingding", "webding",
+        "arabic", "hebrew", "devanagari", "telugu", "thai", "khmer",
+        "cjk", "japanese", "korean", "chinese",
+    )
+    paths = [
+        path for path in paths
+        if not any(token in path.name.lower() for token in blocked)
     ]
 
-    # Prefer ordinary sans/serif fonts before unusual display fonts.
-    preference_tokens = (
-        "arial",
-        "helvetica",
-        "verdana",
-        "tahoma",
-        "times",
-        "georgia",
-        "dejavu",
-        "liberation",
-        "noto",
-        "roboto",
-        "sf",
+    preferred = (
+        "arial", "helvetica", "roboto", "inter", "lato",
+        "dejavu", "liberation", "ubuntu", "noto", "free",
+        "condensed", "narrow", "sans",
     )
-
-    filtered.sort(
-        key=lambda p: (
-            not any(token in p.name.lower() for token in preference_tokens),
-            p.name.lower(),
+    paths.sort(
+        key=lambda path: (
+            not any(token in path.name.lower() for token in preferred),
+            path.name.lower(),
         )
     )
-    return filtered
+    return paths
 
 
-def rgb_to_string(rgb: tuple[int, int, int]) -> str:
-    return ",".join(str(x) for x in rgb)
+def choose_text_color(background: Image.Image, rng: random.Random) -> tuple[int, int, int]:
+    bg = np.asarray(background.resize((1, 1), Image.Resampling.BOX))[0, 0].astype(float)
 
+    # Include real low-contrast cases, but keep most samples readable.
+    if rng.random() < 0.18:
+        target = np.array(rng.choice(TEXT_COLORS), dtype=float)
+        color = 0.50 * bg + 0.50 * target
+        return tuple(np.clip(color, 0, 255).astype(int))
 
-def add_background_texture(
-    image: Image.Image,
-    rng: random.Random,
-    np_rng: np.random.Generator,
-) -> Image.Image:
-    """Add low-contrast paper-like texture, blobs, and sparse lines."""
-    arr = np.asarray(image).astype(np.int16)
+    # Usually choose a color with useful luminance contrast.
+    candidates = TEXT_COLORS[:]
+    rng.shuffle(candidates)
+    bg_luma = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]
 
-    # Fine-grained luminance noise.
-    sigma = rng.uniform(1.5, 5.5)
-    noise = np_rng.normal(0, sigma, size=arr.shape[:2])
-    arr = np.clip(arr + noise[..., None], 0, 255).astype(np.uint8)
-    textured = Image.fromarray(arr, mode="RGB")
+    for color in candidates:
+        fg = np.array(color, dtype=float)
+        fg_luma = 0.299 * fg[0] + 0.587 * fg[1] + 0.114 * fg[2]
+        if abs(bg_luma - fg_luma) >= rng.uniform(35, 75):
+            return color
 
-    overlay = Image.new("RGBA", textured.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay, "RGBA")
-    width, height = textured.size
-
-    # Soft pastel blobs.
-    for _ in range(rng.randint(2, 7)):
-        x = rng.randint(-width // 4, width)
-        y = rng.randint(-height // 3, height)
-        rx = rng.randint(max(4, width // 12), max(6, width // 3))
-        ry = rng.randint(max(3, height // 10), max(5, height // 2))
-        tint = rng.choice(BACKGROUND_COLORS)
-        alpha = rng.randint(5, 20)
-        draw.ellipse((x, y, x + rx, y + ry), fill=(*tint, alpha))
-
-    # Sparse background lines.
-    for _ in range(rng.randint(0, 4)):
-        y = rng.randint(0, height - 1)
-        shade = rng.choice([(80, 110, 120), (90, 130, 105), (100, 115, 145)])
-        alpha = rng.randint(5, 18)
-        draw.line(
-            (
-                rng.randint(-10, width // 4),
-                y,
-                rng.randint(3 * width // 4, width + 10),
-                y + rng.randint(-3, 3),
-            ),
-            fill=(*shade, alpha),
-            width=rng.randint(1, 2),
-        )
-
-    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=rng.uniform(0.4, 1.2)))
-    return Image.alpha_composite(textured.convert("RGBA"), overlay).convert("RGB")
+    return rng.choice(TEXT_COLORS)
 
 
 def fit_font(
     font_path: Path,
     text: str,
-    target_height: int,
     max_width: int,
-    rng: random.Random,
-) -> ImageFont.FreeTypeFont:
-    """Pick a font size that fits within the requested box."""
-    size = max(12, int(target_height * rng.uniform(0.72, 1.02)))
-
-    while size >= 10:
-        try:
-            font = ImageFont.truetype(str(font_path), size=size)
-        except OSError:
-            size -= 1
-            continue
-
+    target_height: int,
+    start_size: int,
+) -> tuple[ImageFont.FreeTypeFont, int]:
+    size = start_size
+    while size >= 48:
+        font = ImageFont.truetype(str(font_path), size=size)
         bbox = font.getbbox(text)
         width = bbox[2] - bbox[0]
         height = bbox[3] - bbox[1]
         if width <= max_width and height <= target_height:
-            return font
-        size -= 1
+            return font, size
+        size -= 2
 
-    raise RuntimeError(f"Could not load a usable font from {font_path}")
+    return ImageFont.truetype(str(font_path), size=48), 48
 
 
-def render_text_layer(
-    text: str,
+def render_text(
+    label: str,
     font_path: Path,
-    canvas_size: tuple[int, int],
+    color: tuple[int, int, int],
     rng: random.Random,
-) -> tuple[Image.Image, float, bool]:
-    """Render text, optional underline, and return the RGBA layer."""
-    width, height = canvas_size
-    oversample = 3
-
-    big_width = width * oversample
-    big_height = height * oversample
-    layer = Image.new("RGBA", (big_width, big_height), (0, 0, 0, 0))
+) -> tuple[Image.Image, int, str]:
+    scale = 3
+    size = TILE_SIZE * scale
+    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
 
-    target_height = int(big_height * rng.uniform(0.55, 0.78))
-    max_width = int(big_width * rng.uniform(0.72, 0.93))
-    font = fit_font(
-        font_path=font_path,
-        text=text,
-        target_height=target_height,
-        max_width=max_width,
-        rng=rng,
+    # Derived from the report: most boxes are around 0.36-0.69 wide and
+    # 0.34-0.59 high, with a median around 0.54 x 0.49.
+    max_width = int(size * rng.uniform(0.48, 0.68))
+    target_height = int(size * rng.uniform(0.40, 0.58))
+    start_size = int(size * rng.uniform(0.60, 0.82))
+
+    font, actual_size = fit_font(
+        font_path, label, max_width, target_height, start_size
     )
 
-    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=0)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    bbox = draw.textbbox((0, 0), label, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
 
-    x_center = big_width / 2 + rng.uniform(-0.08, 0.08) * big_width
-    y_center = big_height / 2 + rng.uniform(-0.09, 0.09) * big_height
+    # Stable placement with only small real-world shifts.
+    center_x = size * rng.uniform(0.47, 0.53)
+    center_y = size * rng.uniform(0.45, 0.52)
+    x = int(center_x - text_w / 2 - bbox[0])
+    y = int(center_y - text_h / 2 - bbox[1])
 
-    x = int(x_center - text_width / 2 - bbox[0])
-    y = int(y_center - text_height / 2 - bbox[1])
-
-    color = rng.choice(TEXT_COLORS)
     alpha = rng.randint(215, 255)
+    draw.text((x, y), label, font=font, fill=(*color, alpha))
 
-    stroke_width = rng.choices([0, 1, 2], weights=[0.72, 0.22, 0.06], k=1)[0]
-    stroke_fill = tuple(max(0, c - rng.randint(5, 25)) for c in color) + (alpha,)
-
-    draw.text(
-        (x, y),
-        text,
-        font=font,
-        fill=(*color, alpha),
-        stroke_width=stroke_width,
-        stroke_fill=stroke_fill,
-    )
-
-    underline = rng.random() < 0.34
-    if underline:
-        underline_y = min(
-            big_height - 2,
-            int(y + text_height + rng.uniform(0.02, 0.12) * big_height),
-        )
-        line_width = rng.randint(max(2, oversample), max(3, oversample * 2))
-        start_x = int(x + rng.uniform(-0.04, 0.08) * text_width)
-        end_x = int(x + text_width + rng.uniform(-0.08, 0.05) * text_width)
-        draw.line(
-            (start_x, underline_y, end_x, underline_y + rng.randint(-2, 2)),
-            fill=(*color, rng.randint(150, 235)),
-            width=line_width,
-        )
-
-    scale = rng.uniform(0.92, 1.08)
-    scaled_size = (
-        max(1, int(big_width * scale)),
-        max(1, int(big_height * scale)),
-    )
-    layer = layer.resize(scaled_size, Image.Resampling.BICUBIC)
-
-    rotation = rng.uniform(-5.5, 5.5)
-    layer = layer.rotate(
-        rotation,
-        resample=Image.Resampling.BICUBIC,
-        expand=True,
-    )
-
-    return layer, rotation, underline
-
-
-def composite_centered(
-    background: Image.Image,
-    foreground: Image.Image,
-    rng: random.Random,
-) -> Image.Image:
-    """Place foreground near the center with slight random translation."""
-    bg = background.convert("RGBA")
-    fg = foreground.convert("RGBA")
-
-    max_shift_x = max(1, background.width // 18)
-    max_shift_y = max(1, background.height // 12)
-
-    x = (background.width - fg.width) // 2 + rng.randint(-max_shift_x, max_shift_x)
-    y = (background.height - fg.height) // 2 + rng.randint(-max_shift_y, max_shift_y)
-
-    bg.alpha_composite(fg, (x, y))
-    return bg.convert("RGB")
-
-
-def postprocess(image: Image.Image, rng: random.Random) -> tuple[Image.Image, float]:
-    """Apply mild blur, contrast, sharpness, and occasional resampling artifacts."""
-    blur_radius = rng.choices(
-        [rng.uniform(0.0, 0.35), rng.uniform(0.35, 0.85), rng.uniform(0.85, 1.25)],
-        weights=[0.45, 0.45, 0.10],
+    underline_mode = rng.choices(
+        ["none", "below", "overlap"],
+        weights=[0.76, 0.16, 0.08],
         k=1,
     )[0]
 
-    if blur_radius > 0.02:
-        image = image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    if underline_mode != "none":
+        left = x + int(text_w * rng.uniform(-0.01, 0.04))
+        right = x + text_w + int(text_w * rng.uniform(-0.04, 0.02))
+        thickness = rng.randint(3, 6) * scale
 
-    image = ImageEnhance.Contrast(image).enhance(rng.uniform(0.90, 1.10))
-    image = ImageEnhance.Sharpness(image).enhance(rng.uniform(0.85, 1.15))
-    image = ImageEnhance.Brightness(image).enhance(rng.uniform(0.96, 1.04))
+        if underline_mode == "below":
+            line_y = y + text_h + int(size * rng.uniform(0.005, 0.025))
+        else:
+            line_y = y + int(text_h * rng.uniform(0.73, 0.86))
 
-    # Simulate browser/image scaling.
-    if rng.random() < 0.25:
-        downscale = rng.uniform(0.78, 0.94)
-        small = image.resize(
-            (
-                max(8, int(image.width * downscale)),
-                max(8, int(image.height * downscale)),
-            ),
-            Image.Resampling.BILINEAR,
+        draw.line(
+            (left, line_y, right, line_y),
+            fill=(*color, rng.randint(210, 255)),
+            width=thickness,
         )
-        image = small.resize(image.size, Image.Resampling.BICUBIC)
 
-    return image, blur_radius
+    return (
+        layer.resize((TILE_SIZE, TILE_SIZE), Image.Resampling.LANCZOS),
+        actual_size // scale,
+        underline_mode,
+    )
 
 
 def generate_sample(
     label: str,
+    background_patch: BackgroundPatch,
     font_path: Path,
-    width: int,
-    height: int,
-    sample_seed: int,
+    seed: int,
 ) -> tuple[Image.Image, dict]:
-    rng = random.Random(sample_seed)
-    np_rng = np.random.default_rng(sample_seed)
+    rng = random.Random(seed)
 
-    bg_color = rng.choice(BACKGROUND_COLORS)
-    background = Image.new("RGB", (width, height), bg_color)
-    background = add_background_texture(background, rng, np_rng)
-
-    text_layer, rotation, underline = render_text_layer(
-        text=label,
-        font_path=font_path,
-        canvas_size=(width, height),
-        rng=rng,
+    background = mirrored_texture(
+        background_patch.image,
+        (TILE_SIZE, TILE_SIZE),
+        rng,
+    )
+    color = choose_text_color(background, rng)
+    text, font_size, underline_mode = render_text(
+        label, font_path, color, rng
     )
 
-    image = composite_centered(background, text_layer, rng)
-    image, blur_radius = postprocess(image, rng)
+    image = Image.alpha_composite(
+        background.convert("RGBA"),
+        text,
+    ).convert("RGB")
 
-    metadata = {
+    # The real images mostly show browser-style antialiasing, not blur.
+    if rng.random() < 0.12:
+        image = image.filter(ImageFilter.GaussianBlur(rng.uniform(0.05, 0.18)))
+
+    return image, {
         "font_name": font_path.name,
-        "text_color": "mixed_palette",
-        "bg_color": rgb_to_string(bg_color),
-        "rotation": round(rotation, 4),
-        "scale": "embedded",
-        "blur": round(blur_radius, 4),
-        "underline": underline,
+        "font_size": font_size,
+        "text_color": rgb_string(color),
+        "underline_mode": underline_mode,
     }
-    return image, metadata
-
-
-def choose_label(index: int, rng: random.Random, balanced: bool) -> str:
-    if balanced:
-        # Cycles uniformly over all 1,000 labels before reshuffling through the next block.
-        block = index // 1000
-        local = index % 1000
-        block_rng = random.Random(rng.randint(0, 2**31 - 1) + block)
-        labels = list(range(1000))
-        block_rng.shuffle(labels)
-        return f"{labels[local]:03d}"
-
-    return f"{rng.randint(0, 999):03d}"
 
 
 def write_manifest(rows: Iterable[SampleMetadata], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     rows = list(rows)
-    if not rows:
-        raise ValueError("Cannot write an empty manifest.")
-
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(asdict(rows[0]).keys()))
         writer.writeheader()
-        for row in rows:
-            writer.writerow(asdict(row))
+        writer.writerows(asdict(row) for row in rows)
 
 
 def generate_dataset(args: argparse.Namespace) -> None:
-    output_dir = args.output.resolve()
-    train_dir = output_dir / "images" / "train"
-    val_dir = output_dir / "images" / "val"
+    backgrounds = build_background_library(args.real_tiles)
+
+    fonts = discover_fonts([Path(path).expanduser() for path in args.font_dir])
+    if not fonts:
+        raise RuntimeError("No usable fonts found.")
+
+    # Restrict variation instead of using every installed font.
+    fonts = fonts[: args.max_fonts]
+    print(f"Using {len(fonts)} fonts.")
+
+    output = args.output.resolve()
+    train_dir = output / "images" / "train"
+    val_dir = output / "images" / "val"
     train_dir.mkdir(parents=True, exist_ok=True)
     val_dir.mkdir(parents=True, exist_ok=True)
 
-    extra_dirs = [Path(p).expanduser().resolve() for p in args.font_dir]
-    fonts = discover_fonts(extra_dirs)
-    if not fonts:
-        raise RuntimeError(
-            "No usable fonts found. Pass one or more directories with --font-dir."
-        )
+    rng = random.Random(args.seed)
+    shuffled_indices = list(range(args.count))
+    rng.shuffle(shuffled_indices)
+    val_count = round(args.count * args.val_ratio)
+    val_indices = set(shuffled_indices[:val_count])
 
-    if args.max_fonts is not None:
-        fonts = fonts[: args.max_fonts]
+    labels = [f"{index % 1000:03d}" for index in range(args.count)]
+    rng.shuffle(labels)
 
-    master_rng = random.Random(args.seed)
-    indices = list(range(args.count))
-    master_rng.shuffle(indices)
+    rows: list[SampleMetadata] = []
 
-    val_count = int(round(args.count * args.val_ratio))
-    val_indices = set(indices[:val_count])
-
-    manifest_rows: list[SampleMetadata] = []
-
-    for index in range(args.count):
+    for index, label in enumerate(labels):
         split = "val" if index in val_indices else "train"
-        destination_dir = val_dir if split == "val" else train_dir
+        directory = val_dir if split == "val" else train_dir
 
-        sample_seed = master_rng.randint(0, 2**31 - 1)
-        sample_rng = random.Random(sample_seed)
-        font_path = sample_rng.choice(fonts)
-        label = choose_label(index=index, rng=master_rng, balanced=not args.unbalanced)
+        seed = rng.randrange(2**31)
+        sample_rng = random.Random(seed)
+        background = sample_rng.choice(backgrounds)
+        font = sample_rng.choice(fonts)
 
-        image, meta = generate_sample(
+        image, metadata = generate_sample(
             label=label,
-            font_path=font_path,
-            width=args.width,
-            height=args.height,
-            sample_seed=sample_seed,
+            background_patch=background,
+            font_path=font,
+            seed=seed,
         )
 
         filename = f"{index:07d}_{label}.png"
-        output_path = destination_dir / filename
-        image.save(output_path, format="PNG", optimize=True)
+        path = directory / filename
+        image.save(path, "PNG", optimize=True)
 
-        relative_path = output_path.relative_to(output_dir).as_posix()
-        manifest_rows.append(
+        rows.append(
             SampleMetadata(
-                path=relative_path,
+                path=path.relative_to(output).as_posix(),
                 label=label,
                 split=split,
-                seed=sample_seed,
-                font_name=meta["font_name"],
-                text_color=meta["text_color"],
-                bg_color=meta["bg_color"],
-                rotation=meta["rotation"],
-                scale=1.0,
-                blur=meta["blur"],
-                underline=meta["underline"],
+                seed=seed,
+                background_source=background.source,
+                background_corner=background.corner,
+                font_name=metadata["font_name"],
+                font_size=metadata["font_size"],
+                text_color=metadata["text_color"],
+                underline_mode=metadata["underline_mode"],
             )
         )
 
         if (index + 1) % args.log_every == 0 or index + 1 == args.count:
             print(f"Generated {index + 1:,}/{args.count:,}")
 
-    write_manifest(manifest_rows, output_dir / "manifest.csv")
-
-    train_count = args.count - val_count
-    print()
-    print(f"Done.")
-    print(f"Fonts used: {len(fonts)}")
-    print(f"Train images: {train_count:,}")
-    print(f"Validation images: {val_count:,}")
-    print(f"Manifest: {output_dir / 'manifest.csv'}")
+    write_manifest(rows, output / "manifest.csv")
+    print(f"Done: {output}")
+    print(f"Train: {args.count - val_count:,}")
+    print(f"Validation: {val_count:,}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate synthetic three-digit CAPTCHA images."
+        description="Generate synthetic CAPTCHA tiles using authentic backgrounds."
     )
     parser.add_argument(
-        "--output",
+        "--real-tiles",
         type=Path,
         required=True,
-        help="Output directory.",
+        help="Directory containing real 200x200 extracted CAPTCHA tiles.",
     )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=20_000,
-        help="Total number of images.",
-    )
-    parser.add_argument(
-        "--val-ratio",
-        type=float,
-        default=0.10,
-        help="Fraction reserved for synthetic validation.",
-    )
-    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
-    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--count", type=int, default=20_000)
+    parser.add_argument("--val-ratio", type=float, default=0.10)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--font-dir",
-        action="append",
-        default=[],
-        help="Additional font directory. May be supplied more than once.",
-    )
+    parser.add_argument("--font-dir", action="append", default=[])
     parser.add_argument(
         "--max-fonts",
         type=int,
-        default=40,
-        help="Maximum number of discovered fonts to use.",
+        default=12,
+        help="Maximum number of preferred fonts to use.",
     )
-    parser.add_argument(
-        "--unbalanced",
-        action="store_true",
-        help="Sample labels independently instead of approximately balancing 000-999.",
-    )
-    parser.add_argument(
-        "--log-every",
-        type=int,
-        default=500,
-        help="Print progress every N images.",
-    )
-
+    parser.add_argument("--log-every", type=int, default=500)
     args = parser.parse_args()
 
     if args.count <= 0:
-        parser.error("--count must be positive.")
-    if not 0.0 <= args.val_ratio < 1.0:
-        parser.error("--val-ratio must be in [0, 1).")
-    if args.width < 16 or args.height < 16:
-        parser.error("--width and --height must both be at least 16.")
-    if args.max_fonts is not None and args.max_fonts <= 0:
-        parser.error("--max-fonts must be positive.")
-
+        parser.error("--count must be positive")
+    if not 0 <= args.val_ratio < 1:
+        parser.error("--val-ratio must be in [0, 1)")
+    if not args.real_tiles.exists():
+        parser.error(f"--real-tiles does not exist: {args.real_tiles}")
     return args
 
 
