@@ -3,7 +3,9 @@
 # =========================
 __pycache__/
 *.py[cod]
+*.pyo
 *$py.class
+.Python
 
 # Virtual environments
 .venv/
@@ -29,15 +31,19 @@ dist/
 # macOS
 # =========================
 .DS_Store
+Thumbs.db
 
 # =========================
 # Logs & caches
 # =========================
 *.log
 .pytest_cache/
+.hypothesis/
 .mypy_cache/
 .ruff_cache/
+.cache/
 .coverage
+coverage.xml
 htmlcov/
 .ipynb_checkpoints/
 
@@ -57,9 +63,20 @@ debug/
 tmp/
 temp/
 
+# Temporary images
+images/
+
+# Generated archives
+*.zip
+
 # Synthetic datasets
 data/synthetic*/
-data/synthetic*.zip
+experiments/synthetic/data/
+
+# Editor temporary files
+*.swp
+*.swo
+*~
 
 # Generated CAPTCHA assets and previews
 data/real_assets/
@@ -71,7 +88,6 @@ data/composed_preview*/
 
 # Local source samples and generated style reports
 real_sample/
-real_sample.zip
 captcha_style.json
 captcha_style_report.png
 
@@ -102,7 +118,6 @@ ocr_results.csv
 predictions.csv
 
 fusion_errors/
-fusion_errors.zip
 
 tesseract_results.csv
 tesseract_leaderboard.csv
