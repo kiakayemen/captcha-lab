@@ -1,18 +1,32 @@
-Version 1.0
+# CAPTCHA OCR refactor v3
 
-Dataset: 513 labeled tiles
+This version adds automatic extraction of the three-digit target from the instruction strip above the detected 3×3 grid.
 
-Best preprocessing:
-- gray_clahe: 86.74%
+## Automatic target mode
 
-Best fusion:
-- Highest confidence: 91.03%
+```bash
+python captcha_solver.py dataset/Screenshot-00023.png
+```
 
-Oracle:
-- 94.15%
+## Manual fallback
 
-Tesseract:
-- 39.38% (rejected)
+```bash
+python captcha_solver.py dataset/Screenshot-00023.png 909
+```
 
-Next milestone:
-- Custom CNN digit recognizer
+The solver writes:
+
+```text
+output/live_solver/instruction.png
+output/live_solver/detected.png
+output/live_solver/tile_1.png ... tile_9.png
+output/live_solver/decision.json
+```
+
+Expected automatic-mode output begins with something like:
+
+```text
+Detected target: 909 confidence=0.998 variant=upscale
+```
+
+If automatic extraction fails, inspect `instruction.png`. You can still pass the target manually.
