@@ -11,11 +11,11 @@ import numpy as np
 
 from fusion import FusionSelector, OCRResult
 
-
+PROJECT_ROOT = Path(__file__).resolve().parent
 PROJECT_DIR = Path(__file__).resolve().parent
 IMAGE_PATH = PROJECT_DIR / "images" / "captcha.png"
 OUTPUT_DIR = PROJECT_DIR / "output"
-MODEL_PATH = PROJECT_DIR / "fusion_model.joblib"
+MODEL_PATH = PROJECT_ROOT / "models" / "fusion_model.joblib"
 RESULTS_PATH = OUTPUT_DIR / "fused_predictions.csv"
 
 # Coordinates of the complete 3x3 grid in images/captcha.png.
