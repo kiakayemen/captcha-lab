@@ -134,7 +134,6 @@ def recognize_variant(
     return max(candidates, key=lambda item: item[1])
 
 
-def confidence_sum_fallback(results: list[OCRResult]) -> tuple[str, float]:
     scores: dict[str, float] = defaultdict(float)
     for result in results:
         if result.prediction:
@@ -147,18 +146,19 @@ def confidence_sum_fallback(results: list[OCRResult]) -> tuple[str, float]:
     return prediction, scores[prediction]
 
 
-def load_selector() -> FusionSelector | None:
-    if not MODEL_PATH.exists():
-        print(
-            f"WARNING: Fusion model not found at {MODEL_PATH}.\n"
-            "Using confidence-sum fallback. Train the model with:\n"
-            "  python fusion.py preprocessing_results.csv"
+def load_selector() -> FusionSelector:
+    if not MODEL_PATH.is_file():
+        raise FileNotFoundError(
+            "Required fusion model is missing: "
+            f"{MODEL_PATH.resolve()}\n"
+            "Restore the frozen model before running the solver."
         )
-        return None
 
     selector = FusionSelector.load(MODEL_PATH)
-    print(f"Loaded fusion model: {MODEL_PATH.name}")
+
+    print(f"Loaded fusion model: {MODEL_PATH.resolve()}")
     print(f"Model variants: {', '.join(selector.variants)}")
+
     return selector
 
 
@@ -224,7 +224,7 @@ def main() -> None:
 
     print("Loading EasyOCR model...")
     reader = easyocr.Reader(["en"], gpu=GPU)
-    selector = load_selector()
+    selector: FusionSelector = load_selector()
 
     rows: list[dict[str, object]] = []
     final_predictions: list[str] = []
@@ -254,13 +254,8 @@ def main() -> None:
                 f"confidence={confidence:.3f}"
             )
 
-        if selector is not None:
-            final_prediction, fusion_score = selector.predict(ocr_results)
-            method = "learned_fusion"
-        else:
-            final_prediction, fusion_score = confidence_sum_fallback(
-                ocr_results)
-            method = "confidence_sum_fallback"
+        final_prediction, fusion_score = selector.predict(ocr_results)
+        method = "learned_fusion"
 
         final_predictions.append(final_prediction)
         print(
