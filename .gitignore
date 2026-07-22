@@ -100,9 +100,6 @@ captcha_style_report.png
 cnn_training_history.csv
 cnn_full_training_history.csv
 
-# ML artifacts
-*.joblib
-
 # =========================
 # Benchmark / analysis outputs
 # =========================
