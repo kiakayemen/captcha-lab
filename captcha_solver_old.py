@@ -19,6 +19,7 @@ from extract_tiles import (
 )
 from ocr import build_reader
 from solver import solve_tile
+from target_extractor import TargetResult, extract_target
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,8 @@ class TileDecision:
 @dataclass(frozen=True)
 class CaptchaDecision:
     target: str
-    status: str
+    target_confidence: float
+    target_variant: str
     selected_tiles: tuple[int, ...]
     uncertain_tiles: tuple[int, ...]
     tiles: tuple[TileDecision, ...]
@@ -58,9 +60,6 @@ def extract_tiles_from_screenshot(
     boxes = select_grid_boxes(candidates)
     tiles = crop_individual_tiles(image, boxes)
 
-    if len(tiles) != 9:
-        raise RuntimeError(f"Expected 9 CAPTCHA tiles, found {len(tiles)}")
-
     grid_box = bounding_rectangle(boxes)
     panel_box = expand_box(
         grid_box,
@@ -74,12 +73,19 @@ def extract_tiles_from_screenshot(
     return tiles, boxes, debug
 
 
-def solve_tiles(
-    tiles: list[np.ndarray],
-    target: str,
+def solve_captcha(
+    image: np.ndarray,
+    target: str | None,
     reader: Any,
 ) -> CaptchaDecision:
-    target = validate_target(target)
+    tiles, boxes, _debug = extract_tiles_from_screenshot(image)
+    grid_box = bounding_rectangle(boxes)
+    target_result = (
+        TargetResult(validate_target(target), 1.0, "manual", np.empty((0, 0), dtype=np.uint8))
+        if target is not None
+        else extract_target(reader, image, grid_box)
+    )
+    target = target_result.target
 
     decisions: list[TileDecision] = []
     selected: list[int] = []
@@ -103,18 +109,17 @@ def solve_tiles(
         if decision.uncertain:
             uncertain.append(tile_number)
 
-    status = "confident" if not uncertain else "uncertain"
-
     return CaptchaDecision(
         target=target,
-        status=status,
+        target_confidence=target_result.confidence,
+        target_variant=target_result.variant,
         selected_tiles=tuple(selected),
         uncertain_tiles=tuple(uncertain),
         tiles=tuple(decisions),
     )
 
 
-def write_outputs(
+def write_debug_outputs(
     output_dir: Path,
     image: np.ndarray,
     debug: np.ndarray,
@@ -122,20 +127,16 @@ def write_outputs(
     decision: CaptchaDecision,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    if not cv2.imwrite(str(output_dir / "screenshot.png"), image):
-        raise OSError(f"Could not write {output_dir / 'screenshot.png'}")
-    if not cv2.imwrite(str(output_dir / "detected.png"), debug):
-        raise OSError(f"Could not write {output_dir / 'detected.png'}")
+    cv2.imwrite(str(output_dir / "screenshot.png"), image)
+    cv2.imwrite(str(output_dir / "detected.png"), debug)
 
     for tile_number, tile in enumerate(tiles, start=1):
-        tile_path = output_dir / f"tile_{tile_number}.png"
-        if not cv2.imwrite(str(tile_path), tile):
-            raise OSError(f"Could not write {tile_path}")
+        cv2.imwrite(str(output_dir / f"tile_{tile_number}.png"), tile)
 
     payload = {
         "target": decision.target,
-        "status": decision.status,
+        "target_confidence": decision.target_confidence,
+        "target_variant": decision.target_variant,
         "selected_tiles": list(decision.selected_tiles),
         "uncertain_tiles": list(decision.uncertain_tiles),
         "tiles": [asdict(tile) for tile in decision.tiles],
@@ -146,68 +147,109 @@ def write_outputs(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Solve one 3x3 CAPTCHA screenshot using an explicit target."
+        description="Solve a 3x3 CAPTCHA screenshot and optionally extract its target automatically."
+    )
+    parser.add_argument("image", type=Path, help="Path to the CAPTCHA screenshot")
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="Optional three-digit target. Omit to extract it automatically.",
     )
     parser.add_argument(
-        "--image",
-        required=True,
-        type=Path,
-        help="Path to the CAPTCHA screenshot",
-    )
-    parser.add_argument(
-        "--target",
-        required=True,
-        type=validate_target,
-        help="Required three-digit target",
-    )
-    parser.add_argument(
-        "--output",
+        "--output-dir",
         type=Path,
         default=Path("output/live_solver"),
-        help="Output directory",
+        help="Debug output directory",
     )
     parser.add_argument(
         "--gpu",
         action="store_true",
         help="Ask EasyOCR to use a supported GPU",
     )
-    return parser.parse_args()
-
-
-def main() -> int:
-    args = parse_args()
+    args = parser.parse_args()
 
     image = cv2.imread(str(args.image))
     if image is None:
         raise FileNotFoundError(f"Could not load image: {args.image}")
 
-    tiles, _boxes, debug = extract_tiles_from_screenshot(image)
+    tiles, boxes, debug = extract_tiles_from_screenshot(image)
 
     print("Loading EasyOCR...")
     reader = build_reader(gpu=args.gpu)
 
-    decision = solve_tiles(tiles, args.target, reader)
-
-    for tile in decision.tiles:
-        marker = "SELECT" if tile.matches_target else "skip"
+    grid_box = bounding_rectangle(boxes)
+    if args.target is None:
+        target_result = extract_target(reader, image, grid_box)
+        target = target_result.target
         print(
-            f"Tile {tile.tile}: {tile.prediction or '<blank>'} "
-            f"score={tile.score:.3f} votes={tile.votes} -> {marker}"
+            f"Detected target: {target} "
+            f"confidence={target_result.confidence:.3f} "
+            f"variant={target_result.variant}"
+        )
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(
+            str(args.output_dir / "instruction.png"),
+            target_result.prompt_crop,
+        )
+    else:
+        target = validate_target(args.target)
+        target_result = TargetResult(
+            target=target,
+            confidence=1.0,
+            variant="manual",
+            prompt_crop=np.empty((0, 0), dtype=np.uint8),
         )
 
-    write_outputs(args.output, image, debug, tiles, decision)
+    # Reuse the already extracted tiles rather than detecting twice.
+    tile_decisions: list[TileDecision] = []
+    selected: list[int] = []
+    uncertain: list[int] = []
+
+    for tile_number, tile in enumerate(tiles, start=1):
+        result = solve_tile(tile, reader, target=target)
+        item = TileDecision(
+            tile=tile_number,
+            prediction=str(result["prediction"]),
+            score=float(result["score"]),
+            votes=int(result["votes"]),
+            supporting_variants=tuple(result["supporting_variants"]),
+            matches_target=bool(result["matches_target"]),
+            uncertain=bool(result["uncertain"]),
+        )
+        tile_decisions.append(item)
+        if item.matches_target:
+            selected.append(tile_number)
+        if item.uncertain:
+            uncertain.append(tile_number)
+
+        marker = "SELECT" if item.matches_target else "skip"
+        print(
+            f"Tile {tile_number}: {item.prediction or '<blank>'} "
+            f"score={item.score:.3f} votes={item.votes} -> {marker}"
+        )
+
+    decision = CaptchaDecision(
+        target=target,
+        target_confidence=target_result.confidence,
+        target_variant=target_result.variant,
+        selected_tiles=tuple(selected),
+        uncertain_tiles=tuple(uncertain),
+        tiles=tuple(tile_decisions),
+    )
+    write_debug_outputs(args.output_dir, image, debug, tiles, decision)
 
     print()
-    print(f"Target: {decision.target}")
-    print(f"Status: {decision.status}")
+    print(
+        f"Target: {decision.target} "
+        f"(confidence={decision.target_confidence:.3f}, "
+        f"variant={decision.target_variant})"
+    )
     print(f"Selected tiles: {list(decision.selected_tiles)}")
     print(f"Uncertain tiles: {list(decision.uncertain_tiles)}")
-    print(f"Decision file: {args.output / 'decision.json'}")
-
-    return 0 if decision.status == "confident" else 2
+    print(f"Decision file: {args.output_dir / 'decision.json'}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

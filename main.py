@@ -147,27 +147,39 @@ def recognize_variant(
 
 
 def load_selector() -> FusionSelector:
-    if not MODEL_PATH.is_file():
+    """
+    Load the required frozen production fusion model.
+
+    The learned model is mandatory. Production execution stops immediately
+    when the artifact is absent instead of silently switching to a weaker
+    fallback strategy.
+    """
+
+    if not MODEL_PATH.exists():
         raise FileNotFoundError(
-            "Required fusion model is missing: "
-            f"{MODEL_PATH.resolve()}\n"
-            "Restore the frozen model before running the solver."
+            "Required production fusion model was not found.\n"
+            f"Expected location: {MODEL_PATH}\n"
+            "Restore models/fusion_model.joblib before running the solver."
         )
 
     selector = FusionSelector.load(MODEL_PATH)
 
-    print(f"Loaded fusion model: {MODEL_PATH.resolve()}")
+    print(f"Loaded fusion model: {MODEL_PATH}")
     print(f"Model variants: {', '.join(selector.variants)}")
 
     return selector
 
 
 def validate_variant_names(
-    selector: FusionSelector | None,
+    selector: FusionSelector,
     generated_variants: set[str],
 ) -> None:
-    if selector is None:
-        return
+    """
+    Ensure runtime preprocessing matches the frozen model's training inputs.
+
+    Missing variants are fatal because they alter the feature layout expected
+    by the model. Extra generated variants are reported but safely ignored.
+    """
 
     expected = set(selector.variants)
     missing = expected - generated_variants
@@ -176,13 +188,13 @@ def validate_variant_names(
     if missing:
         raise RuntimeError(
             "The fusion model expects preprocessing variants that main.py "
-            f"does not generate: {sorted(missing)}. Retrain the model or "
-            "restore those variant names."
+            f"does not generate: {sorted(missing)}. Restore those variants "
+            "or train and validate a new fusion model."
         )
 
     if extra:
         print(
-            "Note: these generated variants are not used by the current "
+            "Note: these generated variants are not used by the frozen "
             f"fusion model: {sorted(extra)}"
         )
 
