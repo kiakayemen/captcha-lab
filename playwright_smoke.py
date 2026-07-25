@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from config import BLS_EMAIL, LOGIN_URL
 from playwright.sync_api import (
     Error as PlaywrightError,
     Page,
@@ -83,16 +84,6 @@ def main() -> None:
         description="Enter the BLS account email and navigate to the CAPTCHA page."
     )
     parser.add_argument(
-        "--url",
-        required=True,
-        help="Exact BLS login URL.",
-    )
-    parser.add_argument(
-        "--email",
-        required=True,
-        help="Account email address.",
-    )
-    parser.add_argument(
         "--headless",
         action="store_true",
         help="Run without displaying the browser.",
@@ -113,10 +104,10 @@ def main() -> None:
         page = context.new_page()
 
         try:
-            print(f"Opening login page: {args.url}")
+            print(f"Opening login page: {LOGIN_URL}")
 
             response = page.goto(
-                args.url,
+                LOGIN_URL,
                 wait_until="domcontentloaded",
                 timeout=60_000,
             )
@@ -124,7 +115,7 @@ def main() -> None:
             if response is not None:
                 print(f"Initial HTTP status: {response.status}")
 
-            submit_email(page, args.email)
+            submit_email(page, BLS_EMAIL)
 
             # Wait for the redirected page to finish rendering.
             page.wait_for_load_state("domcontentloaded")
