@@ -64,8 +64,9 @@ These names and their associated transformations must not be changed without ret
 Current labeled-tile benchmark:
 
 * Total labeled tiles: 513
-* Correct production fusion predictions: 467
-* Production tile accuracy: 91.03%
+* Correct production fusion predictions: 466
+* Production tile accuracy: 90.84% (466/513)
+* No-prediction tiles: 8/513
 * Correct all-variant oracle predictions: 483
 * All-variant oracle accuracy: 94.15%
 
