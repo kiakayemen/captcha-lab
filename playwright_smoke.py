@@ -3,7 +3,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 from config import BLS_EMAIL, LOGIN_URL
+from extract_tiles import (
+    bounding_rectangle,
+    crop_box,
+    expand_box,
+    find_square_candidates,
+    select_grid_boxes,
+)
 from playwright.sync_api import (
     Error as PlaywrightError,
     Page,
@@ -16,6 +26,36 @@ from playwright.sync_api import (
 LOGIN_FORM_SELECTOR = 'form[action="/Global/account/LoginSubmit"]'
 EMAIL_INPUT_SELECTOR = f"{LOGIN_FORM_SELECTOR} input.entry-disabled:visible"
 VERIFY_BUTTON_SELECTOR = f"{LOGIN_FORM_SELECTOR} #btnVerify"
+
+
+def save_captcha_crop(page: Page, output_path: Path) -> None:
+    """Save the instruction and 3x3 grid, excluding the rest of the page."""
+    screenshot_bytes = page.screenshot(full_page=True)
+    screenshot = cv2.imdecode(
+        np.frombuffer(screenshot_bytes, dtype=np.uint8),
+        cv2.IMREAD_COLOR,
+    )
+    if screenshot is None:
+        raise RuntimeError("Playwright returned an unreadable screenshot")
+
+    candidates, _edges = find_square_candidates(screenshot)
+    grid_boxes = select_grid_boxes(candidates)
+    grid_box = bounding_rectangle(grid_boxes)
+
+    # Match the CAPTCHA-only crop used by the OCR pipeline: retain the prompt
+    # above the tiles and a small border on the remaining three sides.
+    captcha_box = expand_box(
+        grid_box,
+        screenshot.shape,
+        left_ratio=0.04,
+        top_ratio=0.23,
+        right_ratio=0.04,
+        bottom_ratio=0.04,
+    )
+    captcha = crop_box(screenshot, captcha_box)
+
+    if not cv2.imwrite(str(output_path), captcha):
+        raise OSError(f"Could not write CAPTCHA image: {output_path}")
 
 
 def submit_email(page: Page, email: str) -> None:
@@ -121,12 +161,9 @@ def main() -> None:
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(2_000)
 
-            page.screenshot(
-                path=str(screenshot_path),
-                full_page=True,
-            )
+            save_captcha_crop(page, screenshot_path)
 
-            print(f"Redirected-page screenshot saved: {screenshot_path}")
+            print(f"Cropped CAPTCHA image saved: {screenshot_path}")
             print("Browser is paused on the page after email submission.")
 
             input("Press Enter to close the browser...")
