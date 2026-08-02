@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,12 @@ from extract_tiles import (
 )
 from ocr import build_reader
 from solver import solve_tile
+
+
+TARGET_PATTERN = re.compile(
+    r"please\s+select\s+all\s+boxes\s+with\s+number\s+(\d{3})",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -50,7 +57,12 @@ def validate_target(target: str) -> str:
 
 def extract_tiles_from_screenshot(
     image: np.ndarray,
-) -> tuple[list[np.ndarray], list[tuple[int, int, int, int]], np.ndarray]:
+) -> tuple[
+    list[np.ndarray],
+    list[tuple[int, int, int, int]],
+    tuple[int, int, int, int],
+    np.ndarray,
+]:
     if image is None or image.size == 0:
         raise ValueError("Cannot solve an empty screenshot")
 
@@ -71,7 +83,53 @@ def extract_tiles_from_screenshot(
         bottom_ratio=0.04,
     )
     debug = draw_detection_debug(image, boxes, grid_box, panel_box)
-    return tiles, boxes, debug
+    return tiles, boxes, grid_box, debug
+
+
+def extract_target_from_prompt(
+    image: np.ndarray,
+    grid_box: tuple[int, int, int, int],
+    reader: Any,
+) -> str:
+    """
+    OCR the instruction above the detected 3x3 grid.
+
+    This is primarily a CLI fallback. In browser automation, reading the
+    target from the visible DOM label is more reliable and should be preferred.
+    """
+    grid_x, grid_y, grid_w, _grid_h = grid_box
+
+    if grid_y <= 0:
+        raise RuntimeError("No prompt area exists above the detected grid")
+
+    horizontal_padding = max(8, int(grid_w * 0.04))
+    x1 = max(0, grid_x - horizontal_padding)
+    x2 = min(image.shape[1], grid_x + grid_w + horizontal_padding)
+    prompt = image[0:grid_y, x1:x2]
+
+    if prompt.size == 0:
+        raise RuntimeError("The CAPTCHA prompt crop is empty")
+
+    results = reader.readtext(
+        prompt,
+        detail=0,
+        paragraph=True,
+    )
+    text = " ".join(str(item) for item in results).strip()
+
+    match = TARGET_PATTERN.search(text)
+    if match:
+        return validate_target(match.group(1))
+
+    # Fallback for OCR that reads the sentence poorly but still sees the number.
+    three_digit_numbers = re.findall(r"(?<!\d)\d{3}(?!\d)", text)
+    if len(three_digit_numbers) == 1:
+        return validate_target(three_digit_numbers[0])
+
+    raise RuntimeError(
+        "Could not identify one unambiguous three-digit target from the "
+        f"CAPTCHA prompt. OCR text was: {text!r}"
+    )
 
 
 def solve_tiles(
@@ -114,6 +172,39 @@ def solve_tiles(
     )
 
 
+def solve_captcha_image(
+    image: np.ndarray,
+    *,
+    target: str | None = None,
+    reader: Any | None = None,
+    gpu: bool = False,
+) -> tuple[
+    CaptchaDecision,
+    list[np.ndarray],
+    list[tuple[int, int, int, int]],
+    np.ndarray,
+]:
+    """
+    Solve a CAPTCHA image.
+
+    Browser code should pass the target extracted from the true visible DOM
+    label. When target is omitted, the solver OCRs the prompt as a fallback.
+    """
+    tiles, boxes, grid_box, debug = extract_tiles_from_screenshot(image)
+
+    if reader is None:
+        reader = build_reader(gpu=gpu)
+
+    resolved_target = (
+        validate_target(target)
+        if target is not None
+        else extract_target_from_prompt(image, grid_box, reader)
+    )
+
+    decision = solve_tiles(tiles, resolved_target, reader)
+    return decision, tiles, boxes, debug
+
+
 def write_outputs(
     output_dir: Path,
     image: np.ndarray,
@@ -146,9 +237,27 @@ def write_outputs(
     )
 
 
+def print_decision(decision: CaptchaDecision) -> None:
+    for tile in decision.tiles:
+        marker = "SELECT" if tile.matches_target else "skip"
+        print(
+            f"Tile {tile.tile}: {tile.prediction or '<blank>'} "
+            f"score={tile.score:.3f} votes={tile.votes} -> {marker}"
+        )
+
+    print()
+    print(f"Target: {decision.target}")
+    print(f"Status: {decision.status}")
+    print(f"Selected tiles: {list(decision.selected_tiles)}")
+    print(f"Uncertain tiles: {list(decision.uncertain_tiles)}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Solve one 3x3 CAPTCHA screenshot using an explicit target."
+        description=(
+            "Solve one 3x3 CAPTCHA screenshot. The target is automatically "
+            "OCRed from the instruction unless --target is supplied."
+        )
     )
     parser.add_argument(
         "--image",
@@ -158,9 +267,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--target",
-        required=True,
         type=validate_target,
-        help="Required three-digit target",
+        help=(
+            "Optional three-digit target override. Browser automation should "
+            "normally obtain this from the true visible DOM label."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -183,29 +294,19 @@ def main() -> int:
     if image is None:
         raise FileNotFoundError(f"Could not load image: {args.image}")
 
-    tiles, _boxes, debug = extract_tiles_from_screenshot(image)
-
     print("Loading EasyOCR...")
     reader = build_reader(gpu=args.gpu)
 
-    decision = solve_tiles(tiles, args.target, reader)
+    decision, tiles, _boxes, debug = solve_captcha_image(
+        image,
+        target=args.target,
+        reader=reader,
+    )
 
-    for tile in decision.tiles:
-        marker = "SELECT" if tile.matches_target else "skip"
-        print(
-            f"Tile {tile.tile}: {tile.prediction or '<blank>'} "
-            f"score={tile.score:.3f} votes={tile.votes} -> {marker}"
-        )
-
+    print_decision(decision)
     write_outputs(args.output, image, debug, tiles, decision)
 
-    print()
-    print(f"Target: {decision.target}")
-    print(f"Status: {decision.status}")
-    print(f"Selected tiles: {list(decision.selected_tiles)}")
-    print(f"Uncertain tiles: {list(decision.uncertain_tiles)}")
     print(f"Decision file: {args.output / 'decision.json'}")
-
     return 0 if decision.status == "confident" else 2
 
 

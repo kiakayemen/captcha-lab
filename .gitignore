@@ -66,6 +66,7 @@ temp/
 # Temporary images
 images/
 captcha_page.png
+playwright_error.png
 
 # Generated archives
 *.zip
