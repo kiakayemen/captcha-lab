@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from captcha_solver import print_decision, solve_captcha_image, write_outputs
-from config import BLS_EMAIL, LOGIN_URL
+from config import BLS_EMAIL, LOGIN_URL, BLS_PASSWORD
 from extract_tiles import (
     bounding_rectangle,
     crop_box,
@@ -391,6 +391,14 @@ def submit_email(page: Page, email: str) -> None:
     print(f"Redirected to: {page.url}")
     print(f"Page title: {page.title()}")
 
+def find_visible_password_input(page: Page) -> Locator:
+    visible_input = page.locator(
+        'input.entry-disabled[type="password"]:visible'
+    )
+    expect(visible_input).to_have_count(1)
+    input_id = visible_input.first.get_attribute("id")
+    print(f"Visible password input ID: {input_id}")
+    return visible_input.first
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -480,6 +488,11 @@ def main() -> None:
 
             print_decision(decision)
             click_selected_captcha_tiles(page, decision.selected_tiles)
+
+            visible_input = find_visible_password_input(page)
+            visible_input.fill(BLS_PASSWORD)
+            page.locator("button#btnVerify").click(timeout=10000)
+
             write_outputs(
                 args.output,
                 captcha_image,
