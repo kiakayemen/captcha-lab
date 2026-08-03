@@ -5,14 +5,12 @@ from pathlib import Path
 
 from captcha_solver import print_decision, solve_captcha_image, write_outputs
 from config import BLS_EMAIL, LOGIN_URL, BLS_PASSWORD
-from browser_helpers import (
-    CAPTCHA_INSTRUCTION_PATTERN,
+from captcha_flow import (
     click_selected_captcha_tiles,
     find_true_captcha_label,
-    find_visible_password_input,
     save_captcha_crop,
-    submit_email,
 )
+from login_flow import find_visible_password_input, submit_email
 from ocr import build_reader
 from playwright.sync_api import (
     Error as PlaywrightError,
@@ -20,6 +18,57 @@ from playwright.sync_api import (
     expect,
     sync_playwright,
 )
+from selectors import CAPTCHA_INSTRUCTION_PATTERN
+
+
+def run_phase_one(page, *, target_password: str, gpu: bool, output_dir: Path) -> None:
+    screenshot_path = Path("captcha_page.png")
+
+    submit_email(page, BLS_EMAIL)
+    page.wait_for_load_state("domcontentloaded")
+
+    print("Waiting for the true CAPTCHA instruction...")
+    _true_label, true_label_id, target = find_true_captcha_label(page)
+
+    true_label_by_id = page.locator(f"#{true_label_id}")
+    expect(true_label_by_id).to_have_count(1)
+    expect(true_label_by_id).to_be_visible()
+
+    confirmed_text = true_label_by_id.inner_text().strip()
+    confirmed_match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(confirmed_text)
+    if confirmed_match is None or confirmed_match.group(1) != target:
+        raise RuntimeError("The discovered CAPTCHA label changed before solving.")
+
+    print(f"True CAPTCHA label ID: {true_label_id}")
+    print(f"Target extracted from DOM: {target}")
+
+    captcha_image = save_captcha_crop(page, screenshot_path)
+    print(f"Cropped CAPTCHA image saved: {screenshot_path}")
+
+    print("Loading EasyOCR...")
+    reader = build_reader(gpu=gpu)
+
+    decision, tiles, _boxes, debug = solve_captcha_image(
+        captcha_image,
+        target=target,
+        reader=reader,
+    )
+
+    print_decision(decision)
+    click_selected_captcha_tiles(page, decision.selected_tiles)
+
+    visible_input = find_visible_password_input(page)
+    visible_input.fill(target_password)
+
+    page.get_by_role("button", name="Submit").click(timeout=10_000)
+
+    write_outputs(
+        output_dir,
+        captcha_image,
+        debug,
+        tiles,
+        decision,
+    )
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -46,8 +95,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    screenshot_path = Path("captcha_page.png")
-
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             headless=args.headless,
@@ -69,62 +116,12 @@ def main() -> None:
             if response is not None:
                 print(f"Initial HTTP status: {response.status}")
 
-            submit_email(page, BLS_EMAIL)
-
-            page.wait_for_load_state("domcontentloaded")
-
-            print("Waiting for the true CAPTCHA instruction...")
-            true_label, true_label_id, target = find_true_captcha_label(page)
-
-            # Re-address the exact element by its ID after discovery. This
-            # protects the rest of this page-load flow from the 25 decoys.
-            true_label_by_id = page.locator(f"#{true_label_id}")
-            expect(true_label_by_id).to_have_count(1)
-            expect(true_label_by_id).to_be_visible()
-
-            # Confirm the ID still points to the same target text.
-            confirmed_text = true_label_by_id.inner_text().strip()
-            confirmed_match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(
-                confirmed_text
+            run_phase_one(
+                page,
+                target_password=BLS_PASSWORD,
+                gpu=args.gpu,
+                output_dir=args.output,
             )
-            if confirmed_match is None or confirmed_match.group(1) != target:
-                raise RuntimeError(
-                    "The discovered CAPTCHA label changed before solving."
-                )
-
-            print(f"True CAPTCHA label ID: {true_label_id}")
-            print(f"Target extracted from DOM: {target}")
-
-            captcha_image = save_captcha_crop(page, screenshot_path)
-            print(f"Cropped CAPTCHA image saved: {screenshot_path}")
-
-            print("Loading EasyOCR...")
-            reader = build_reader(gpu=args.gpu)
-
-            decision, tiles, _boxes, debug = solve_captcha_image(
-                captcha_image,
-                target=target,
-                reader=reader,
-            )
-
-            print_decision(decision)
-            click_selected_captcha_tiles(page, decision.selected_tiles)
-
-            visible_input = find_visible_password_input(page)
-            visible_input.fill(BLS_PASSWORD)
-            page.locator("button#btnVerify").click(timeout=10000)
-
-            write_outputs(
-                args.output,
-                captcha_image,
-                debug,
-                tiles,
-                decision,
-            )
-
-            print(f"Decision file: {args.output / 'decision.json'}")
-            print("Browser is paused on the CAPTCHA page.")
-            input("Press Enter to close the browser...")
 
         except PlaywrightTimeoutError as error:
             page.screenshot(
