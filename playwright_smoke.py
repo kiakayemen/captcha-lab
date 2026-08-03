@@ -36,6 +36,7 @@ CAPTCHA_INSTRUCTION_PATTERN = re.compile(
     r"^\s*Please\s+select\s+all\s+boxes\s+with\s+number\s+(\d{3})\s*$",
     re.IGNORECASE,
 )
+CAPTCHA_TILE_SELECTOR = "#captcha-main-div img.captcha-img"
 
 
 def find_true_captcha_label(page: Page) -> tuple[Locator, str, str]:
@@ -193,6 +194,149 @@ def save_captcha_crop(page: Page, output_path: Path) -> np.ndarray:
     return captcha
 
 
+def get_captcha_tiles(page: Page) -> list[Locator]:
+    """
+    Return the nine visible CAPTCHA tiles in top-to-bottom, left-to-right order.
+
+    The page duplicates the CAPTCHA markup multiple times. Each visual position
+    can have several stacked copies, so we keep only the top-most copy for each
+    screen position by comparing computed z-index and element geometry.
+    """
+    tiles = page.locator(CAPTCHA_TILE_SELECTOR)
+    expect(tiles).not_to_have_count(0, timeout=30_000)
+
+    candidates = tiles.evaluate_all(
+        """elements => elements.map((element, index) => {
+            const parent = element.parentElement;
+            const parentStyle = parent ? window.getComputedStyle(parent) : null;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const parentRect = parent ? parent.getBoundingClientRect() : rect;
+            const parsedZ = Number.parseInt(style.zIndex, 10);
+            const parsedParentZ = parentStyle
+                ? Number.parseInt(parentStyle.zIndex, 10)
+                : NaN;
+
+            return {
+                index,
+                id: parent ? (parent.id || "") : "",
+                onclick: element.getAttribute("onclick") || "",
+                display: style.display,
+                visibility: style.visibility,
+                opacity: Number.parseFloat(style.opacity || "1"),
+                z_index: Number.isNaN(parsedZ) ? 0 : parsedZ,
+                parent_z_index: Number.isNaN(parsedParentZ) ? 0 : parsedParentZ,
+                left: parentRect.left,
+                top: parentRect.top,
+                width: parentRect.width,
+                height: parentRect.height
+            };
+        })"""
+    )
+
+    visible_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate["display"] != "none"
+        and candidate["visibility"] != "hidden"
+        and float(candidate["opacity"]) > 0
+        and float(candidate["width"]) > 0
+        and float(candidate["height"]) > 0
+    ]
+
+    if not visible_candidates:
+        raise RuntimeError("No visible CAPTCHA tile candidates were found.")
+
+    grouped: dict[tuple[int, int, int, int], dict[str, object]] = {}
+
+    for candidate in visible_candidates:
+        key = (
+            int(round(float(candidate["left"]))),
+            int(round(float(candidate["top"]))),
+            int(round(float(candidate["width"]))),
+            int(round(float(candidate["height"]))),
+        )
+
+        score = int(candidate["z_index"]) + int(candidate["parent_z_index"])
+        previous = grouped.get(key)
+        if previous is None or score > int(previous["score"]):
+            grouped[key] = {
+                "score": score,
+                "candidate": candidate,
+            }
+
+    chosen = [
+        item["candidate"]
+        for item in grouped.values()
+    ]
+
+    chosen.sort(
+        key=lambda item: (
+            round(float(item["top"]), 2),
+            round(float(item["left"]), 2),
+        )
+    )
+
+    if len(chosen) != 9:
+        diagnostics = [
+            {
+                "id": candidate["id"],
+                "onclick": candidate["onclick"],
+                "z_index": candidate["z_index"],
+                "parent_z_index": candidate["parent_z_index"],
+                "rect": (
+                    candidate["left"],
+                    candidate["top"],
+                    candidate["width"],
+                    candidate["height"],
+                ),
+            }
+            for candidate in sorted(
+                visible_candidates,
+                key=lambda item: (
+                    int(item["z_index"]) + int(item["parent_z_index"]),
+                ),
+                reverse=True,
+            )[:15]
+        ]
+        raise RuntimeError(
+            f"Expected 9 visible CAPTCHA tiles, found {len(chosen)}. "
+            f"Candidates: {diagnostics}"
+        )
+
+    result: list[Locator] = []
+    for candidate in chosen:
+        tile_id = str(candidate["id"])
+        if not tile_id:
+            continue
+        result.append(page.locator(f"#{tile_id}"))
+
+    if len(result) != 9:
+        raise RuntimeError(
+            f"Resolved {len(result)} clickable tiles after deduping, expected 9."
+        )
+
+    return result
+
+
+def click_selected_captcha_tiles(
+    page: Page,
+    selected_tiles: tuple[int, ...],
+) -> None:
+    tiles = get_captcha_tiles(page)
+
+    for tile_number in selected_tiles:
+        if tile_number < 1 or tile_number > len(tiles):
+            raise ValueError(
+                f"Selected tile {tile_number} is outside the 1..{len(tiles)} range"
+            )
+
+        tile = tiles[tile_number - 1]
+        tile.scroll_into_view_if_needed(timeout=10_000)
+        tile.click(timeout=10_000)
+        print(f"Clicked tile {tile_number}")
+
+
 def submit_email(page: Page, email: str) -> None:
     print("Waiting for the login form...")
 
@@ -335,6 +479,7 @@ def main() -> None:
             )
 
             print_decision(decision)
+            click_selected_captcha_tiles(page, decision.selected_tiles)
             write_outputs(
                 args.output,
                 captcha_image,
