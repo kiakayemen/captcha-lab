@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from captcha_solver import print_decision, solve_captcha_image, write_outputs
 from config import BLS_EMAIL, LOGIN_URL, BLS_PASSWORD
 from flows.captcha_flow import (
+    captcha_instruction_present,
+    captcha_verification_succeeded,
+    click_book_now,
+    click_ok_dialog,
     click_selected_captcha_tiles,
+    click_verify_selection,
     find_true_captcha_label,
     save_captcha_crop,
 )
@@ -28,50 +34,78 @@ def run_login_step(page) -> None:
 
 def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
     screenshot_path = Path("captcha_page.png")
+    max_attempts = 3
 
-    print("Waiting for the true CAPTCHA instruction...")
-    _true_label, true_label_id, target = find_true_captcha_label(page)
+    for attempt in range(1, max_attempts + 1):
+        print(f"Captcha attempt {attempt}/{max_attempts}")
 
-    true_label_by_id = page.locator(f"#{true_label_id}")
-    expect(true_label_by_id).to_have_count(1)
-    expect(true_label_by_id).to_be_visible()
+        print("Waiting for the true CAPTCHA instruction...")
+        _true_label, true_label_id, target = find_true_captcha_label(page)
 
-    confirmed_text = true_label_by_id.inner_text().strip()
-    confirmed_match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(confirmed_text)
-    if confirmed_match is None or confirmed_match.group(1) != target:
-        raise RuntimeError("The discovered CAPTCHA label changed before solving.")
+        true_label_by_id = page.locator(f"#{true_label_id}")
+        expect(true_label_by_id).to_have_count(1)
+        expect(true_label_by_id).to_be_visible()
 
-    print(f"True CAPTCHA label ID: {true_label_id}")
-    print(f"Target extracted from DOM: {target}")
+        confirmed_text = true_label_by_id.inner_text().strip()
+        confirmed_match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(confirmed_text)
+        if confirmed_match is None or confirmed_match.group(1) != target:
+            raise RuntimeError("The discovered CAPTCHA label changed before solving.")
 
-    captcha_image = save_captcha_crop(page, screenshot_path)
-    print(f"Cropped CAPTCHA image saved: {screenshot_path}")
+        print(f"True CAPTCHA label ID: {true_label_id}")
+        print(f"Target extracted from DOM: {target}")
 
-    print("Loading EasyOCR...")
-    reader = build_reader(gpu=gpu)
+        captcha_image = save_captcha_crop(page, screenshot_path)
+        print(f"Cropped CAPTCHA image saved: {screenshot_path}")
 
-    decision, tiles, _boxes, debug = solve_captcha_image(
-        captcha_image,
-        target=target,
-        reader=reader,
-    )
+        print("Loading EasyOCR...")
+        solve_start = time.perf_counter()
+        reader = build_reader(gpu=gpu)
 
-    print_decision(decision)
-    click_selected_captcha_tiles(page, decision.selected_tiles)
+        decision, tiles, _boxes, debug = solve_captcha_image(
+            captcha_image,
+            target=target,
+            reader=reader,
+        )
+        solve_seconds = time.perf_counter() - solve_start
+        print(f"Captcha solve time: {solve_seconds:.3f}s")
 
-    write_outputs(
-        output_dir,
-        captcha_image,
-        debug,
-        tiles,
-        decision,
-    )
+        print_decision(decision)
+        click_selected_captcha_tiles(page, decision.selected_tiles)
+        click_verify_selection(page)
+
+        if captcha_verification_succeeded(page):
+            print("Captcha verification succeeded.")
+            write_outputs(
+                output_dir,
+                captcha_image,
+                debug,
+                tiles,
+                decision,
+            )
+            return
+
+        if not captcha_instruction_present(page):
+            print("Captcha instruction disappeared after Verify Selection; treating this as a transition.")
+            return
+
+        print("Captcha verification did not advance the page; retrying.")
+
+    raise RuntimeError(f"Captcha verification failed after {max_attempts} attempts.")
+
+
+def fill_password(page, *, target_password: str) -> None:
+    visible_input = find_visible_password_input(page)
+    visible_input.fill(target_password)
+
+
+def submit_password(page) -> None:
+    page.get_by_role("button", name="Submit").click(timeout=10_000)
 
 
 def run_post_login_step(page, *, target_password: str) -> None:
-    visible_input = find_visible_password_input(page)
-    visible_input.fill(target_password)
-    page.get_by_role("button", name="Submit").click(timeout=10_000)
+    fill_password(page, target_password=target_password)
+    submit_password(page)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -120,8 +154,11 @@ def main() -> None:
                 print(f"Initial HTTP status: {response.status}")
 
             run_login_step(page)
+            fill_password(page, target_password=BLS_PASSWORD)
             run_captcha_step(page, gpu=args.gpu, output_dir=args.output)
-            run_post_login_step(page, target_password=BLS_PASSWORD)
+            click_book_now(page)
+            click_ok_dialog(page)
+            input("Press Enter to close the browser...")
 
         except PlaywrightTimeoutError as error:
             page.screenshot(

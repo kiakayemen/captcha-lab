@@ -13,7 +13,14 @@ from extract_tiles import (
     find_square_candidates,
     select_grid_boxes,
 )
-from .selectors import CAPTCHA_INSTRUCTION_PATTERN, CAPTCHA_LABEL_SELECTOR, CAPTCHA_TILE_SELECTOR
+from .selectors import (
+    CAPTCHA_INSTRUCTION_PATTERN,
+    BOOK_NOW_SELECTOR,
+    CAPTCHA_LABEL_SELECTOR,
+    CAPTCHA_TILE_SELECTOR,
+    OK_DIALOG_BUTTON_SELECTOR,
+    VERIFY_BUTTON_SELECTOR,
+)
 
 
 def find_true_captcha_label(page: Page) -> tuple[Locator, str, str]:
@@ -203,3 +210,40 @@ def click_selected_captcha_tiles(page: Page, selected_tiles: tuple[int, ...]) ->
         tile.click(timeout=10_000)
         print(f"Clicked tile {tile_number}")
 
+
+def click_verify_selection(page: Page) -> None:
+    verify_button = page.locator(VERIFY_BUTTON_SELECTOR)
+    expect(verify_button).to_be_visible(timeout=30_000)
+    expect(verify_button).to_be_enabled(timeout=30_000)
+    verify_button.scroll_into_view_if_needed(timeout=10_000)
+    verify_button.click(timeout=10_000)
+    print("Clicked Verify Selection")
+
+
+def captcha_verification_succeeded(page: Page) -> bool:
+    verified_button = page.get_by_role("button", name="Verified")
+    submit_button = page.get_by_role("button", name="Submit")
+    return verified_button.is_visible() or submit_button.is_visible()
+
+
+def captcha_instruction_present(page: Page) -> bool:
+    return page.locator(CAPTCHA_LABEL_SELECTOR).count() > 0
+
+
+def click_book_now(page: Page) -> None:
+    book_now = page.locator(BOOK_NOW_SELECTOR).filter(
+        has_text="Book Now"
+    ).first
+    expect(book_now).to_be_visible(timeout=30_000)
+    expect(book_now).to_be_enabled(timeout=30_000)
+    book_now.evaluate("(element) => element.click()")
+    print("Clicked Book Now")
+
+
+def click_ok_dialog(page: Page) -> None:
+    ok_button = page.locator(OK_DIALOG_BUTTON_SELECTOR)
+    expect(ok_button).to_be_visible(timeout=30_000)
+    expect(ok_button).to_be_enabled(timeout=30_000)
+    ok_button.scroll_into_view_if_needed(timeout=10_000)
+    ok_button.click(timeout=10_000)
+    print("Clicked OK dialog button")
