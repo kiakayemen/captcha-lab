@@ -5,12 +5,12 @@ from pathlib import Path
 
 from captcha_solver import print_decision, solve_captcha_image, write_outputs
 from config import BLS_EMAIL, LOGIN_URL, BLS_PASSWORD
-from captcha_flow import (
+from flows.captcha_flow import (
     click_selected_captcha_tiles,
     find_true_captcha_label,
     save_captcha_crop,
 )
-from login_flow import find_visible_password_input, submit_email
+from flows.login_flow import find_visible_password_input, submit_email
 from ocr import build_reader
 from playwright.sync_api import (
     Error as PlaywrightError,
@@ -18,14 +18,16 @@ from playwright.sync_api import (
     expect,
     sync_playwright,
 )
-from selectors import CAPTCHA_INSTRUCTION_PATTERN
+from flows.selectors import CAPTCHA_INSTRUCTION_PATTERN
 
 
-def run_phase_one(page, *, target_password: str, gpu: bool, output_dir: Path) -> None:
-    screenshot_path = Path("captcha_page.png")
-
+def run_login_step(page) -> None:
     submit_email(page, BLS_EMAIL)
     page.wait_for_load_state("domcontentloaded")
+
+
+def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
+    screenshot_path = Path("captcha_page.png")
 
     print("Waiting for the true CAPTCHA instruction...")
     _true_label, true_label_id, target = find_true_captcha_label(page)
@@ -57,11 +59,6 @@ def run_phase_one(page, *, target_password: str, gpu: bool, output_dir: Path) ->
     print_decision(decision)
     click_selected_captcha_tiles(page, decision.selected_tiles)
 
-    visible_input = find_visible_password_input(page)
-    visible_input.fill(target_password)
-
-    page.get_by_role("button", name="Submit").click(timeout=10_000)
-
     write_outputs(
         output_dir,
         captcha_image,
@@ -69,6 +66,12 @@ def run_phase_one(page, *, target_password: str, gpu: bool, output_dir: Path) ->
         tiles,
         decision,
     )
+
+
+def run_post_login_step(page, *, target_password: str) -> None:
+    visible_input = find_visible_password_input(page)
+    visible_input.fill(target_password)
+    page.get_by_role("button", name="Submit").click(timeout=10_000)
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -116,12 +119,9 @@ def main() -> None:
             if response is not None:
                 print(f"Initial HTTP status: {response.status}")
 
-            run_phase_one(
-                page,
-                target_password=BLS_PASSWORD,
-                gpu=args.gpu,
-                output_dir=args.output,
-            )
+            run_login_step(page)
+            run_captcha_step(page, gpu=args.gpu, output_dir=args.output)
+            run_post_login_step(page, target_password=BLS_PASSWORD)
 
         except PlaywrightTimeoutError as error:
             page.screenshot(

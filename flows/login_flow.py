@@ -3,7 +3,7 @@ from __future__ import annotations
 from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from config import BLS_EMAIL
-from selectors import EMAIL_INPUT_SELECTOR, LOGIN_FORM_SELECTOR, VERIFY_BUTTON_SELECTOR
+from .selectors import EMAIL_INPUT_SELECTOR, LOGIN_FORM_SELECTOR, VERIFY_BUTTON_SELECTOR
 
 
 def submit_email(page: Page, email: str = BLS_EMAIL) -> None:
@@ -61,3 +61,4 @@ def find_visible_password_input(page: Page) -> Locator:
     input_id = visible_input.first.get_attribute("id")
     print(f"Visible password input ID: {input_id}")
     return visible_input.first
+

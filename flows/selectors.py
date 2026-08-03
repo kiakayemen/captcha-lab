@@ -12,3 +12,4 @@ CAPTCHA_INSTRUCTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CAPTCHA_TILE_SELECTOR = "#captcha-main-div img.captcha-img"
+
