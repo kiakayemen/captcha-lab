@@ -4,7 +4,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from playwright.sync_api import Locator, Page, expect
+from playwright.sync_api import FrameLocator, Locator, Page, expect
 
 from extract_tiles import (
     bounding_rectangle,
@@ -16,15 +16,22 @@ from extract_tiles import (
 from .selectors import (
     CAPTCHA_INSTRUCTION_PATTERN,
     BOOK_NOW_SELECTOR,
+    BACKGROUND_SUBMIT_BUTTON_SELECTOR,
     CAPTCHA_LABEL_SELECTOR,
     CAPTCHA_TILE_SELECTOR,
+    NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
     OK_DIALOG_BUTTON_SELECTOR,
+    SECOND_CAPTCHA_SUBMIT_SELECTOR,
     VERIFY_BUTTON_SELECTOR,
 )
 
 
 def find_true_captcha_label(page: Page) -> tuple[Locator, str, str]:
-    labels = page.locator(CAPTCHA_LABEL_SELECTOR)
+    return find_true_captcha_label_in_scope(page)
+
+
+def find_true_captcha_label_in_scope(scope) -> tuple[Locator, str, str]:
+    labels = scope.locator(CAPTCHA_LABEL_SELECTOR)
     expect(labels).not_to_have_count(0, timeout=30_000)
 
     candidates: list[dict[str, object]] = []
@@ -135,7 +142,11 @@ def save_captcha_crop(page: Page, output_path: Path) -> np.ndarray:
 
 
 def get_captcha_tiles(page: Page) -> list[Locator]:
-    tiles = page.locator(CAPTCHA_TILE_SELECTOR)
+    return get_captcha_tiles_in_scope(page)
+
+
+def get_captcha_tiles_in_scope(scope) -> list[Locator]:
+    tiles = scope.locator(CAPTCHA_TILE_SELECTOR)
     expect(tiles).not_to_have_count(0, timeout=30_000)
     candidates = tiles.evaluate_all(
         """elements => elements.map((element, index) => {
@@ -194,7 +205,7 @@ def get_captcha_tiles(page: Page) -> list[Locator]:
     for candidate in chosen:
         tile_id = str(candidate["id"])
         if tile_id:
-            result.append(page.locator(f"#{tile_id}"))
+            result.append(scope.locator(f"#{tile_id}"))
     if len(result) != 9:
         raise RuntimeError(f"Resolved {len(result)} clickable tiles after deduping, expected 9.")
     return result
@@ -221,9 +232,25 @@ def click_verify_selection(page: Page) -> None:
 
 
 def captcha_verification_succeeded(page: Page) -> bool:
-    verified_button = page.get_by_role("button", name="Verified")
-    submit_button = page.get_by_role("button", name="Submit")
-    return verified_button.is_visible() or submit_button.is_visible()
+    book_now = page.locator(BOOK_NOW_SELECTOR).filter(has_text="Book Now").first
+    try:
+        return book_now.is_visible()
+    except Exception:
+        return False
+
+
+def wait_for_book_now(page: Page) -> None:
+    book_now = page.locator(BOOK_NOW_SELECTOR).filter(has_text="Book Now").first
+    expect(book_now).to_be_visible(timeout=60_000)
+    print("Book New Appointment is visible")
+
+
+def click_nav_book_new_appointment(page: Page) -> None:
+    nav_link = page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR)
+    expect(nav_link).to_be_visible(timeout=60_000)
+    expect(nav_link).to_be_enabled(timeout=60_000)
+    nav_link.click(timeout=10_000)
+    print("Clicked navbar Book New Appointment")
 
 
 def captcha_instruction_present(page: Page) -> bool:
@@ -247,3 +274,25 @@ def click_ok_dialog(page: Page) -> None:
     ok_button.scroll_into_view_if_needed(timeout=10_000)
     ok_button.click(timeout=10_000)
     print("Clicked OK dialog button")
+
+
+def click_submit_selection(page: Page) -> None:
+    submit_selection = page.locator(SECOND_CAPTCHA_SUBMIT_SELECTOR)
+    expect(submit_selection).to_be_visible(timeout=30_000)
+    expect(submit_selection).to_be_enabled(timeout=30_000)
+    submit_selection.click(timeout=10_000)
+    print("Clicked Submit Selection")
+
+
+def click_background_submit(page: Page) -> None:
+    background_submit = page.locator(BACKGROUND_SUBMIT_BUTTON_SELECTOR).last
+    expect(background_submit).to_be_visible(timeout=30_000)
+    expect(background_submit).to_be_enabled(timeout=30_000)
+    background_submit.click(timeout=10_000)
+    print("Clicked background Submit")
+
+
+def get_verify_selection_frame(page: Page) -> FrameLocator:
+    frame = page.frame_locator('iframe[title="Verify Selection"]')
+    expect(frame.locator("body")).to_be_visible(timeout=60_000)
+    return frame

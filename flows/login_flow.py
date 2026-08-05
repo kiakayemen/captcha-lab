@@ -62,3 +62,11 @@ def find_visible_password_input(page: Page) -> Locator:
     print(f"Visible password input ID: {input_id}")
     return visible_input.first
 
+
+def fill_visible_password(page: Page, password: str) -> None:
+    password_input = find_visible_password_input(page)
+    password_input.scroll_into_view_if_needed(timeout=10_000)
+    expect(password_input).to_be_editable(timeout=30_000)
+    password_input.fill(password)
+    expect(password_input).to_have_value(password)
+    print("Password entered successfully.")

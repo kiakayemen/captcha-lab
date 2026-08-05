@@ -9,14 +9,19 @@ from config import BLS_EMAIL, LOGIN_URL, BLS_PASSWORD
 from flows.captcha_flow import (
     captcha_instruction_present,
     captcha_verification_succeeded,
-    click_book_now,
+    click_background_submit,
+    click_nav_book_new_appointment,
     click_ok_dialog,
     click_selected_captcha_tiles,
+    click_submit_selection,
     click_verify_selection,
+    find_true_captcha_label_in_scope,
+    get_captcha_tiles_in_scope,
+    get_verify_selection_frame,
     find_true_captcha_label,
     save_captcha_crop,
 )
-from flows.login_flow import find_visible_password_input, submit_email
+from flows.login_flow import fill_visible_password, submit_email
 from ocr import build_reader
 from playwright.sync_api import (
     Error as PlaywrightError,
@@ -38,6 +43,7 @@ def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
 
     for attempt in range(1, max_attempts + 1):
         print(f"Captcha attempt {attempt}/{max_attempts}")
+        fill_password(page, target_password=BLS_PASSWORD)
 
         print("Waiting for the true CAPTCHA instruction...")
         _true_label, true_label_id, target = find_true_captcha_label(page)
@@ -92,10 +98,87 @@ def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
 
     raise RuntimeError(f"Captcha verification failed after {max_attempts} attempts.")
 
+def run_second_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
+    frame = get_verify_selection_frame(page)
+    screenshot_path = Path("captcha_page_2.png")
+    max_attempts = 3
+    popup = page.locator('div.k-widget.k-window').filter(has_text="Verify Selection").first
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"Second captcha attempt {attempt}/{max_attempts}")
+
+        print("Waiting for the second CAPTCHA instruction...")
+        _true_label, true_label_id, target = find_true_captcha_label_in_scope(frame)
+
+        true_label_by_id = frame.locator(f"#{true_label_id}")
+        expect(true_label_by_id).to_have_count(1)
+        expect(true_label_by_id).to_be_visible()
+
+        confirmed_text = true_label_by_id.inner_text().strip()
+        confirmed_match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(confirmed_text)
+        if confirmed_match is None or confirmed_match.group(1) != target:
+            raise RuntimeError("The discovered second CAPTCHA label changed before solving.")
+
+        print(f"Second CAPTCHA label ID: {true_label_id}")
+        print(f"Second target extracted from DOM: {target}")
+
+        captcha_image = save_captcha_crop(page, screenshot_path)
+        print(f"Cropped second CAPTCHA image saved: {screenshot_path}")
+
+        print("Loading EasyOCR for second CAPTCHA...")
+        solve_start = time.perf_counter()
+        reader = build_reader(gpu=gpu)
+        decision, tiles, _boxes, debug = solve_captcha_image(
+            captcha_image,
+            target=target,
+            reader=reader,
+        )
+        solve_seconds = time.perf_counter() - solve_start
+        print(f"Second captcha solve time: {solve_seconds:.3f}s")
+
+        print_decision(decision)
+        tiles_in_frame = get_captcha_tiles_in_scope(frame)
+        for tile_number in decision.selected_tiles:
+            if tile_number < 1 or tile_number > len(tiles_in_frame):
+                raise ValueError(
+                    f"Selected tile {tile_number} is outside the 1..{len(tiles_in_frame)} range"
+                )
+            tile = tiles_in_frame[tile_number - 1]
+            tile.scroll_into_view_if_needed(timeout=10_000)
+            tile.click(timeout=10_000)
+            print(f"Clicked second-captcha tile {tile_number}")
+        click_submit_selection(frame)
+
+        verified_label = frame.locator("text=Verified!")
+        try:
+            expect(verified_label).to_be_visible(timeout=15_000)
+            print('Second captcha returned "Verified!"')
+        except Exception:
+            print("Second captcha did not return Verified; retrying.")
+            continue
+
+        page.wait_for_timeout(5_000)
+        if popup.is_visible():
+            print("Second captcha popup stayed open after 5s; retrying.")
+            continue
+
+        print("Second captcha verification succeeded.")
+        write_outputs(
+            output_dir,
+            captcha_image,
+            debug,
+            tiles,
+            decision,
+        )
+        return
+
+        print("Second captcha did not advance the page; retrying.")
+
+    raise RuntimeError(f"Second captcha failed after {max_attempts} attempts.")
+
 
 def fill_password(page, *, target_password: str) -> None:
-    visible_input = find_visible_password_input(page)
-    visible_input.fill(target_password)
+    fill_visible_password(page, target_password)
 
 
 def submit_password(page) -> None:
@@ -154,9 +237,11 @@ def main() -> None:
                 print(f"Initial HTTP status: {response.status}")
 
             run_login_step(page)
-            fill_password(page, target_password=BLS_PASSWORD)
             run_captcha_step(page, gpu=args.gpu, output_dir=args.output)
-            click_book_now(page)
+            click_nav_book_new_appointment(page)
+            click_verify_selection(page)
+            run_second_captcha_step(page, gpu=args.gpu, output_dir=args.output)
+            click_background_submit(page)
             click_ok_dialog(page)
             input("Press Enter to close the browser...")
 
