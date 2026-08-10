@@ -25,6 +25,17 @@ from .selectors import (
     VERIFY_BUTTON_SELECTOR,
 )
 
+PRELOADER_SELECTOR = "div.preloader"
+
+
+def wait_for_preloader_to_clear(page: Page, timeout: int = 60_000) -> None:
+    preloader = page.locator(PRELOADER_SELECTOR)
+    try:
+        expect(preloader).to_be_hidden(timeout=timeout)
+    except Exception:
+        # Some transitions leave the node attached but non-intercepting.
+        page.wait_for_timeout(1_000)
+
 
 def find_true_captcha_label(page: Page) -> tuple[Locator, str, str]:
     return find_true_captcha_label_in_scope(page)
@@ -246,10 +257,11 @@ def wait_for_book_now(page: Page) -> None:
 
 
 def click_nav_book_new_appointment(page: Page) -> None:
+    wait_for_preloader_to_clear(page, timeout=90_000)
     nav_link = page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR)
     expect(nav_link).to_be_visible(timeout=60_000)
     expect(nav_link).to_be_enabled(timeout=60_000)
-    nav_link.click(timeout=10_000)
+    nav_link.click(timeout=30_000)
     print("Clicked navbar Book New Appointment")
 
 
@@ -258,6 +270,7 @@ def captcha_instruction_present(page: Page) -> bool:
 
 
 def click_book_now(page: Page) -> None:
+    wait_for_preloader_to_clear(page, timeout=90_000)
     book_now = page.locator(BOOK_NOW_SELECTOR).filter(
         has_text="Book Now"
     ).first
