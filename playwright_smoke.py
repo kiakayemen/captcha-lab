@@ -266,6 +266,14 @@ def main() -> None:
                 page,
                 visa_sub_type=args.visa_sub_type,
             )
+            submit_button = page.get_by_role("button", name="Submit").first
+            expect(submit_button).to_be_visible(timeout=30_000)
+            expect(submit_button).to_be_enabled(timeout=30_000)
+            print("Clicking visible Submit button...")
+            submit_button.click(timeout=10_000)
+            print(f"After submit, current URL: {page.url}")
+            page.wait_for_timeout(2_000)
+            print("Paused after submit. Waiting for further instructions...")
             input("Press Enter to close the browser...")
         except PlaywrightTimeoutError as error:
             page.screenshot(
