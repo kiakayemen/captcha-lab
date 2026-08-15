@@ -1,4 +1,5 @@
 from __future__ import annotations
+from flows.appointment_flow import fill_appointment_form
 
 import argparse
 import time
@@ -213,6 +214,19 @@ def main() -> None:
         default=Path("output/live_solver"),
         help="Solver output directory.",
     )
+
+    parser.add_argument(
+        "--visa-sub-type",
+        choices=[
+            "Student Visa",
+            "Non-Working Residence Visa",
+        ],
+        default="Student Visa",
+        help=(
+            "Visa subtype to use when filling the appointment form."
+        ),
+    )
+
     args = parser.parse_args()
 
     with sync_playwright() as playwright:
@@ -240,11 +254,19 @@ def main() -> None:
             run_captcha_step(page, gpu=args.gpu, output_dir=args.output)
             click_nav_book_new_appointment(page)
             click_verify_selection(page)
-            run_second_captcha_step(page, gpu=args.gpu, output_dir=args.output)
+            run_second_captcha_step(
+                page,
+                gpu=args.gpu,
+                output_dir=args.output,
+            )
             click_background_submit(page)
+            # Visa Type page automatically displays its disclaimer modal.
             click_ok_dialog(page)
+            fill_appointment_form(
+                page,
+                visa_sub_type=args.visa_sub_type,
+            )
             input("Press Enter to close the browser...")
-
         except PlaywrightTimeoutError as error:
             page.screenshot(
                 path="playwright_timeout.png",
