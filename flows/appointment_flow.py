@@ -4,6 +4,12 @@ import re
 
 from playwright.sync_api import Locator, Page, expect
 
+from .selectors import (
+    NO_APPOINTMENTS_BODY_SELECTOR,
+    NO_APPOINTMENTS_HEADER_SELECTOR,
+    NO_APPOINTMENTS_MODAL_SELECTOR,
+)
+
 
 JURISDICTION = "Tehran"
 LOCATION = "Tehran"
@@ -391,3 +397,20 @@ def fill_appointment_form(
     )
 
     _log("appointment form filled successfully")
+
+
+def no_appointments_dialog_visible(page: Page) -> bool:
+    try:
+        modal = page.locator(NO_APPOINTMENTS_MODAL_SELECTOR).first
+        if not modal.is_visible():
+            return False
+
+        header = page.locator(NO_APPOINTMENTS_HEADER_SELECTOR).first
+        body = page.locator(NO_APPOINTMENTS_BODY_SELECTOR).first
+
+        header_text = header.inner_text().strip() if header.count() else ""
+        body_text = body.inner_text().strip() if body.count() else ""
+
+        return "No Appointments Available" in header_text or bool(body_text)
+    except Exception:
+        return False

@@ -19,6 +19,7 @@ from .selectors import (
     BACKGROUND_SUBMIT_BUTTON_SELECTOR,
     CAPTCHA_LABEL_SELECTOR,
     CAPTCHA_TILE_SELECTOR,
+    LOGIN_FORM_SELECTOR,
     NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
     OK_DIALOG_BUTTON_SELECTOR,
     SECOND_CAPTCHA_SUBMIT_SELECTOR,
@@ -269,6 +270,22 @@ def captcha_instruction_present(page: Page) -> bool:
     return page.locator(CAPTCHA_LABEL_SELECTOR).count() > 0
 
 
+def login_captcha_invalid(page: Page) -> bool:
+    try:
+        return page.get_by_text("Invalid captcha selection").first.is_visible()
+    except Exception:
+        return False
+
+
+def login_captcha_succeeded(page: Page) -> bool:
+    try:
+        if "logincaptcha" in page.url:
+            return False
+        return page.locator(LOGIN_FORM_SELECTOR).count() == 0
+    except Exception:
+        return False
+
+
 def click_book_now(page: Page) -> None:
     wait_for_preloader_to_clear(page, timeout=90_000)
     book_now = page.locator(BOOK_NOW_SELECTOR).filter(
@@ -281,11 +298,18 @@ def click_book_now(page: Page) -> None:
 
 
 def click_ok_dialog(page: Page) -> None:
-    ok_button = page.locator(OK_DIALOG_BUTTON_SELECTOR)
+    modal = page.locator('div.modal-dialog.modal-dialog-centered:has(#commonModalLabel)').first
+    expect(modal).to_be_visible(timeout=30_000)
+
+    ok_button = modal.locator(OK_DIALOG_BUTTON_SELECTOR).first
     expect(ok_button).to_be_visible(timeout=30_000)
     expect(ok_button).to_be_enabled(timeout=30_000)
     ok_button.scroll_into_view_if_needed(timeout=10_000)
-    ok_button.click(timeout=10_000)
+
+    try:
+        ok_button.click(timeout=10_000)
+    except Exception:
+        ok_button.evaluate("(element) => element.click()")
     print("Clicked OK dialog button")
 
 

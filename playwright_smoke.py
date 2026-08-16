@@ -1,5 +1,9 @@
 from __future__ import annotations
-from flows.appointment_flow import fill_appointment_form
+
+from flows.appointment_flow import (
+    fill_appointment_form,
+    no_appointments_dialog_visible,
+)
 
 import argparse
 import time
@@ -7,8 +11,11 @@ from pathlib import Path
 
 from captcha_solver import print_decision, solve_captcha_image, write_outputs
 from config import BLS_EMAIL, LOGIN_URL, BLS_PASSWORD
+from notifications import log_no_appointment, notify_admin
 from flows.captcha_flow import (
     captcha_instruction_present,
+    login_captcha_invalid,
+    login_captcha_succeeded,
     captcha_verification_succeeded,
     click_background_submit,
     click_nav_book_new_appointment,
@@ -80,7 +87,13 @@ def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
         click_selected_captcha_tiles(page, decision.selected_tiles)
         click_verify_selection(page)
 
-        if captcha_verification_succeeded(page):
+        page.wait_for_timeout(1_000)
+
+        if login_captcha_invalid(page):
+            print("Login captcha was rejected; retrying.")
+            continue
+
+        if login_captcha_succeeded(page):
             print("Captcha verification succeeded.")
             write_outputs(
                 output_dir,
@@ -91,11 +104,11 @@ def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
             )
             return
 
-        if not captcha_instruction_present(page):
-            print("Captcha instruction disappeared after Verify Selection; treating this as a transition.")
-            return
+        if captcha_instruction_present(page):
+            print("Captcha instruction is still present; retrying.")
+            continue
 
-        print("Captcha verification did not advance the page; retrying.")
+        print("Captcha outcome is unclear; retrying.")
 
     raise RuntimeError(f"Captcha verification failed after {max_attempts} attempts.")
 
@@ -216,14 +229,18 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--visa-sub-type",
+        "--visa-sub-types",
+        nargs="+",
         choices=[
             "Student Visa",
             "Non-Working Residence Visa",
         ],
-        default="Student Visa",
+        default=[
+            "Student Visa",
+            "Non-Working Residence Visa",
+        ],
         help=(
-            "Visa subtype to use when filling the appointment form."
+            "Visa subtypes to try when filling the appointment form."
         ),
     )
 
@@ -262,18 +279,40 @@ def main() -> None:
             click_background_submit(page)
             # Visa Type page automatically displays its disclaimer modal.
             click_ok_dialog(page)
-            fill_appointment_form(
-                page,
-                visa_sub_type=args.visa_sub_type,
-            )
-            submit_button = page.get_by_role("button", name="Submit").first
-            expect(submit_button).to_be_visible(timeout=30_000)
-            expect(submit_button).to_be_enabled(timeout=30_000)
-            print("Clicking visible Submit button...")
-            submit_button.click(timeout=10_000)
-            print(f"After submit, current URL: {page.url}")
-            page.wait_for_timeout(2_000)
-            print("Paused after submit. Waiting for further instructions...")
+            appointment_found = False
+            for visa_sub_type in args.visa_sub_types:
+                print(f"Trying appointment form with visa subtype: {visa_sub_type}")
+                fill_appointment_form(
+                    page,
+                    visa_sub_type=visa_sub_type,
+                )
+                submit_button = page.get_by_role("button", name="Submit").first
+                expect(submit_button).to_be_visible(timeout=30_000)
+                expect(submit_button).to_be_enabled(timeout=30_000)
+                print("Clicking visible Submit button...")
+                submit_button.click(timeout=10_000)
+                page.wait_for_timeout(3_000)
+
+                if no_appointments_dialog_visible(page):
+                    log_no_appointment(
+                        page_url=page.url,
+                        visa_sub_type=visa_sub_type,
+                    )
+                    continue
+
+                print(
+                    "No 'No Appointments Available' dialog found; notifying admin."
+                )
+                notify_admin(
+                    "Appointment availability detected. Manual booking is required.",
+                    page_url=page.url,
+                    visa_sub_type=visa_sub_type,
+                )
+                appointment_found = True
+                break
+
+            if not appointment_found:
+                print("No appointments found for any configured visa subtype.")
             input("Press Enter to close the browser...")
         except PlaywrightTimeoutError as error:
             page.screenshot(
