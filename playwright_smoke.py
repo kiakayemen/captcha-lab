@@ -38,11 +38,48 @@ from playwright.sync_api import (
     sync_playwright,
 )
 from flows.selectors import CAPTCHA_INSTRUCTION_PATTERN
+import json
 
 
 def run_login_step(page) -> None:
     submit_email(page, BLS_EMAIL)
     page.wait_for_load_state("domcontentloaded")
+
+
+def save_live_attempt_bundle(
+    *,
+    output_dir: Path,
+    step_name: str,
+    attempt_number: int,
+    page_url: str,
+    target: str,
+    decision,
+    captcha_image,
+    debug_image,
+    tiles,
+) -> Path:
+    attempt_dir = output_dir / step_name / f"attempt_{attempt_number:02d}"
+    write_outputs(
+        attempt_dir,
+        captcha_image,
+        debug_image,
+        tiles,
+        decision,
+    )
+    metadata = {
+        "step": step_name,
+        "attempt": attempt_number,
+        "page_url": page_url,
+        "target": target,
+        "selected_tiles": list(decision.selected_tiles),
+        "uncertain_tiles": list(decision.uncertain_tiles),
+        "status": decision.status,
+    }
+    (attempt_dir / "live_metadata.json").write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+    return attempt_dir
 
 
 def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
@@ -88,6 +125,18 @@ def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
         click_verify_selection(page)
 
         page.wait_for_timeout(1_000)
+
+        save_live_attempt_bundle(
+            output_dir=output_dir,
+            step_name="login_captcha",
+            attempt_number=attempt,
+            page_url=page.url,
+            target=target,
+            decision=decision,
+            captcha_image=captcha_image,
+            debug_image=debug,
+            tiles=tiles,
+        )
 
         if login_captcha_invalid(page):
             print("Login captcha was rejected; retrying.")
@@ -162,6 +211,18 @@ def run_second_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
             tile.click(timeout=10_000)
             print(f"Clicked second-captcha tile {tile_number}")
         click_submit_selection(frame)
+
+        save_live_attempt_bundle(
+            output_dir=output_dir,
+            step_name="second_captcha",
+            attempt_number=attempt,
+            page_url=page.url,
+            target=target,
+            decision=decision,
+            captcha_image=captcha_image,
+            debug_image=debug,
+            tiles=tiles,
+        )
 
         verified_label = frame.locator("text=Verified!")
         try:
@@ -313,7 +374,12 @@ def main() -> None:
 
             if not appointment_found:
                 print("No appointments found for any configured visa subtype.")
-            input("Press Enter to close the browser...")
+                log_no_appointment(
+                    page_url=page.url,
+                    visa_sub_type=None,
+                )
+            else:
+                print("Appointment available; admin notified.")
         except PlaywrightTimeoutError as error:
             page.screenshot(
                 path="playwright_timeout.png",

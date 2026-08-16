@@ -298,10 +298,7 @@ def click_book_now(page: Page) -> None:
 
 
 def click_ok_dialog(page: Page) -> None:
-    modal = page.locator('div.modal-dialog.modal-dialog-centered:has(#commonModalLabel)').first
-    expect(modal).to_be_visible(timeout=30_000)
-
-    ok_button = modal.locator(OK_DIALOG_BUTTON_SELECTOR).first
+    ok_button = page.locator('button:has-text("Ok"):visible').first
     expect(ok_button).to_be_visible(timeout=30_000)
     expect(ok_button).to_be_enabled(timeout=30_000)
     ok_button.scroll_into_view_if_needed(timeout=10_000)
@@ -310,6 +307,12 @@ def click_ok_dialog(page: Page) -> None:
         ok_button.click(timeout=10_000)
     except Exception:
         ok_button.evaluate("(element) => element.click()")
+
+    modal = page.locator('div[role="dialog"]:visible').first
+    try:
+        expect(modal).to_be_hidden(timeout=30_000)
+    except Exception:
+        page.wait_for_timeout(1_000)
     print("Clicked OK dialog button")
 
 

@@ -37,6 +37,7 @@ class TileDecision:
     supporting_variants: tuple[str, ...]
     matches_target: bool
     uncertain: bool
+    attempts: tuple[dict[str, object], ...]
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,14 @@ def solve_tiles(
             supporting_variants=tuple(result["supporting_variants"]),
             matches_target=bool(result["matches_target"]),
             uncertain=bool(result["uncertain"]),
+            attempts=tuple(
+                {
+                    "variant": str(attempt["variant"]),
+                    "prediction": str(attempt["prediction"]),
+                    "confidence": float(attempt["confidence"]),
+                }
+                for attempt in result["attempts"]
+            ),
         )
         decisions.append(decision)
 
