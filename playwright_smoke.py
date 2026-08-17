@@ -5,6 +5,10 @@ from flows.appointment_flow import (
     no_appointments_dialog_visible,
 )
 
+from datetime import datetime, timezone
+
+from scraper_run import ScraperConfig, ScraperResult, ScraperStatus
+
 import argparse
 import time
 from pathlib import Path
@@ -265,23 +269,207 @@ def run_post_login_step(page, *, target_password: str) -> None:
     submit_password(page)
 
 
+def run_scraper(config: ScraperConfig) -> ScraperResult:
+    started_at = datetime.now(timezone.utc)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=config.headless,
+        )
+
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 1000},
+        )
+
+        page = context.new_page()
+
+        try:
+            print(f"Opening login page: {LOGIN_URL}")
+
+            response = page.goto(
+                LOGIN_URL,
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+
+            if response is not None:
+                print(f"Initial HTTP status: {response.status}")
+
+            run_login_step(page)
+
+            run_captcha_step(
+                page,
+                gpu=config.gpu,
+                output_dir=config.output_dir,
+            )
+
+            click_nav_book_new_appointment(page)
+            click_verify_selection(page)
+
+            run_second_captcha_step(
+                page,
+                gpu=config.gpu,
+                output_dir=config.output_dir,
+            )
+
+            click_background_submit(page)
+
+            # Visa Type page automatically displays its disclaimer modal.
+            click_ok_dialog(page)
+
+            for visa_sub_type in config.visa_sub_types:
+                print(
+                    "Trying appointment form with visa subtype: "
+                    f"{visa_sub_type}"
+                )
+
+                fill_appointment_form(
+                    page,
+                    visa_sub_type=visa_sub_type,
+                )
+
+                submit_button = page.get_by_role(
+                    "button",
+                    name="Submit",
+                ).first
+
+                expect(submit_button).to_be_visible(
+                    timeout=30_000
+                )
+
+                expect(submit_button).to_be_enabled(
+                    timeout=30_000
+                )
+
+                print("Clicking visible Submit button...")
+                submit_button.click(timeout=10_000)
+
+                page.wait_for_timeout(3_000)
+
+                if no_appointments_dialog_visible(page):
+                    log_no_appointment(
+                        page_url=page.url,
+                        visa_sub_type=visa_sub_type,
+                    )
+
+                    click_ok_dialog(page)
+                    continue
+
+                print(
+                    "No 'No Appointments Available' dialog found; "
+                    "notifying admin."
+                )
+
+                notify_admin(
+                    (
+                        "Appointment availability detected. "
+                        "Manual booking is required."
+                    ),
+                    page_url=page.url,
+                    visa_sub_type=visa_sub_type,
+                )
+
+                print("Appointment available; admin notified.")
+
+                return ScraperResult(
+                    status=ScraperStatus.APPOINTMENT_FOUND,
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=page.url,
+                    visa_sub_type=visa_sub_type,
+                )
+
+            print(
+                "No appointments found for any configured "
+                "visa subtype."
+            )
+
+            log_no_appointment(
+                page_url=page.url,
+                visa_sub_type=None,
+            )
+
+            return ScraperResult(
+                status=ScraperStatus.NO_APPOINTMENT,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url,
+            )
+
+        except PlaywrightTimeoutError as error:
+            screenshot_path = Path("playwright_timeout.png")
+
+            page.screenshot(
+                path=str(screenshot_path),
+                full_page=True,
+            )
+
+            print(f"Playwright timed out: {error}")
+            print(f"Current URL: {page.url}")
+            print(f"Saved {screenshot_path}")
+
+            return ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                failure_screenshot=screenshot_path,
+            )
+
+        except (
+            PlaywrightError,
+            RuntimeError,
+            ValueError,
+            OSError,
+        ) as error:
+            screenshot_path = Path("playwright_error.png")
+
+            page.screenshot(
+                path=str(screenshot_path),
+                full_page=True,
+            )
+
+            print(f"Automation failed: {error}")
+            print(f"Current URL: {page.url}")
+            print(f"Saved {screenshot_path}")
+
+            return ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                failure_screenshot=screenshot_path,
+            )
+
+        finally:
+            context.close()
+            browser.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Enter the BLS account email, find the true CAPTCHA instruction, "
-            "extract its target, crop the CAPTCHA, and solve its nine tiles."
+            "Check configured BLS visa subtypes for "
+            "appointment availability."
         )
     )
+
     parser.add_argument(
         "--headless",
         action="store_true",
         help="Run without displaying the browser.",
     )
+
     parser.add_argument(
         "--gpu",
         action="store_true",
         help="Ask EasyOCR to use a supported GPU.",
     )
+
     parser.add_argument(
         "--output",
         type=Path,
@@ -300,108 +488,39 @@ def main() -> None:
             "Student Visa",
             "Non-Working Residence Visa",
         ],
-        help=(
-            "Visa subtypes to try when filling the appointment form."
-        ),
+        help="Visa subtypes to try when filling the appointment form.",
     )
 
     args = parser.parse_args()
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=args.headless,
+    config = ScraperConfig(
+        headless=args.headless,
+        gpu=args.gpu,
+        output_dir=args.output,
+        visa_sub_types=tuple(args.visa_sub_types),
+    )
+
+    result = run_scraper(config)
+
+    print()
+    print("=== Scraper run finished ===")
+    print(f"Status: {result.status.value}")
+    print(f"Duration: {result.duration_seconds:.2f}s")
+
+    if result.page_url:
+        print(f"Final URL: {result.page_url}")
+
+    if result.visa_sub_type:
+        print(f"Visa subtype: {result.visa_sub_type}")
+
+    if result.error_message:
+        print(
+            f"Error: {result.error_type}: "
+            f"{result.error_message}"
         )
-        context = browser.new_context(
-            viewport={"width": 1440, "height": 1000},
-        )
-        page = context.new_page()
 
-        try:
-            print(f"Opening login page: {LOGIN_URL}")
-
-            response = page.goto(
-                LOGIN_URL,
-                wait_until="domcontentloaded",
-                timeout=60_000,
-            )
-
-            if response is not None:
-                print(f"Initial HTTP status: {response.status}")
-
-            run_login_step(page)
-            run_captcha_step(page, gpu=args.gpu, output_dir=args.output)
-            click_nav_book_new_appointment(page)
-            click_verify_selection(page)
-            run_second_captcha_step(
-                page,
-                gpu=args.gpu,
-                output_dir=args.output,
-            )
-            click_background_submit(page)
-            # Visa Type page automatically displays its disclaimer modal.
-            click_ok_dialog(page)
-            appointment_found = False
-            for visa_sub_type in args.visa_sub_types:
-                print(f"Trying appointment form with visa subtype: {visa_sub_type}")
-                fill_appointment_form(
-                    page,
-                    visa_sub_type=visa_sub_type,
-                )
-                submit_button = page.get_by_role("button", name="Submit").first
-                expect(submit_button).to_be_visible(timeout=30_000)
-                expect(submit_button).to_be_enabled(timeout=30_000)
-                print("Clicking visible Submit button...")
-                submit_button.click(timeout=10_000)
-                page.wait_for_timeout(3_000)
-
-                if no_appointments_dialog_visible(page):
-                    log_no_appointment(
-                        page_url=page.url,
-                        visa_sub_type=visa_sub_type,
-                    )
-                    click_ok_dialog(page)
-                    continue
-
-                print(
-                    "No 'No Appointments Available' dialog found; notifying admin."
-                )
-                notify_admin(
-                    "Appointment availability detected. Manual booking is required.",
-                    page_url=page.url,
-                    visa_sub_type=visa_sub_type,
-                )
-                appointment_found = True
-                break
-
-            if not appointment_found:
-                print("No appointments found for any configured visa subtype.")
-                log_no_appointment(
-                    page_url=page.url,
-                    visa_sub_type=None,
-                )
-            else:
-                print("Appointment available; admin notified.")
-        except PlaywrightTimeoutError as error:
-            page.screenshot(
-                path="playwright_timeout.png",
-                full_page=True,
-            )
-            print(f"Playwright timed out: {error}")
-            print(f"Current URL: {page.url}")
-            print("Saved playwright_timeout.png")
-
-        except (PlaywrightError, RuntimeError, ValueError, OSError) as error:
-            page.screenshot(
-                path="playwright_error.png",
-                full_page=True,
-            )
-            print(f"Automation failed: {error}")
-            print(f"Current URL: {page.url}")
-            print("Saved playwright_error.png")
-
-        finally:
-            context.close()
-            browser.close()
+    if not result.succeeded:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
