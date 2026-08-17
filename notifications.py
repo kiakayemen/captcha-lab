@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+import json
+import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import json
 
+
+logger = logging.getLogger("captcha_lab")
 
 DEFAULT_EVENT_LOG = Path("output") / "appointment_events.jsonl"
 
@@ -45,8 +48,8 @@ def notify_admin(
         visa_sub_type=visa_sub_type,
     )
     append_event(event, log_path=log_path)
-    print(f"[admin] {message}")
-    print(f"[admin] recorded to {log_path}")
+    logger.warning("[admin] %s", message)
+    logger.info("[admin] recorded to %s", log_path)
 
 
 def log_no_appointment(
@@ -62,4 +65,7 @@ def log_no_appointment(
         visa_sub_type=visa_sub_type,
     )
     append_event(event, log_path=log_path)
-    print(f"[appointment] no appointment found; recorded to {log_path}")
+    logger.info(
+        "[appointment] no appointment found; recorded to %s",
+        log_path,
+    )

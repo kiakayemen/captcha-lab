@@ -90,3 +90,29 @@ class ScraperRun(models.Model):
 
     def __str__(self) -> str:
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} — {self.status}"
+
+
+class ScraperRunLog(models.Model):
+    run = models.ForeignKey(
+        ScraperRun,
+        on_delete=models.CASCADE,
+        related_name="logs",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        db_index=True,
+    )
+
+    level = models.CharField(
+        max_length=16,
+        default="INFO",
+    )
+
+    message = models.TextField()
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"{self.created_at:%H:%M:%S} [{self.level}] {self.message}"

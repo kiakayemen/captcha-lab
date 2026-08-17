@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import cv2
 import numpy as np
 from playwright.sync_api import FrameLocator, Locator, Page, expect
-
 from extract_tiles import (
     bounding_rectangle,
     crop_box,
@@ -26,6 +26,8 @@ from .selectors import (
     VERIFY_BUTTON_SELECTOR,
 )
 
+
+logger = logging.getLogger("captcha_lab")
 PRELOADER_SELECTOR = "div.preloader"
 
 
@@ -34,7 +36,7 @@ def wait_for_preloader_to_clear(page: Page, timeout: int = 60_000) -> None:
     try:
         expect(preloader).to_be_hidden(timeout=timeout)
     except Exception:
-        # Some transitions leave the node attached but non-intercepting.
+        logger.warning("Preloader did not clear cleanly; waiting an extra second.")
         page.wait_for_timeout(1_000)
 
 
@@ -53,11 +55,9 @@ def find_true_captcha_label_in_scope(scope) -> tuple[Locator, str, str]:
         match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(text)
         if match is None:
             continue
-
         element_id = (label.get_attribute("id") or "").strip()
         if not element_id:
             continue
-
         render_data = label.evaluate(
             """element => {
                 const style = window.getComputedStyle(element);
@@ -75,7 +75,6 @@ def find_true_captcha_label_in_scope(scope) -> tuple[Locator, str, str]:
                 };
             }"""
         )
-
         if (
             render_data["display"] == "none"
             or render_data["visibility"] == "hidden"
@@ -84,7 +83,6 @@ def find_true_captcha_label_in_scope(scope) -> tuple[Locator, str, str]:
             or float(render_data["height"]) <= 0
         ):
             continue
-
         candidates.append(
             {
                 "locator": label,
@@ -99,13 +97,11 @@ def find_true_captcha_label_in_scope(scope) -> tuple[Locator, str, str]:
                 "height": float(render_data["height"]),
             }
         )
-
     if not candidates:
         raise RuntimeError(
             "No rendered CAPTCHA instruction candidates matched the expected "
             "three-digit instruction format."
         )
-
     highest_z = max(int(candidate["z_index"]) for candidate in candidates)
     top_candidates = [
         candidate for candidate in candidates if int(candidate["z_index"]) == highest_z
@@ -116,6 +112,12 @@ def find_true_captcha_label_in_scope(scope) -> tuple[Locator, str, str]:
         )
 
     winner = top_candidates[0]
+    logger.info(
+        "Resolved true CAPTCHA label. id=%s target=%s z_index=%s",
+        winner["id"],
+        winner["target"],
+        winner["z_index"],
+    )
     return winner["locator"], str(winner["id"]), str(winner["target"])
 
 
@@ -127,12 +129,10 @@ def save_captcha_crop(page: Page, output_path: Path) -> np.ndarray:
     )
     if screenshot is None:
         raise RuntimeError("Playwright returned an unreadable screenshot")
-
     candidates, _edges = find_square_candidates(screenshot)
     grid_boxes = select_grid_boxes(candidates)
     if len(grid_boxes) != 9:
         raise RuntimeError(f"Expected 9 CAPTCHA grid boxes, found {len(grid_boxes)}")
-
     grid_box = bounding_rectangle(grid_boxes)
     captcha_box = expand_box(
         grid_box,
@@ -145,11 +145,11 @@ def save_captcha_crop(page: Page, output_path: Path) -> np.ndarray:
     captcha = crop_box(screenshot, captcha_box)
     if captcha is None or captcha.size == 0:
         raise RuntimeError("The CAPTCHA crop is empty")
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(output_path), captcha):
         raise OSError(f"Could not write CAPTCHA image: {output_path}")
 
+    logger.info("Saved CAPTCHA crop: %s", output_path)
     return captcha
 
 
@@ -194,7 +194,6 @@ def get_captcha_tiles_in_scope(scope) -> list[Locator]:
     ]
     if not visible_candidates:
         raise RuntimeError("No visible CAPTCHA tile candidates were found.")
-
     grouped: dict[tuple[int, int, int, int], dict[str, object]] = {}
     for candidate in visible_candidates:
         key = (
@@ -207,12 +206,10 @@ def get_captcha_tiles_in_scope(scope) -> list[Locator]:
         previous = grouped.get(key)
         if previous is None or score > int(previous["score"]):
             grouped[key] = {"score": score, "candidate": candidate}
-
     chosen = [item["candidate"] for item in grouped.values()]
     chosen.sort(key=lambda item: (round(float(item["top"]), 2), round(float(item["left"]), 2)))
     if len(chosen) != 9:
         raise RuntimeError(f"Expected 9 visible CAPTCHA tiles, found {len(chosen)}.")
-
     result: list[Locator] = []
     for candidate in chosen:
         tile_id = str(candidate["id"])
@@ -220,6 +217,7 @@ def get_captcha_tiles_in_scope(scope) -> list[Locator]:
             result.append(scope.locator(f"#{tile_id}"))
     if len(result) != 9:
         raise RuntimeError(f"Resolved {len(result)} clickable tiles after deduping, expected 9.")
+    logger.info("Resolved 9 visible CAPTCHA tiles.")
     return result
 
 
@@ -231,7 +229,7 @@ def click_selected_captcha_tiles(page: Page, selected_tiles: tuple[int, ...]) ->
         tile = tiles[tile_number - 1]
         tile.scroll_into_view_if_needed(timeout=10_000)
         tile.click(timeout=10_000)
-        print(f"Clicked tile {tile_number}")
+        logger.info("Clicked tile %s", tile_number)
 
 
 def click_verify_selection(page: Page) -> None:
@@ -240,7 +238,7 @@ def click_verify_selection(page: Page) -> None:
     expect(verify_button).to_be_enabled(timeout=30_000)
     verify_button.scroll_into_view_if_needed(timeout=10_000)
     verify_button.click(timeout=10_000)
-    print("Clicked Verify Selection")
+    logger.info("Clicked Verify Selection")
 
 
 def captcha_verification_succeeded(page: Page) -> bool:
@@ -254,7 +252,7 @@ def captcha_verification_succeeded(page: Page) -> bool:
 def wait_for_book_now(page: Page) -> None:
     book_now = page.locator(BOOK_NOW_SELECTOR).filter(has_text="Book Now").first
     expect(book_now).to_be_visible(timeout=60_000)
-    print("Book New Appointment is visible")
+    logger.info("Book New Appointment is visible")
 
 
 def click_nav_book_new_appointment(page: Page) -> None:
@@ -263,7 +261,7 @@ def click_nav_book_new_appointment(page: Page) -> None:
     expect(nav_link).to_be_visible(timeout=60_000)
     expect(nav_link).to_be_enabled(timeout=60_000)
     nav_link.click(timeout=30_000)
-    print("Clicked navbar Book New Appointment")
+    logger.info("Clicked navbar Book New Appointment")
 
 
 def captcha_instruction_present(page: Page) -> bool:
@@ -294,7 +292,7 @@ def click_book_now(page: Page) -> None:
     expect(book_now).to_be_visible(timeout=30_000)
     expect(book_now).to_be_enabled(timeout=30_000)
     book_now.evaluate("(element) => element.click()")
-    print("Clicked Book Now")
+    logger.info("Clicked Book Now")
 
 
 def click_ok_dialog(page: Page) -> None:
@@ -306,14 +304,15 @@ def click_ok_dialog(page: Page) -> None:
     try:
         ok_button.click(timeout=10_000)
     except Exception:
+        logger.warning("Normal OK click failed; falling back to DOM click.")
         ok_button.evaluate("(element) => element.click()")
-
     modal = page.locator('div[role="dialog"]:visible').first
     try:
         expect(modal).to_be_hidden(timeout=30_000)
     except Exception:
+        logger.warning("Dialog did not report hidden cleanly; waiting an extra second.")
         page.wait_for_timeout(1_000)
-    print("Clicked OK dialog button")
+    logger.info("Clicked OK dialog button")
 
 
 def click_submit_selection(page: Page) -> None:
@@ -321,7 +320,7 @@ def click_submit_selection(page: Page) -> None:
     expect(submit_selection).to_be_visible(timeout=30_000)
     expect(submit_selection).to_be_enabled(timeout=30_000)
     submit_selection.click(timeout=10_000)
-    print("Clicked Submit Selection")
+    logger.info("Clicked Submit Selection")
 
 
 def click_background_submit(page: Page) -> None:
@@ -329,10 +328,11 @@ def click_background_submit(page: Page) -> None:
     expect(background_submit).to_be_visible(timeout=30_000)
     expect(background_submit).to_be_enabled(timeout=30_000)
     background_submit.click(timeout=10_000)
-    print("Clicked background Submit")
+    logger.info("Clicked background Submit")
 
 
 def get_verify_selection_frame(page: Page) -> FrameLocator:
     frame = page.frame_locator('iframe[title="Verify Selection"]')
     expect(frame.locator("body")).to_be_visible(timeout=60_000)
+    logger.info("Verify Selection iframe is visible.")
     return frame

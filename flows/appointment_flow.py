@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from playwright.sync_api import Locator, Page, expect
@@ -10,6 +11,8 @@ from .selectors import (
     NO_APPOINTMENTS_MODAL_SELECTOR,
 )
 
+
+logger = logging.getLogger("captcha_lab")
 
 JURISDICTION = "Tehran"
 LOCATION = "Tehran"
@@ -23,7 +26,7 @@ ALLOWED_VISA_SUB_TYPES = {
 
 
 def _log(message: str) -> None:
-    print(f"[appointment] {message}")
+    logger.info("[appointment] %s", message)
 
 
 def _describe_container(container: Locator, label_text: str) -> None:
@@ -63,7 +66,6 @@ def _find_visible_dropdown_container(
 
         if label.count() == 0:
             continue
-
         if not pattern.match(label.first.inner_text().strip()):
             continue
 
@@ -78,7 +80,6 @@ def _find_visible_dropdown_container(
         if hidden_input.count() == 1 and visible_widget.count() == 1:
             matches.append(container)
             _describe_container(container, label_text)
-
     if len(matches) != 1:
         _log(
             f'expected one visible "{label_text}" dropdown, found {len(matches)}'
@@ -99,7 +100,6 @@ def _get_visible_dropdown_id(
         page,
         label_text,
     )
-
     input_id = container.locator(
         'input[data-role="dropdownlist"]'
     ).get_attribute("id")
@@ -122,7 +122,6 @@ def _wait_for_kendo_data(
         page,
         label_text,
     )
-
     _log(f'waiting for Kendo data for "{label_text}" (id={input_id})')
 
     page.wait_for_function(
@@ -141,7 +140,6 @@ def _wait_for_kendo_data(
             }
 
             const items = ddl.dataSource.view();
-
             if (!items || items.length === 0) {
                 return false;
             }
@@ -156,7 +154,6 @@ def _wait_for_kendo_data(
                     item.Text ||
                     item.text ||
                     "";
-
                 return text.trim() === expected;
             });
         }
@@ -169,6 +166,7 @@ def _wait_for_kendo_data(
     )
     _log(f'Kendo data ready for "{label_text}"')
 
+
 def _select_kendo_option(
     page: Page,
     label_text: str,
@@ -178,7 +176,6 @@ def _select_kendo_option(
         page,
         label_text,
     )
-
     hidden_input = container.locator(
         'input[data-role="dropdownlist"]'
     )
@@ -193,7 +190,6 @@ def _select_kendo_option(
     widget = container.locator(
         "span.k-widget.k-dropdown:visible"
     )
-
     expect(widget).to_be_visible(timeout=30_000)
     popup = page.locator(f"#{input_id}-list")
     option_pattern = re.compile(
@@ -209,30 +205,26 @@ def _select_kendo_option(
             f'opening "{label_text}" dropdown attempt {attempt}/{max_attempts} '
             f"(id={input_id}, option={option_text!r})"
         )
-
         try:
             widget.scroll_into_view_if_needed(timeout=10_000)
             _log(f'clicking "{label_text}" dropdown handle')
             widget.click(timeout=10_000)
             page.wait_for_timeout(250)
-
             if not popup.is_visible():
                 _log(
-                    f'popup #{input_id}-list still hidden after click, '
+                    f"popup #{input_id}-list still hidden after click, "
                     f'retrying click for "{label_text}"'
                 )
                 widget.click(timeout=10_000)
                 page.wait_for_timeout(250)
-
-            _log(f'waiting for popup #{input_id}-list to become visible')
+            _log(f"waiting for popup #{input_id}-list to become visible")
             expect(popup).to_be_visible(timeout=10_000)
             page.wait_for_timeout(750)
-            _log(f'popup #{input_id}-list visible; waiting briefly before reading options')
+            _log(f"popup #{input_id}-list visible; waiting briefly before reading options")
 
             option = popup.locator("li.k-item").filter(
                 has_text=option_pattern
             )
-
             option_count = option.count()
             _log(
                 f'"{label_text}" popup option count for '
@@ -245,7 +237,6 @@ def _select_kendo_option(
                 raise RuntimeError(
                     f'Option {option_text!r} not visible yet in "{label_text}"'
                 )
-
             option.wait_for(state="visible", timeout=10_000)
             _log(f'clicking option {option_text!r} for "{label_text}"')
             option.click(timeout=10_000)
@@ -259,7 +250,6 @@ def _select_kendo_option(
                 timeout=10_000,
             )
             _log(f'"{label_text}" selected text confirmed as {option_text!r}')
-
             page.wait_for_function(
                 """
                 ({ id, expected }) => {
@@ -276,7 +266,6 @@ def _select_kendo_option(
                     }
 
                     const item = ddl.dataItem();
-
                     if (!item) {
                         return false;
                     }
@@ -286,7 +275,6 @@ def _select_kendo_option(
                         item.Text ||
                         item.text ||
                         "";
-
                     return text.trim() === expected;
                 }
                 """,
@@ -303,7 +291,6 @@ def _select_kendo_option(
                 f'attempt {attempt}/{max_attempts} failed for "{label_text}": '
                 f"{error!r}"
             )
-
             if attempt < max_attempts:
                 page.wait_for_timeout(500)
 
@@ -340,19 +327,11 @@ def fill_appointment_form(
 
     _log('skipping "Appointment For" because it must remain at its default value')
 
-    #
-    # Appointment Category is independent and can be filled first.
-    #
-
     _fill_label_driven_dropdown(
         page,
         "Appointment Category",
         APPOINTMENT_CATEGORY,
     )
-
-    #
-    # Jurisdiction -> Location -> Visa Type -> Visa Sub Type
-    #
 
     _wait_for_kendo_data(
         page,
@@ -366,29 +345,17 @@ def fill_appointment_form(
         JURISDICTION,
     )
 
-    #
-    # Wait until Jurisdiction change handler populates Location.
-    #
-
     _fill_label_driven_dropdown(
         page,
         "Location",
         LOCATION,
     )
 
-    #
-    # Wait until Location change handler filters Visa Type.
-    #
-
     _fill_label_driven_dropdown(
         page,
         "Visa Type",
         VISA_TYPE,
     )
-
-    #
-    # Wait until Visa Type change handler populates Visa Sub Type.
-    #
 
     _fill_label_driven_dropdown(
         page,
@@ -410,7 +377,7 @@ def no_appointments_dialog_visible(page: Page) -> bool:
 
         header_text = header.inner_text().strip() if header.count() else ""
         body_text = body.inner_text().strip() if body.count() else ""
-
         return "No Appointments Available" in header_text or bool(body_text)
     except Exception:
+        logger.exception("[appointment] Failed while checking no-appointments dialog.")
         return False
