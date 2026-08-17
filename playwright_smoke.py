@@ -7,7 +7,7 @@ from flows.appointment_flow import (
 
 from datetime import datetime, timezone
 
-from scraper_run import ScraperConfig, ScraperResult, ScraperStatus
+from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
 
 import argparse
 import time
