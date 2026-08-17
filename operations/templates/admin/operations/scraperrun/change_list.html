@@ -1,0 +1,27 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+    <li>
+        <form
+            method="post"
+            action="{% url 'admin:operations_scraperrun_run_now' %}"
+            style="display: inline;"
+        >
+            {% csrf_token %}
+
+            <button
+                type="submit"
+                class="addlink"
+                style="
+                    border: 0;
+                    cursor: pointer;
+                    font: inherit;
+                "
+            >
+                Run scraper now
+            </button>
+        </form>
+    </li>
+
+    {{ block.super }}
+{% endblock %}
