@@ -19,8 +19,8 @@ class _LoggerWriter:
     """
     Redirect print()/stdout/stderr output into the scraper logger.
 
-    This lets old print statements in nested scraper modules appear
-    in the persistent ScraperRun log without rewriting all of them yet.
+    This preserves the current logging bridge while Celery moves
+    execution out of the Django HTTP request.
     """
 
     def __init__(
@@ -39,7 +39,10 @@ class _LoggerWriter:
         self._buffer += message
 
         while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
+            line, self._buffer = self._buffer.split(
+                "\n",
+                1,
+            )
             self._emit(line)
 
         return len(message)
@@ -62,16 +65,31 @@ class _LoggerWriter:
         )
 
 
-def execute_scraper_run(
+def create_scraper_run(
     *,
     config: ScraperConfig,
     trigger: str = ScraperRun.Trigger.MANUAL,
 ) -> ScraperRun:
-    db_run = ScraperRun.objects.create(
+    return ScraperRun.objects.create(
         status=ScraperRun.Status.PENDING,
         trigger=trigger,
-        visa_sub_types=list(config.visa_sub_types),
+        visa_sub_types=list(
+            config.visa_sub_types
+        ),
     )
+
+
+def execute_scraper_run(
+    *,
+    config: ScraperConfig,
+    trigger: str = ScraperRun.Trigger.MANUAL,
+    db_run: ScraperRun | None = None,
+) -> ScraperRun:
+    if db_run is None:
+        db_run = create_scraper_run(
+            config=config,
+            trigger=trigger,
+        )
 
     db_run.status = ScraperRun.Status.RUNNING
     db_run.started_at = timezone.now()
@@ -101,14 +119,22 @@ def execute_scraper_run(
                 trigger,
                 config.headless,
                 config.gpu,
-                ", ".join(config.visa_sub_types),
+                ", ".join(
+                    config.visa_sub_types
+                ),
             )
 
             with (
-                redirect_stdout(stdout_writer),
-                redirect_stderr(stderr_writer),
+                redirect_stdout(
+                    stdout_writer
+                ),
+                redirect_stderr(
+                    stderr_writer
+                ),
             ):
-                result = run_scraper(config)
+                result = run_scraper(
+                    config
+                )
 
             stdout_writer.flush()
             stderr_writer.flush()
@@ -127,22 +153,43 @@ def execute_scraper_run(
                     ScraperRun.Status.FAILED,
             }
 
-            db_run.status = status_map[result.status]
-            db_run.finished_at = timezone.now()
-            db_run.page_url = result.page_url or ""
+            db_run.status = (
+                status_map[
+                    result.status
+                ]
+            )
+
+            db_run.finished_at = (
+                timezone.now()
+            )
+
+            db_run.page_url = (
+                result.page_url or ""
+            )
+
             db_run.appointment_visa_sub_type = (
                 result.visa_sub_type or ""
             )
-            db_run.error_type = result.error_type or ""
-            db_run.error_message = result.error_message or ""
+
+            db_run.error_type = (
+                result.error_type or ""
+            )
+
+            db_run.error_message = (
+                result.error_message or ""
+            )
 
             db_run.failure_screenshot = (
-                str(result.failure_screenshot)
+                str(
+                    result.failure_screenshot
+                )
                 if result.failure_screenshot
                 else ""
             )
 
-            db_run.duration_seconds = result.duration_seconds
+            db_run.duration_seconds = (
+                result.duration_seconds
+            )
 
             db_run.save(
                 update_fields=[
@@ -158,14 +205,16 @@ def execute_scraper_run(
             )
 
             logger.info(
-                "Scraper run finished. Status=%s | Duration=%.2fs",
+                "Scraper run finished. "
+                "Status=%s | Duration=%.2fs",
                 db_run.status,
                 result.duration_seconds,
             )
 
             if result.visa_sub_type:
                 logger.info(
-                    "Appointment availability detected for visa subtype=%s",
+                    "Appointment availability detected "
+                    "for visa subtype=%s",
                     result.visa_sub_type,
                 )
 
@@ -182,14 +231,26 @@ def execute_scraper_run(
             stdout_writer.flush()
             stderr_writer.flush()
 
-            db_run.status = ScraperRun.Status.FAILED
-            db_run.finished_at = timezone.now()
-            db_run.error_type = type(exc).__name__
-            db_run.error_message = str(exc)
+            db_run.status = (
+                ScraperRun.Status.FAILED
+            )
+
+            db_run.finished_at = (
+                timezone.now()
+            )
+
+            db_run.error_type = (
+                type(exc).__name__
+            )
+
+            db_run.error_message = (
+                str(exc)
+            )
 
             if db_run.started_at is not None:
                 db_run.duration_seconds = (
-                    db_run.finished_at - db_run.started_at
+                    db_run.finished_at
+                    - db_run.started_at
                 ).total_seconds()
 
             db_run.save(

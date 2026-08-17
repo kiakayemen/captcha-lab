@@ -3,20 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 
 from django.contrib import admin, messages
-from django.http import HttpRequest, HttpResponse
-from django.shortcuts import redirect
+from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import path, reverse
+from django.utils import timezone
 from django.utils.html import format_html
 
 from scraper.models import ScraperConfig
 
 from .models import ScraperRun
-from .services import execute_scraper_run
+from .services import create_scraper_run
+from .tasks import run_scraper_task
 
 
 @admin.register(ScraperRun)
 class ScraperRunAdmin(admin.ModelAdmin):
     change_list_template = "admin/operations/scraperrun/change_list.html"
+    change_form_template = "admin/operations/scraperrun/change_form.html"
 
     list_display = (
         "created_at",
@@ -114,25 +117,22 @@ class ScraperRunAdmin(admin.ModelAdmin):
             return "No logs yet."
 
         entries = list(obj.logs.all())
-        if not entries:
-            return "No logs recorded for this run."
 
-        lines = []
-        for entry in entries:
-            timestamp = entry.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            lines.append(
-                f"{timestamp} | {entry.level:<8} | {entry.message}"
-            )
-
-        output = "\n".join(lines)
+        # The UI intentionally renders only each stored message body.
+        # It does not invent timestamps/levels that were not part of
+        # the original emitted message.
+        output = "\n".join(entry.message for entry in entries)
 
         return format_html(
-            '<pre style="background:#111827;color:#e5e7eb;padding:16px;'
+            '<pre id="live-run-log" '
+            'data-last-log-id="{}" '
+            'style="background:#111827;color:#e5e7eb;padding:16px;'
             'border-radius:6px;overflow-x:auto;max-height:700px;'
             'overflow-y:auto;white-space:pre-wrap;word-break:break-word;'
             'font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'
             'monospace;font-size:12px;line-height:1.55;margin:0;">{}</pre>',
-            output,
+            entries[-1].pk if entries else 0,
+            output or "Waiting for output...",
         )
 
     def has_add_permission(
@@ -147,14 +147,64 @@ class ScraperRunAdmin(admin.ModelAdmin):
         custom_urls = [
             path(
                 "run-now/",
-                self.admin_site.admin_view(
-                    self.run_now_view
-                ),
+                self.admin_site.admin_view(self.run_now_view),
                 name="operations_scraperrun_run_now",
+            ),
+            path(
+                "<uuid:run_id>/live-state/",
+                self.admin_site.admin_view(self.live_state_view),
+                name="operations_scraperrun_live_state",
             ),
         ]
 
         return custom_urls + urls
+
+    def live_state_view(
+        self,
+        request: HttpRequest,
+        run_id,
+    ) -> JsonResponse:
+        run = get_object_or_404(
+            ScraperRun,
+            pk=run_id,
+        )
+
+        try:
+            after_id = int(
+                request.GET.get("after", "0")
+            )
+        except (TypeError, ValueError):
+            after_id = 0
+
+        entries = list(
+            run.logs.filter(
+                pk__gt=after_id
+            ).order_by("pk")
+        )
+
+        return JsonResponse(
+            {
+                "status": run.status,
+                "status_label": run.get_status_display(),
+                "finished": run.status in {
+                    ScraperRun.Status.APPOINTMENT_FOUND,
+                    ScraperRun.Status.NO_APPOINTMENT,
+                    ScraperRun.Status.FAILED,
+                },
+                "last_log_id": (
+                    entries[-1].pk
+                    if entries
+                    else after_id
+                ),
+                "logs": [
+                    {
+                        "id": entry.pk,
+                        "message": entry.message,
+                    }
+                    for entry in entries
+                ],
+            }
+        )
 
     def run_now_view(
         self,
@@ -167,8 +217,6 @@ class ScraperRunAdmin(admin.ModelAdmin):
                 )
             )
 
-        # Current local debugging configuration.
-        # We can switch headless back on once UI logging is trusted.
         config = ScraperConfig(
             headless=False,
             gpu=True,
@@ -179,49 +227,56 @@ class ScraperRunAdmin(admin.ModelAdmin):
             ),
         )
 
+        db_run = create_scraper_run(
+            config=config,
+            trigger=ScraperRun.Trigger.MANUAL,
+        )
+
+        config_data = {
+            "headless": config.headless,
+            "gpu": config.gpu,
+            "output_dir": str(config.output_dir),
+            "visa_sub_types": list(config.visa_sub_types),
+        }
+
         try:
-            db_run = execute_scraper_run(
-                config=config,
-                trigger=ScraperRun.Trigger.MANUAL,
+            run_scraper_task.delay(
+                str(db_run.pk),
+                config_data,
             )
+
         except Exception as exc:
+            db_run.status = ScraperRun.Status.FAILED
+            db_run.finished_at = timezone.now()
+            db_run.error_type = type(exc).__name__
+            db_run.error_message = (
+                "Could not queue Celery task: "
+                f"{exc}"
+            )
+
+            db_run.save(
+                update_fields=[
+                    "status",
+                    "finished_at",
+                    "error_type",
+                    "error_message",
+                ]
+            )
+
             self.message_user(
                 request,
                 (
-                    "Scraper execution failed unexpectedly: "
-                    f"{type(exc).__name__}: {exc}"
+                    "Could not queue scraper task. "
+                    "Check Redis and the Celery worker."
                 ),
                 level=messages.ERROR,
             )
-            return redirect(
-                reverse(
-                    "admin:operations_scraperrun_changelist"
-                )
-            )
 
-        if db_run.status == ScraperRun.Status.APPOINTMENT_FOUND:
-            self.message_user(
-                request,
-                "Scraper completed: appointment availability detected.",
-                level=messages.SUCCESS,
-            )
-        elif db_run.status == ScraperRun.Status.NO_APPOINTMENT:
-            self.message_user(
-                request,
-                "Scraper completed: no appointments found.",
-                level=messages.INFO,
-            )
-        elif db_run.status == ScraperRun.Status.FAILED:
-            self.message_user(
-                request,
-                "Scraper finished with an error. Open the run for details.",
-                level=messages.ERROR,
-            )
         else:
             self.message_user(
                 request,
-                f"Scraper finished with status: {db_run.status}",
-                level=messages.WARNING,
+                "Scraper queued. Live output will appear on this page.",
+                level=messages.SUCCESS,
             )
 
         return redirect(

@@ -1,0 +1,100 @@
+{% extends "admin/change_form.html" %}
+
+{% block extrahead %}
+    {{ block.super }}
+
+    {% if original and original.pk %}
+        <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const logElement = document.getElementById("live-run-log");
+
+            if (!logElement) {
+                return;
+            }
+
+            let lastLogId = Number(
+                logElement.dataset.lastLogId || "0"
+            );
+
+            let stopped = false;
+
+            const liveStateUrl =
+                "{% url 'admin:operations_scraperrun_live_state' original.pk %}";
+
+            const statusRow = document.querySelector(
+                ".field-status .readonly"
+            );
+
+            function appendMessage(message) {
+                const waitingText = "Waiting for output...";
+
+                if (logElement.textContent.trim() === waitingText) {
+                    logElement.textContent = "";
+                }
+
+                if (
+                    logElement.textContent.length > 0 &&
+                    !logElement.textContent.endsWith("\n")
+                ) {
+                    logElement.textContent += "\n";
+                }
+
+                logElement.textContent += message;
+
+                if (!message.endsWith("\n")) {
+                    logElement.textContent += "\n";
+                }
+
+                logElement.scrollTop = logElement.scrollHeight;
+            }
+
+            async function poll() {
+                if (stopped) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(
+                        `${liveStateUrl}?after=${lastLogId}`,
+                        {
+                            headers: {
+                                "X-Requested-With": "XMLHttpRequest",
+                            },
+                            cache: "no-store",
+                        }
+                    );
+
+                    if (!response.ok) {
+                        throw new Error(
+                            `Live log request failed: ${response.status}`
+                        );
+                    }
+
+                    const data = await response.json();
+
+                    for (const entry of data.logs) {
+                        appendMessage(entry.message);
+                        lastLogId = entry.id;
+                    }
+
+                    if (statusRow) {
+                        statusRow.textContent = data.status_label;
+                    }
+
+                    if (data.finished) {
+                        stopped = true;
+                        return;
+                    }
+                } catch (error) {
+                    console.error(error);
+                }
+
+                window.setTimeout(poll, 1000);
+            }
+
+            logElement.scrollTop = logElement.scrollHeight;
+            poll();
+        });
+        </script>
+    {% endif %}
+{% endblock %}
