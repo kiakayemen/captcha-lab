@@ -49,3 +49,414 @@ from scraper.models import (
     ScraperResult,
     ScraperStatus,
 )
+
+
+def run_login_step(page) -> None:
+    submit_email(page, BLS_EMAIL)
+    page.wait_for_load_state("domcontentloaded")
+
+
+def save_live_attempt_bundle(
+    *,
+    output_dir: Path,
+    step_name: str,
+    attempt_number: int,
+    page_url: str,
+    target: str,
+    decision,
+    captcha_image,
+    debug_image,
+    tiles,
+) -> Path:
+    attempt_dir = output_dir / step_name / f"attempt_{attempt_number:02d}"
+    write_outputs(
+        attempt_dir,
+        captcha_image,
+        debug_image,
+        tiles,
+        decision,
+    )
+    metadata = {
+        "step": step_name,
+        "attempt": attempt_number,
+        "page_url": page_url,
+        "target": target,
+        "selected_tiles": list(decision.selected_tiles),
+        "uncertain_tiles": list(decision.uncertain_tiles),
+        "status": decision.status,
+    }
+    (attempt_dir / "live_metadata.json").write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+    return attempt_dir
+
+
+def run_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
+    screenshot_path = Path("captcha_page.png")
+    max_attempts = 3
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"Captcha attempt {attempt}/{max_attempts}")
+        fill_password(page, target_password=BLS_PASSWORD)
+
+        print("Waiting for the true CAPTCHA instruction...")
+        _true_label, true_label_id, target = find_true_captcha_label(page)
+
+        true_label_by_id = page.locator(f"#{true_label_id}")
+        expect(true_label_by_id).to_have_count(1)
+        expect(true_label_by_id).to_be_visible()
+
+        confirmed_text = true_label_by_id.inner_text().strip()
+        confirmed_match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(confirmed_text)
+        if confirmed_match is None or confirmed_match.group(1) != target:
+            raise RuntimeError(
+                "The discovered CAPTCHA label changed before solving.")
+
+        print(f"True CAPTCHA label ID: {true_label_id}")
+        print(f"Target extracted from DOM: {target}")
+
+        captcha_image = save_captcha_crop(page, screenshot_path)
+        print(f"Cropped CAPTCHA image saved: {screenshot_path}")
+
+        print("Loading EasyOCR...")
+        solve_start = time.perf_counter()
+        reader = build_reader(gpu=gpu)
+
+        decision, tiles, _boxes, debug = solve_captcha_image(
+            captcha_image,
+            target=target,
+            reader=reader,
+        )
+        solve_seconds = time.perf_counter() - solve_start
+        print(f"Captcha solve time: {solve_seconds:.3f}s")
+
+        print_decision(decision)
+        click_selected_captcha_tiles(page, decision.selected_tiles)
+        click_verify_selection(page)
+
+        page.wait_for_timeout(1_000)
+
+        save_live_attempt_bundle(
+            output_dir=output_dir,
+            step_name="login_captcha",
+            attempt_number=attempt,
+            page_url=page.url,
+            target=target,
+            decision=decision,
+            captcha_image=captcha_image,
+            debug_image=debug,
+            tiles=tiles,
+        )
+
+        if login_captcha_invalid(page):
+            print("Login captcha was rejected; retrying.")
+            continue
+
+        if login_captcha_succeeded(page):
+            print("Captcha verification succeeded.")
+            write_outputs(
+                output_dir,
+                captcha_image,
+                debug,
+                tiles,
+                decision,
+            )
+            return
+
+        if captcha_instruction_present(page):
+            print("Captcha instruction is still present; retrying.")
+            continue
+
+        print("Captcha outcome is unclear; retrying.")
+
+    raise RuntimeError(
+        f"Captcha verification failed after {max_attempts} attempts.")
+
+
+def run_second_captcha_step(page, *, gpu: bool, output_dir: Path) -> None:
+    frame = get_verify_selection_frame(page)
+    screenshot_path = Path("captcha_page_2.png")
+    max_attempts = 3
+    popup = page.locator(
+        'div.k-widget.k-window').filter(has_text="Verify Selection").first
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"Second captcha attempt {attempt}/{max_attempts}")
+
+        print("Waiting for the second CAPTCHA instruction...")
+        _true_label, true_label_id, target = find_true_captcha_label_in_scope(
+            frame)
+
+        true_label_by_id = frame.locator(f"#{true_label_id}")
+        expect(true_label_by_id).to_have_count(1)
+        expect(true_label_by_id).to_be_visible()
+
+        confirmed_text = true_label_by_id.inner_text().strip()
+        confirmed_match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(confirmed_text)
+        if confirmed_match is None or confirmed_match.group(1) != target:
+            raise RuntimeError(
+                "The discovered second CAPTCHA label changed before solving.")
+
+        print(f"Second CAPTCHA label ID: {true_label_id}")
+        print(f"Second target extracted from DOM: {target}")
+
+        captcha_image = save_captcha_crop(page, screenshot_path)
+        print(f"Cropped second CAPTCHA image saved: {screenshot_path}")
+
+        print("Loading EasyOCR for second CAPTCHA...")
+        solve_start = time.perf_counter()
+        reader = build_reader(gpu=gpu)
+        decision, tiles, _boxes, debug = solve_captcha_image(
+            captcha_image,
+            target=target,
+            reader=reader,
+        )
+        solve_seconds = time.perf_counter() - solve_start
+        print(f"Second captcha solve time: {solve_seconds:.3f}s")
+
+        print_decision(decision)
+        tiles_in_frame = get_captcha_tiles_in_scope(frame)
+        for tile_number in decision.selected_tiles:
+            if tile_number < 1 or tile_number > len(tiles_in_frame):
+                raise ValueError(
+                    f"Selected tile {tile_number} is outside the 1..{len(tiles_in_frame)} range"
+                )
+            tile = tiles_in_frame[tile_number - 1]
+            tile.scroll_into_view_if_needed(timeout=10_000)
+            tile.click(timeout=10_000)
+            print(f"Clicked second-captcha tile {tile_number}")
+        click_submit_selection(frame)
+
+        save_live_attempt_bundle(
+            output_dir=output_dir,
+            step_name="second_captcha",
+            attempt_number=attempt,
+            page_url=page.url,
+            target=target,
+            decision=decision,
+            captcha_image=captcha_image,
+            debug_image=debug,
+            tiles=tiles,
+        )
+
+        verified_label = frame.locator("text=Verified!")
+        try:
+            expect(verified_label).to_be_visible(timeout=15_000)
+            print('Second captcha returned "Verified!"')
+        except Exception:
+            print("Second captcha did not return Verified; retrying.")
+            continue
+
+        page.wait_for_timeout(5_000)
+        if popup.is_visible():
+            print("Second captcha popup stayed open after 5s; retrying.")
+            continue
+
+        print("Second captcha verification succeeded.")
+        write_outputs(
+            output_dir,
+            captcha_image,
+            debug,
+            tiles,
+            decision,
+        )
+        return
+
+        print("Second captcha did not advance the page; retrying.")
+
+    raise RuntimeError(f"Second captcha failed after {max_attempts} attempts.")
+
+
+def fill_password(page, *, target_password: str) -> None:
+    fill_visible_password(page, target_password)
+
+
+def submit_password(page) -> None:
+    page.get_by_role("button", name="Submit").click(timeout=10_000)
+
+
+def run_post_login_step(page, *, target_password: str) -> None:
+    fill_password(page, target_password=target_password)
+    submit_password(page)
+
+
+def run_scraper(config: ScraperConfig) -> ScraperResult:
+    started_at = datetime.now(timezone.utc)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=config.headless,
+        )
+
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 1000},
+        )
+
+        page = context.new_page()
+
+        try:
+            print(f"Opening login page: {LOGIN_URL}")
+
+            response = page.goto(
+                LOGIN_URL,
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+
+            if response is not None:
+                print(f"Initial HTTP status: {response.status}")
+
+            run_login_step(page)
+
+            run_captcha_step(
+                page,
+                gpu=config.gpu,
+                output_dir=config.output_dir,
+            )
+
+            click_nav_book_new_appointment(page)
+            click_verify_selection(page)
+
+            run_second_captcha_step(
+                page,
+                gpu=config.gpu,
+                output_dir=config.output_dir,
+            )
+
+            click_background_submit(page)
+
+            # Visa Type page automatically displays its disclaimer modal.
+            click_ok_dialog(page)
+
+            for visa_sub_type in config.visa_sub_types:
+                print(
+                    "Trying appointment form with visa subtype: "
+                    f"{visa_sub_type}"
+                )
+
+                fill_appointment_form(
+                    page,
+                    visa_sub_type=visa_sub_type,
+                )
+
+                submit_button = page.get_by_role(
+                    "button",
+                    name="Submit",
+                ).first
+
+                expect(submit_button).to_be_visible(
+                    timeout=30_000
+                )
+
+                expect(submit_button).to_be_enabled(
+                    timeout=30_000
+                )
+
+                print("Clicking visible Submit button...")
+                submit_button.click(timeout=10_000)
+
+                page.wait_for_timeout(3_000)
+
+                if no_appointments_dialog_visible(page):
+                    log_no_appointment(
+                        page_url=page.url,
+                        visa_sub_type=visa_sub_type,
+                    )
+
+                    click_ok_dialog(page)
+                    continue
+
+                print(
+                    "No 'No Appointments Available' dialog found; "
+                    "notifying admin."
+                )
+
+                notify_admin(
+                    (
+                        "Appointment availability detected. "
+                        "Manual booking is required."
+                    ),
+                    page_url=page.url,
+                    visa_sub_type=visa_sub_type,
+                )
+
+                print("Appointment available; admin notified.")
+
+                return ScraperResult(
+                    status=ScraperStatus.APPOINTMENT_FOUND,
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=page.url,
+                    visa_sub_type=visa_sub_type,
+                )
+
+            print(
+                "No appointments found for any configured "
+                "visa subtype."
+            )
+
+            log_no_appointment(
+                page_url=page.url,
+                visa_sub_type=None,
+            )
+
+            return ScraperResult(
+                status=ScraperStatus.NO_APPOINTMENT,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url,
+            )
+
+        except PlaywrightTimeoutError as error:
+            screenshot_path = Path("playwright_timeout.png")
+
+            page.screenshot(
+                path=str(screenshot_path),
+                full_page=True,
+            )
+
+            print(f"Playwright timed out: {error}")
+            print(f"Current URL: {page.url}")
+            print(f"Saved {screenshot_path}")
+
+            return ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                failure_screenshot=screenshot_path,
+            )
+
+        except (
+            PlaywrightError,
+            RuntimeError,
+            ValueError,
+            OSError,
+        ) as error:
+            screenshot_path = Path("playwright_error.png")
+
+            page.screenshot(
+                path=str(screenshot_path),
+                full_page=True,
+            )
+
+            print(f"Automation failed: {error}")
+            print(f"Current URL: {page.url}")
+            print(f"Saved {screenshot_path}")
+
+            return ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                failure_screenshot=screenshot_path,
+            )
+
+        finally:
+            context.close()
+            browser.close()
