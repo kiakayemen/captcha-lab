@@ -359,6 +359,7 @@ def main() -> None:
                         page_url=page.url,
                         visa_sub_type=visa_sub_type,
                     )
+                    click_ok_dialog(page)
                     continue
 
                 print(
