@@ -37,6 +37,8 @@ Thumbs.db
 # Logs & caches
 # =========================
 *.log
+.rdb
+dump.rdb
 .pytest_cache/
 .hypothesis/
 .mypy_cache/
