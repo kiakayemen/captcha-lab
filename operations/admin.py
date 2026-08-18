@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from django.contrib import admin, messages
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -9,17 +7,24 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
 
-from scraper.models import ScraperConfig
-
 from .models import ScraperRun
-from .services import create_scraper_run
+from .services import (
+    build_default_scraper_config,
+    create_scraper_run,
+    serialize_scraper_config,
+)
 from .tasks import run_scraper_task
 
 
 @admin.register(ScraperRun)
 class ScraperRunAdmin(admin.ModelAdmin):
-    change_list_template = "admin/operations/scraperrun/change_list.html"
-    change_form_template = "admin/operations/scraperrun/change_form.html"
+    change_list_template = (
+        "admin/operations/scraperrun/change_list.html"
+    )
+
+    change_form_template = (
+        "admin/operations/scraperrun/change_form.html"
+    )
 
     list_display = (
         "created_at",
@@ -98,30 +103,47 @@ class ScraperRunAdmin(admin.ModelAdmin):
         (
             "Run log",
             {
-                "fields": ("run_log",),
+                "fields": (
+                    "run_log",
+                ),
             },
         ),
     )
 
-    ordering = ("-created_at",)
+    ordering = (
+        "-created_at",
+    )
 
-    @admin.display(description="Logs")
-    def log_count(self, obj: ScraperRun) -> int:
+    @admin.display(
+        description="Logs"
+    )
+    def log_count(
+        self,
+        obj: ScraperRun,
+    ) -> int:
         if not obj.pk:
             return 0
+
         return obj.logs.count()
 
-    @admin.display(description="Run log")
-    def run_log(self, obj: ScraperRun):
+    @admin.display(
+        description="Run log"
+    )
+    def run_log(
+        self,
+        obj: ScraperRun,
+    ):
         if not obj.pk:
             return "No logs yet."
 
-        entries = list(obj.logs.all())
+        entries = list(
+            obj.logs.all()
+        )
 
-        # The UI intentionally renders only each stored message body.
-        # It does not invent timestamps/levels that were not part of
-        # the original emitted message.
-        output = "\n".join(entry.message for entry in entries)
+        output = "\n".join(
+            entry.message
+            for entry in entries
+        )
 
         return format_html(
             '<pre id="live-run-log" '
@@ -131,7 +153,11 @@ class ScraperRunAdmin(admin.ModelAdmin):
             'overflow-y:auto;white-space:pre-wrap;word-break:break-word;'
             'font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'
             'monospace;font-size:12px;line-height:1.55;margin:0;">{}</pre>',
-            entries[-1].pk if entries else 0,
+            (
+                entries[-1].pk
+                if entries
+                else 0
+            ),
             output or "Waiting for output...",
         )
 
@@ -147,13 +173,23 @@ class ScraperRunAdmin(admin.ModelAdmin):
         custom_urls = [
             path(
                 "run-now/",
-                self.admin_site.admin_view(self.run_now_view),
-                name="operations_scraperrun_run_now",
+                self.admin_site.admin_view(
+                    self.run_now_view
+                ),
+                name=(
+                    "operations_"
+                    "scraperrun_run_now"
+                ),
             ),
             path(
                 "<uuid:run_id>/live-state/",
-                self.admin_site.admin_view(self.live_state_view),
-                name="operations_scraperrun_live_state",
+                self.admin_site.admin_view(
+                    self.live_state_view
+                ),
+                name=(
+                    "operations_"
+                    "scraperrun_live_state"
+                ),
             ),
         ]
 
@@ -171,21 +207,34 @@ class ScraperRunAdmin(admin.ModelAdmin):
 
         try:
             after_id = int(
-                request.GET.get("after", "0")
+                request.GET.get(
+                    "after",
+                    "0",
+                )
             )
-        except (TypeError, ValueError):
+
+        except (
+            TypeError,
+            ValueError,
+        ):
             after_id = 0
 
         entries = list(
-            run.logs.filter(
+            run.logs
+            .filter(
                 pk__gt=after_id
-            ).order_by("pk")
+            )
+            .order_by(
+                "pk"
+            )
         )
 
         return JsonResponse(
             {
                 "status": run.status,
-                "status_label": run.get_status_display(),
+                "status_label": (
+                    run.get_status_display()
+                ),
                 "finished": run.status in {
                     ScraperRun.Status.APPOINTMENT_FOUND,
                     ScraperRun.Status.NO_APPOINTMENT,
@@ -213,42 +262,49 @@ class ScraperRunAdmin(admin.ModelAdmin):
         if request.method != "POST":
             return redirect(
                 reverse(
-                    "admin:operations_scraperrun_changelist"
+                    "admin:"
+                    "operations_scraperrun_changelist"
                 )
             )
 
-        config = ScraperConfig(
-            headless=False,
-            gpu=True,
-            output_dir=Path("output/live_solver"),
-            visa_sub_types=(
-                "Student Visa",
-                "Non-Working Residence Visa",
-            ),
+        config = (
+            build_default_scraper_config()
         )
 
         db_run = create_scraper_run(
             config=config,
-            trigger=ScraperRun.Trigger.MANUAL,
+            trigger=(
+                ScraperRun.Trigger.MANUAL
+            ),
         )
 
-        config_data = {
-            "headless": config.headless,
-            "gpu": config.gpu,
-            "output_dir": str(config.output_dir),
-            "visa_sub_types": list(config.visa_sub_types),
-        }
+        config_data = (
+            serialize_scraper_config(
+                config
+            )
+        )
 
         try:
             run_scraper_task.delay(
-                str(db_run.pk),
+                str(
+                    db_run.pk
+                ),
                 config_data,
             )
 
         except Exception as exc:
-            db_run.status = ScraperRun.Status.FAILED
-            db_run.finished_at = timezone.now()
-            db_run.error_type = type(exc).__name__
+            db_run.status = (
+                ScraperRun.Status.FAILED
+            )
+
+            db_run.finished_at = (
+                timezone.now()
+            )
+
+            db_run.error_type = (
+                type(exc).__name__
+            )
+
             db_run.error_message = (
                 "Could not queue Celery task: "
                 f"{exc}"
@@ -275,13 +331,20 @@ class ScraperRunAdmin(admin.ModelAdmin):
         else:
             self.message_user(
                 request,
-                "Scraper queued. Live output will appear on this page.",
+                (
+                    "Scraper queued. "
+                    "Live output will appear "
+                    "on this page."
+                ),
                 level=messages.SUCCESS,
             )
 
         return redirect(
             reverse(
-                "admin:operations_scraperrun_change",
-                args=[db_run.pk],
+                "admin:"
+                "operations_scraperrun_change",
+                args=[
+                    db_run.pk
+                ],
             )
         )

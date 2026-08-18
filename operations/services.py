@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 from django.utils import timezone
 
@@ -63,6 +64,64 @@ class _LoggerWriter:
             "%s",
             line,
         )
+
+
+def build_default_scraper_config() -> ScraperConfig:
+    """
+    Single source of truth for the scraper configuration used by
+    both manual and scheduled runs.
+    """
+    return ScraperConfig(
+        headless=False,
+        gpu=True,
+        output_dir=Path(
+            "output/live_solver"
+        ),
+        visa_sub_types=(
+            "Student Visa",
+            "Non-Working Residence Visa",
+        ),
+    )
+
+
+def serialize_scraper_config(
+    config: ScraperConfig,
+) -> dict:
+    """
+    Convert ScraperConfig into JSON-safe data suitable for Celery.
+    """
+    return {
+        "headless": config.headless,
+        "gpu": config.gpu,
+        "output_dir": str(
+            config.output_dir
+        ),
+        "visa_sub_types": list(
+            config.visa_sub_types
+        ),
+    }
+
+
+def deserialize_scraper_config(
+    config_data: dict,
+) -> ScraperConfig:
+    """
+    Rebuild ScraperConfig from the JSON-safe Celery payload.
+    """
+    return ScraperConfig(
+        headless=bool(
+            config_data["headless"]
+        ),
+        gpu=bool(
+            config_data["gpu"]
+        ),
+        output_dir=Path(
+            config_data["output_dir"]
+        ),
+        visa_sub_types=tuple(
+            config_data["visa_sub_types"]
+        ),
+    )
 
 
 def create_scraper_run(
@@ -153,11 +212,9 @@ def execute_scraper_run(
                     ScraperRun.Status.FAILED,
             }
 
-            db_run.status = (
-                status_map[
-                    result.status
-                ]
-            )
+            db_run.status = status_map[
+                result.status
+            ]
 
             db_run.finished_at = (
                 timezone.now()
