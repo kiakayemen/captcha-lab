@@ -808,6 +808,59 @@ def run_scraper(
                         page
                     )
 
+                    remaining_subtypes = (
+                        config.visa_sub_types[
+                            config.visa_sub_types.index(
+                                visa_sub_type
+                            ) + 1:
+                        ]
+                    )
+
+                    if remaining_subtypes:
+                        logger.info(
+                            "Preparing next visa subtype. "
+                            "Current page=%s",
+                            page.url,
+                        )
+
+                        logger.info(
+                            "Re-opening Verify Selection "
+                            "before the next visa subtype."
+                        )
+
+                        click_verify_selection(
+                            page
+                        )
+
+                        run_second_captcha_step(
+                            page,
+                            gpu=config.gpu,
+                            output_dir=config.output_dir,
+                        )
+
+                        logger.info(
+                            "Second CAPTCHA complete for "
+                            "next visa subtype."
+                        )
+
+                        click_background_submit(
+                            page
+                        )
+
+                        logger.info(
+                            "Submitted background appointment "
+                            "step for next visa subtype."
+                        )
+
+                        click_ok_dialog(
+                            page
+                        )
+
+                        logger.info(
+                            "Visa type disclaimer accepted "
+                            "for next visa subtype."
+                        )
+
                     continue
 
                 logger.warning(
