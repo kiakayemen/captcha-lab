@@ -240,24 +240,14 @@ CELERY_ENABLE_UTC = True
 # Scheduled scraper
 # ------------------------------------------------------------------
 
-SCRAPER_SCHEDULE_MINUTES = int(
-    os.getenv(
-        "SCRAPER_SCHEDULE_MINUTES",
-        "30",
-    )
-)
-
-
 CELERY_BEAT_SCHEDULE = {
-    "run-scheduled-scraper": {
+    "check-scheduled-scraper": {
         "task": (
             "operations."
             "run_scheduled_scraper"
         ),
         "schedule": timedelta(
-            minutes=(
-                SCRAPER_SCHEDULE_MINUTES
-            )
+            minutes=1
         ),
     },
 }

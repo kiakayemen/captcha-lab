@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from celery import shared_task
+from django.db import transaction
+from django.utils import timezone
 
-from .models import ScraperRun
+from .models import (
+    ScraperRun,
+    ScraperSchedule,
+)
 from .services import (
     build_default_scraper_config,
     create_scraper_run,
@@ -13,7 +19,9 @@ from .services import (
 )
 
 
-logger = logging.getLogger("captcha_lab")
+logger = logging.getLogger(
+    "captcha_lab"
+)
 
 
 @shared_task(
@@ -23,6 +31,12 @@ def run_scraper_task(
     run_id: str,
     config_data: dict,
 ) -> str:
+    """
+    Execute a scraper run that has already been created.
+
+    This is currently used by the manual Django Admin action.
+    """
+
     db_run = ScraperRun.objects.get(
         pk=run_id,
     )
@@ -37,7 +51,9 @@ def run_scraper_task(
         db_run=db_run,
     )
 
-    return str(db_run.pk)
+    return str(
+        db_run.pk
+    )
 
 
 @shared_task(
@@ -45,52 +61,116 @@ def run_scraper_task(
 )
 def run_scheduled_scraper_task() -> str:
     """
-    Entry point used by Celery Beat.
+    Celery Beat calls this task once per minute.
 
-    A scheduled run is skipped if another scraper run is already
-    pending or running. This prevents two Playwright instances from
-    sharing the same output directory and BLS session workflow.
+    This task decides whether the configured scraper interval
+    has actually elapsed.
+
+    It also prevents overlapping Playwright scraper runs.
     """
 
-    active_run = (
-        ScraperRun.objects
-        .filter(
-            status__in=[
-                ScraperRun.Status.PENDING,
-                ScraperRun.Status.RUNNING,
+    now = timezone.now()
+
+    with transaction.atomic():
+        schedule, _created = (
+            ScraperSchedule.objects
+            .select_for_update()
+            .get_or_create(
+                pk=1,
+                defaults={
+                    "enabled": True,
+                    "interval_minutes": 30,
+                },
+            )
+        )
+
+        if not schedule.enabled:
+            logger.debug(
+                "Scheduled scraper check: disabled."
+            )
+
+            return "disabled"
+
+        if (
+            schedule.last_dispatched_at
+            is not None
+        ):
+            next_run_at = (
+                schedule.last_dispatched_at
+                + timedelta(
+                    minutes=(
+                        schedule.interval_minutes
+                    )
+                )
+            )
+
+            if now < next_run_at:
+                logger.debug(
+                    "Scheduled scraper check: "
+                    "not due yet. "
+                    "Next run=%s",
+                    next_run_at,
+                )
+
+                return "not_due"
+
+        active_run = (
+            ScraperRun.objects
+            .filter(
+                status__in=[
+                    ScraperRun.Status.PENDING,
+                    ScraperRun.Status.RUNNING,
+                ]
+            )
+            .order_by(
+                "-created_at"
+            )
+            .first()
+        )
+
+        if active_run is not None:
+            logger.info(
+                "Scheduled scraper is due, "
+                "but another scraper run is active. "
+                "Run ID=%s | Status=%s",
+                active_run.pk,
+                active_run.status,
+            )
+
+            return (
+                "active:"
+                f"{active_run.pk}"
+            )
+
+        # Mark the dispatch before launching the scraper.
+        #
+        # This prevents two scheduler checks from launching
+        # duplicate runs at approximately the same time.
+        schedule.last_dispatched_at = now
+
+        schedule.save(
+            update_fields=[
+                "last_dispatched_at",
+                "updated_at",
             ]
         )
-        .order_by("-created_at")
-        .first()
-    )
 
-    if active_run is not None:
-        logger.warning(
-            "Scheduled scraper skipped because "
-            "another run is active. "
-            "Run ID=%s | Status=%s",
-            active_run.pk,
-            active_run.status,
+        config = (
+            build_default_scraper_config()
         )
 
-        return (
-            "skipped:"
-            f"{active_run.pk}"
+        db_run = create_scraper_run(
+            config=config,
+            trigger=(
+                ScraperRun.Trigger.SCHEDULED
+            ),
         )
-
-    config = build_default_scraper_config()
-
-    db_run = create_scraper_run(
-        config=config,
-        trigger=(
-            ScraperRun.Trigger.SCHEDULED
-        ),
-    )
 
     logger.info(
         "Scheduled scraper run created. "
-        "Run ID=%s",
+        "Run ID=%s | Interval=%s minute(s)",
         db_run.pk,
+        schedule.interval_minutes,
     )
 
     execute_scraper_run(
@@ -101,4 +181,6 @@ def run_scheduled_scraper_task() -> str:
         db_run=db_run,
     )
 
-    return str(db_run.pk)
+    return str(
+        db_run.pk
+    )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.core.validators import MinValueValidator
 from django.db import models
 
 
@@ -9,8 +10,14 @@ class ScraperRun(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         RUNNING = "running", "Running"
-        APPOINTMENT_FOUND = "appointment_found", "Appointment Found"
-        NO_APPOINTMENT = "no_appointment", "No Appointment"
+        APPOINTMENT_FOUND = (
+            "appointment_found",
+            "Appointment Found",
+        )
+        NO_APPOINTMENT = (
+            "no_appointment",
+            "No Appointment",
+        )
         FAILED = "failed", "Failed"
 
     class Trigger(models.TextChoices):
@@ -89,7 +96,10 @@ class ScraperRun(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self) -> str:
-        return f"{self.created_at:%Y-%m-%d %H:%M:%S} — {self.status}"
+        return (
+            f"{self.created_at:%Y-%m-%d %H:%M:%S} "
+            f"— {self.status}"
+        )
 
 
 class ScraperRunLog(models.Model):
@@ -115,4 +125,91 @@ class ScraperRunLog(models.Model):
         ordering = ["id"]
 
     def __str__(self) -> str:
-        return f"{self.created_at:%H:%M:%S} [{self.level}] {self.message}"
+        return (
+            f"{self.created_at:%H:%M:%S} "
+            f"[{self.level}] "
+            f"{self.message}"
+        )
+
+
+class ScraperSchedule(models.Model):
+    """
+    Singleton database configuration for automatic scraper runs.
+
+    Celery Beat checks this configuration once per minute.
+    The scraper itself only runs when the configured interval
+    has elapsed.
+    """
+
+    enabled = models.BooleanField(
+        default=True,
+        help_text=(
+            "Enable or disable automatic scheduled scraper runs."
+        ),
+    )
+
+    interval_minutes = models.PositiveIntegerField(
+        default=30,
+        validators=[
+            MinValueValidator(1),
+        ],
+        help_text=(
+            "Minimum number of minutes between automatic runs."
+        ),
+    )
+
+    last_dispatched_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text=(
+            "Last time an automatic scraper run was dispatched."
+        ),
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    class Meta:
+        verbose_name = "Scraper schedule"
+        verbose_name_plural = "Scraper schedule"
+
+    def __str__(self) -> str:
+        state = (
+            "Enabled"
+            if self.enabled
+            else "Disabled"
+        )
+
+        return (
+            f"{state} — every "
+            f"{self.interval_minutes} minute(s)"
+        )
+
+    def save(
+        self,
+        *args,
+        **kwargs,
+    ) -> None:
+        # This model is intentionally a singleton.
+        self.pk = 1
+
+        super().save(
+            *args,
+            **kwargs,
+        )
+
+    @classmethod
+    def load(cls) -> "ScraperSchedule":
+        schedule, _created = (
+            cls.objects.get_or_create(
+                pk=1,
+                defaults={
+                    "enabled": True,
+                    "interval_minutes": 30,
+                },
+            )
+        )
+
+        return schedule

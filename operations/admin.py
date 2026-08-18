@@ -1,13 +1,29 @@
 from __future__ import annotations
 
-from django.contrib import admin, messages
-from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.shortcuts import get_object_or_404, redirect
-from django.urls import path, reverse
+from django.contrib import (
+    admin,
+    messages,
+)
+from django.http import (
+    HttpRequest,
+    HttpResponse,
+    JsonResponse,
+)
+from django.shortcuts import (
+    get_object_or_404,
+    redirect,
+)
+from django.urls import (
+    path,
+    reverse,
+)
 from django.utils import timezone
 from django.utils.html import format_html
 
-from .models import ScraperRun
+from .models import (
+    ScraperRun,
+    ScraperSchedule,
+)
 from .services import (
     build_default_scraper_config,
     create_scraper_run,
@@ -16,14 +32,57 @@ from .services import (
 from .tasks import run_scraper_task
 
 
+@admin.register(ScraperSchedule)
+class ScraperScheduleAdmin(
+    admin.ModelAdmin
+):
+    list_display = (
+        "enabled",
+        "interval_minutes",
+        "last_dispatched_at",
+        "updated_at",
+    )
+
+    fields = (
+        "enabled",
+        "interval_minutes",
+        "last_dispatched_at",
+        "updated_at",
+    )
+
+    readonly_fields = (
+        "last_dispatched_at",
+        "updated_at",
+    )
+
+    def has_add_permission(
+        self,
+        request: HttpRequest,
+    ) -> bool:
+        return not (
+            ScraperSchedule.objects.exists()
+        )
+
+    def has_delete_permission(
+        self,
+        request: HttpRequest,
+        obj=None,
+    ) -> bool:
+        return False
+
+
 @admin.register(ScraperRun)
-class ScraperRunAdmin(admin.ModelAdmin):
+class ScraperRunAdmin(
+    admin.ModelAdmin
+):
     change_list_template = (
-        "admin/operations/scraperrun/change_list.html"
+        "admin/operations/"
+        "scraperrun/change_list.html"
     )
 
     change_form_template = (
-        "admin/operations/scraperrun/change_form.html"
+        "admin/operations/"
+        "scraperrun/change_form.html"
     )
 
     list_display = (
@@ -148,17 +207,30 @@ class ScraperRunAdmin(admin.ModelAdmin):
         return format_html(
             '<pre id="live-run-log" '
             'data-last-log-id="{}" '
-            'style="background:#111827;color:#e5e7eb;padding:16px;'
-            'border-radius:6px;overflow-x:auto;max-height:700px;'
-            'overflow-y:auto;white-space:pre-wrap;word-break:break-word;'
-            'font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'
-            'monospace;font-size:12px;line-height:1.55;margin:0;">{}</pre>',
+            'style="background:#111827;'
+            'color:#e5e7eb;'
+            'padding:16px;'
+            'border-radius:6px;'
+            'overflow-x:auto;'
+            'max-height:700px;'
+            'overflow-y:auto;'
+            'white-space:pre-wrap;'
+            'word-break:break-word;'
+            'font-family:ui-monospace,'
+            'SFMono-Regular,Menlo,Monaco,'
+            'Consolas,monospace;'
+            'font-size:12px;'
+            'line-height:1.55;'
+            'margin:0;">{}</pre>',
             (
                 entries[-1].pk
                 if entries
                 else 0
             ),
-            output or "Waiting for output...",
+            (
+                output
+                or "Waiting for output..."
+            ),
         )
 
     def has_add_permission(
@@ -182,7 +254,10 @@ class ScraperRunAdmin(admin.ModelAdmin):
                 ),
             ),
             path(
-                "<uuid:run_id>/live-state/",
+                (
+                    "<uuid:run_id>/"
+                    "live-state/"
+                ),
                 self.admin_site.admin_view(
                     self.live_state_view
                 ),
@@ -193,7 +268,10 @@ class ScraperRunAdmin(admin.ModelAdmin):
             ),
         ]
 
-        return custom_urls + urls
+        return (
+            custom_urls
+            + urls
+        )
 
     def live_state_view(
         self,
@@ -231,15 +309,20 @@ class ScraperRunAdmin(admin.ModelAdmin):
 
         return JsonResponse(
             {
-                "status": run.status,
+                "status": (
+                    run.status
+                ),
                 "status_label": (
                     run.get_status_display()
                 ),
-                "finished": run.status in {
-                    ScraperRun.Status.APPOINTMENT_FOUND,
-                    ScraperRun.Status.NO_APPOINTMENT,
-                    ScraperRun.Status.FAILED,
-                },
+                "finished": (
+                    run.status
+                    in {
+                        ScraperRun.Status.APPOINTMENT_FOUND,
+                        ScraperRun.Status.NO_APPOINTMENT,
+                        ScraperRun.Status.FAILED,
+                    }
+                ),
                 "last_log_id": (
                     entries[-1].pk
                     if entries
@@ -248,9 +331,12 @@ class ScraperRunAdmin(admin.ModelAdmin):
                 "logs": [
                     {
                         "id": entry.pk,
-                        "message": entry.message,
+                        "message": (
+                            entry.message
+                        ),
                     }
-                    for entry in entries
+                    for entry
+                    in entries
                 ],
             }
         )
@@ -263,7 +349,8 @@ class ScraperRunAdmin(admin.ModelAdmin):
             return redirect(
                 reverse(
                     "admin:"
-                    "operations_scraperrun_changelist"
+                    "operations_"
+                    "scraperrun_changelist"
                 )
             )
 
@@ -306,7 +393,8 @@ class ScraperRunAdmin(admin.ModelAdmin):
             )
 
             db_run.error_message = (
-                "Could not queue Celery task: "
+                "Could not queue "
+                "Celery task: "
                 f"{exc}"
             )
 
@@ -322,8 +410,10 @@ class ScraperRunAdmin(admin.ModelAdmin):
             self.message_user(
                 request,
                 (
-                    "Could not queue scraper task. "
-                    "Check Redis and the Celery worker."
+                    "Could not queue "
+                    "scraper task. "
+                    "Check Redis and "
+                    "the Celery worker."
                 ),
                 level=messages.ERROR,
             )
@@ -341,8 +431,11 @@ class ScraperRunAdmin(admin.ModelAdmin):
 
         return redirect(
             reverse(
-                "admin:"
-                "operations_scraperrun_change",
+                (
+                    "admin:"
+                    "operations_"
+                    "scraperrun_change"
+                ),
                 args=[
                     db_run.pk
                 ],
