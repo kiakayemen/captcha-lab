@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import time
 
 import cv2
 import numpy as np
@@ -219,6 +220,129 @@ def get_captcha_tiles_in_scope(scope) -> list[Locator]:
         raise RuntimeError(f"Resolved {len(result)} clickable tiles after deduping, expected 9.")
     logger.info("Resolved 9 visible CAPTCHA tiles.")
     return result
+
+
+def wait_for_captcha_tiles_ready(
+    page: Page,
+    scope,
+    *,
+    expected_count: int = 9,
+    timeout: int = 30_000,
+    settle_ms: int = 500,
+) -> list[Locator]:
+    """
+    Wait until the CAPTCHA grid is genuinely ready to screenshot.
+
+    Readiness means:
+    - exactly `expected_count` visible/clickable tiles resolve;
+    - any tile backed by an <img> has finished loading;
+    - every loaded image has non-zero natural dimensions.
+
+    A short settle delay is added after readiness so the browser has
+    time to finish painting the completed grid before the screenshot.
+    """
+
+    logger.info(
+        "Waiting for CAPTCHA tiles to load. "
+        "Expected count=%s",
+        expected_count,
+    )
+
+    deadline = (
+        time.monotonic()
+        + timeout / 1000
+    )
+
+    last_error: Exception | None = None
+
+    while time.monotonic() < deadline:
+        try:
+            tiles = get_captcha_tiles_in_scope(
+                scope
+            )
+
+            if len(tiles) != expected_count:
+                raise RuntimeError(
+                    "Expected "
+                    f"{expected_count} CAPTCHA tiles, "
+                    f"resolved {len(tiles)}."
+                )
+
+            all_images_ready = True
+
+            for tile in tiles:
+                image = tile.locator("img").first
+
+                if image.count() == 0:
+                    # CAPTCHA_TILE_SELECTOR itself may already
+                    # point at the image rather than its parent.
+                    candidate = tile
+
+                else:
+                    candidate = image
+
+                ready = candidate.evaluate(
+                    """element => {
+                        if (
+                            element instanceof HTMLImageElement
+                        ) {
+                            return (
+                                element.complete &&
+                                element.naturalWidth > 0 &&
+                                element.naturalHeight > 0
+                            );
+                        }
+
+                        const img = element.querySelector("img");
+
+                        if (!img) {
+                            return true;
+                        }
+
+                        return (
+                            img.complete &&
+                            img.naturalWidth > 0 &&
+                            img.naturalHeight > 0
+                        );
+                    }"""
+                )
+
+                if not ready:
+                    all_images_ready = False
+                    break
+
+            if not all_images_ready:
+                raise RuntimeError(
+                    "All 9 CAPTCHA elements exist, "
+                    "but one or more tile images "
+                    "are still loading."
+                )
+
+            logger.info(
+                "CAPTCHA grid ready. "
+                "Resolved %s fully loaded tiles.",
+                len(tiles),
+            )
+
+            if settle_ms > 0:
+                page.wait_for_timeout(
+                    settle_ms
+                )
+
+            return tiles
+
+        except Exception as error:
+            last_error = error
+
+            page.wait_for_timeout(
+                250
+            )
+
+    raise RuntimeError(
+        "CAPTCHA grid did not become ready "
+        f"within {timeout / 1000:.1f} seconds. "
+        f"Last state: {last_error}"
+    ) from last_error
 
 
 def click_selected_captcha_tiles(page: Page, selected_tiles: tuple[int, ...]) -> None:

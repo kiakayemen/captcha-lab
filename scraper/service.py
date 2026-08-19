@@ -38,6 +38,7 @@ from flows.captcha_flow import (
     login_captcha_invalid,
     login_captcha_succeeded,
     save_captcha_crop,
+    wait_for_captcha_tiles_ready,
 )
 from flows.login_flow import (
     fill_visible_password,
@@ -214,6 +215,19 @@ def run_captcha_step(
             "Label ID=%s | Target=%s",
             true_label_id,
             target,
+        )
+
+        wait_for_captcha_tiles_ready(
+            page,
+            page,
+            expected_count=9,
+            timeout=30_000,
+            settle_ms=500,
+        )
+
+        logger.info(
+            "Login CAPTCHA tiles are fully loaded. "
+            "Taking solver screenshot."
         )
 
         captcha_image = save_captcha_crop(
@@ -420,6 +434,19 @@ def run_second_captcha_step(
             "Label ID=%s | Target=%s",
             true_label_id,
             target,
+        )
+
+        wait_for_captcha_tiles_ready(
+            page,
+            frame,
+            expected_count=9,
+            timeout=30_000,
+            settle_ms=500,
+        )
+
+        logger.info(
+            "Second CAPTCHA tiles are fully loaded. "
+            "Taking solver screenshot."
         )
 
         captcha_image = save_captcha_crop(
