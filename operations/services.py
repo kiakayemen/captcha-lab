@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from scraper.models import ScraperConfig, ScraperStatus
 from scraper.service import run_scraper
+from datetime import timedelta
 
 from .models import ScraperRun
 from .run_logging import bind_scraper_run_logging
@@ -15,6 +16,13 @@ from .run_logging import bind_scraper_run_logging
 
 logger = logging.getLogger("captcha_lab")
 
+PENDING_STALE_AFTER = timedelta(
+    minutes=10
+)
+
+RUNNING_STALE_AFTER = timedelta(
+    minutes=60
+)
 
 class _LoggerWriter:
     """
@@ -150,8 +158,33 @@ def execute_scraper_run(
             trigger=trigger,
         )
 
-    db_run.status = ScraperRun.Status.RUNNING
-    db_run.started_at = timezone.now()
+    now = timezone.now()
+
+
+    db_run.status = (
+        ScraperRun.Status.RUNNING
+    )
+
+    db_run.started_at = now
+
+    db_run.heartbeat_at = now
+
+    db_run.finished_at = None
+
+    db_run.error_type = ""
+
+    db_run.error_message = ""
+
+    db_run.save(
+        update_fields=[
+            "status",
+            "started_at",
+            "heartbeat_at",
+            "finished_at",
+            "error_type",
+            "error_message",
+        ]
+    )
 
     db_run.save(
         update_fields=[
@@ -325,3 +358,164 @@ def execute_scraper_run(
             )
 
             raise
+
+
+def recover_stale_scraper_runs() -> int:
+    """
+    Mark abandoned PENDING/RUNNING jobs as FAILED.
+
+    This handles cases such as:
+    - Celery worker dies;
+    - Python/Metal process crashes;
+    - machine restarts;
+    - a queued task is never picked up.
+
+    Returns the number of runs recovered.
+    """
+
+    now = timezone.now()
+
+    recovered = 0
+
+    #
+    # PENDING:
+    # created but apparently never picked up.
+    #
+    pending_cutoff = (
+        now
+        - PENDING_STALE_AFTER
+    )
+
+    stale_pending = (
+        ScraperRun.objects
+        .filter(
+            status=(
+                ScraperRun
+                .Status
+                .PENDING
+            ),
+            created_at__lt=(
+                pending_cutoff
+            ),
+        )
+    )
+
+    for run in stale_pending:
+        run.status = (
+            ScraperRun.Status.FAILED
+        )
+
+        run.finished_at = now
+
+        run.error_type = (
+            "StalePendingRun"
+        )
+
+        run.error_message = (
+            "The scraper run remained "
+            "pending for more than "
+            f"{PENDING_STALE_AFTER} "
+            "and was automatically "
+            "marked failed."
+        )
+
+        run.save(
+            update_fields=[
+                "status",
+                "finished_at",
+                "error_type",
+                "error_message",
+            ]
+        )
+
+        recovered += 1
+
+        logger.warning(
+            "Recovered stale PENDING "
+            "scraper run. Run ID=%s",
+            run.pk,
+        )
+
+    #
+    # RUNNING:
+    # use heartbeat first, then started_at
+    # as the fallback for older rows.
+    #
+    running_cutoff = (
+        now
+        - RUNNING_STALE_AFTER
+    )
+
+    running_runs = (
+        ScraperRun.objects
+        .filter(
+            status=(
+                ScraperRun
+                .Status
+                .RUNNING
+            )
+        )
+    )
+
+    for run in running_runs:
+        last_alive_at = (
+            run.heartbeat_at
+            or run.started_at
+        )
+
+        if last_alive_at is None:
+            continue
+
+        if (
+            last_alive_at
+            >= running_cutoff
+        ):
+            continue
+
+        run.status = (
+            ScraperRun.Status.FAILED
+        )
+
+        run.finished_at = now
+
+        run.error_type = (
+            "StaleRunningRun"
+        )
+
+        run.error_message = (
+            "The scraper stopped "
+            "producing heartbeats for "
+            f"more than "
+            f"{RUNNING_STALE_AFTER}. "
+            "The Celery worker or scraper "
+            "process may have terminated."
+        )
+
+        if run.started_at:
+            run.duration_seconds = (
+                now
+                - run.started_at
+            ).total_seconds()
+
+        run.save(
+            update_fields=[
+                "status",
+                "finished_at",
+                "error_type",
+                "error_message",
+                "duration_seconds",
+            ]
+        )
+
+        recovered += 1
+
+        logger.error(
+            "Recovered stale RUNNING "
+            "scraper run. "
+            "Run ID=%s | "
+            "Last heartbeat=%s",
+            run.pk,
+            last_alive_at,
+        )
+
+    return recovered

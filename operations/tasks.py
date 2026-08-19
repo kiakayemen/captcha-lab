@@ -16,6 +16,7 @@ from .services import (
     create_scraper_run,
     deserialize_scraper_config,
     execute_scraper_run,
+    recover_stale_scraper_runs,
 )
 
 
@@ -68,6 +69,17 @@ def run_scheduled_scraper_task() -> str:
 
     It also prevents overlapping Playwright scraper runs.
     """
+
+    recovered = (
+        recover_stale_scraper_runs()
+    )
+
+    if recovered:
+        logger.warning(
+            "Recovered %s stale scraper "
+            "run(s) before scheduled check.",
+            recovered,
+        )
 
     now = timezone.now()
 

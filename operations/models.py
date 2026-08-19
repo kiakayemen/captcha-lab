@@ -53,6 +53,12 @@ class ScraperRun(models.Model):
         blank=True,
     )
 
+    heartbeat_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+
     finished_at = models.DateTimeField(
         null=True,
         blank=True,

@@ -28,6 +28,7 @@ from .services import (
     build_default_scraper_config,
     create_scraper_run,
     serialize_scraper_config,
+    recover_stale_scraper_runs
 )
 from .tasks import run_scraper_task
 
@@ -113,6 +114,7 @@ class ScraperRunAdmin(
         "trigger",
         "created_at",
         "started_at",
+        "heartbeat_at",
         "finished_at",
         "visa_sub_types",
         "appointment_visa_sub_type",
@@ -134,6 +136,7 @@ class ScraperRunAdmin(
                     "trigger",
                     "created_at",
                     "started_at",
+                    "heartbeat_at",
                     "finished_at",
                     "duration_seconds",
                 )
@@ -351,6 +354,43 @@ class ScraperRunAdmin(
                     "admin:"
                     "operations_"
                     "scraperrun_changelist"
+                )
+            )
+
+        recover_stale_scraper_runs()
+
+        active_run = (
+            ScraperRun.objects
+            .filter(
+                status__in=[
+                    ScraperRun.Status.PENDING,
+                    ScraperRun.Status.RUNNING,
+                ]
+            )
+            .order_by(
+                "-created_at"
+            )
+            .first()
+        )
+
+        if active_run is not None:
+            self.message_user(
+                request,
+                (
+                    "A scraper run is already "
+                    "pending or running. "
+                    f"Run ID: {active_run.pk}"
+                ),
+                level=messages.WARNING,
+            )
+
+            return redirect(
+                reverse(
+                    "admin:"
+                    "operations_scraperrun_change",
+                    args=[
+                        active_run.pk
+                    ],
                 )
             )
 
