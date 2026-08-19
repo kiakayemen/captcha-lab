@@ -91,6 +91,11 @@ data/glyph_style_analysis/
 data/style_bank/
 data/rendered_preview*/
 data/composed_preview*/
+staticfiles/
+
+# Local databases / scheduler state
+db.sqlite3
+celerybeat-schedule.db
 
 # Local source samples and generated style reports
 real_sample/

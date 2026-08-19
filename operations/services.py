@@ -5,6 +5,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from django.utils import timezone
+import os
 
 from scraper.models import ScraperConfig, ScraperStatus
 from scraper.service import run_scraper
@@ -23,6 +24,26 @@ PENDING_STALE_AFTER = timedelta(
 RUNNING_STALE_AFTER = timedelta(
     minutes=60
 )
+
+
+def _env_bool(
+    name: str,
+    default: bool,
+) -> bool:
+    value = os.getenv(
+        name,
+        str(default),
+    )
+
+    return (
+        value.strip().lower()
+        in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    )
 
 class _LoggerWriter:
     """
@@ -75,22 +96,28 @@ class _LoggerWriter:
 
 
 def build_default_scraper_config() -> ScraperConfig:
-    """
-    Single source of truth for the scraper configuration used by
-    both manual and scheduled runs.
-    """
+    output_dir = Path(
+        os.getenv(
+            "SCRAPER_OUTPUT_DIR",
+            "output/live_solver",
+        )
+    )
+
     return ScraperConfig(
-        headless=False,
-        gpu=True,
-        output_dir=Path(
-            "output/live_solver"
+        headless=_env_bool(
+            "SCRAPER_HEADLESS",
+            True,
         ),
+        gpu=_env_bool(
+            "SCRAPER_GPU",
+            False,
+        ),
+        output_dir=output_dir,
         visa_sub_types=(
             "Student Visa",
             "Non-Working Residence Visa",
         ),
     )
-
 
 def serialize_scraper_config(
     config: ScraperConfig,
