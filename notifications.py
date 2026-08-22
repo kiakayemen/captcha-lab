@@ -385,17 +385,27 @@ def _send_email(
         )
     )
 
+    # Some hosting providers use one hostname for the SMTP endpoint and a
+    # different, certificate-covered hostname for TLS verification.
+    tls_server_name = os.getenv(
+        "APPOINTMENT_SMTP_TLS_SERVER_NAME",
+        host,
+    ).strip() or host
+
     ssl_context = (
         ssl.create_default_context()
     )
 
     if mode == "ssl":
         with smtplib.SMTP_SSL(
-            host,
-            port,
             timeout=timeout,
             context=ssl_context,
         ) as smtp:
+            # SMTP_SSL performs its handshake during connect(). Set the
+            # certificate name first, while still connecting to the endpoint.
+            smtp._host = tls_server_name
+            smtp.connect(host, port)
+
             if username:
                 smtp.login(
                     username,
@@ -416,9 +426,22 @@ def _send_email(
         smtp.ehlo()
 
         if mode == "starttls":
-            smtp.starttls(
-                context=ssl_context
-            )
+            if tls_server_name != host:
+                # smtplib uses _host as the TLS SNI and verification name.
+                smtp._host = tls_server_name
+
+            try:
+                smtp.starttls(
+                    context=ssl_context
+                )
+            except ssl.CertificateError as exc:
+                raise RuntimeError(
+                    "SMTP TLS certificate does not match "
+                    f"{tls_server_name!r}. Set "
+                    "APPOINTMENT_SMTP_TLS_SERVER_NAME to the "
+                    "hostname listed in the mail provider's certificate, "
+                    "or use the provider's correct SMTP hostname."
+                ) from exc
 
             smtp.ehlo()
 
