@@ -3,317 +3,168 @@ from __future__ import annotations
 import argparse
 import csv
 import random
-import re
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-from sklearn.model_selection import GroupShuffleSplit
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.models import ConvNeXt_Tiny_Weights, convnext_tiny
 
-
-# ---------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------
 
 SEED = 42
 IMAGE_SIZE = 224
 
 DEFAULT_LABELS = Path("labels.csv")
 DEFAULT_OUTPUT = Path("output")
-DEFAULT_RUN_DIR = Path("experiments/convnext/run_001")
+DEFAULT_SPLIT_DIR = Path("experiments/convnext/run_001")
+DEFAULT_RUN_DIR = Path("experiments/convnext/run_002")
 
-SCREENSHOT_RE = re.compile(r"(Screenshot-\d+)")
 
-
-# ---------------------------------------------------------------------
-# Reproducibility
-# ---------------------------------------------------------------------
-
-def seed_everything(seed: int = SEED) -> None:
+def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
 
-# ---------------------------------------------------------------------
-# Device
-# ---------------------------------------------------------------------
-
 def get_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
-
     if torch.backends.mps.is_available():
         return torch.device("mps")
-
     return torch.device("cpu")
 
 
-# ---------------------------------------------------------------------
-# Data
-# ---------------------------------------------------------------------
+def load_split_csv(path: Path, output_dir: Path) -> list[dict]:
+    rows: list[dict] = []
 
-def screenshot_group(image_name: str) -> str:
-    match = SCREENSHOT_RE.search(image_name)
-
-    if not match:
-        raise ValueError(
-            f"Could not determine screenshot group from {image_name!r}"
-        )
-
-    return match.group(1)
-
-
-def resolve_tile_path(
-    row: dict[str, str],
-    output_dir: Path,
-) -> Path:
-    image_name = row["image"]
-    tile = int(row["tile"])
-
-    stem = Path(image_name).stem
-
-    return output_dir / f"{stem}_tile_{tile}.png"
-
-
-def load_samples(
-    labels_path: Path,
-    output_dir: Path,
-) -> list[dict]:
-    samples = []
-
-    with labels_path.open(
-        newline="",
-        encoding="utf-8",
-    ) as handle:
+    with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
 
-        required = {
-            "image",
-            "tile",
-            "ground_truth",
-        }
-
+        required = {"image", "tile", "ground_truth"}
         if not required.issubset(reader.fieldnames or []):
             raise ValueError(
-                f"{labels_path} must contain columns: "
-                f"{sorted(required)}"
+                f"{path} must contain at least columns: {sorted(required)}"
             )
 
         for row in reader:
-            ground_truth = row["ground_truth"].strip()
+            truth = row["ground_truth"].strip()
 
-            if (
-                len(ground_truth) != 3
-                or not ground_truth.isdigit()
-            ):
-                continue
-
-            tile_path = resolve_tile_path(
-                row,
-                output_dir,
-            )
-
-            if not tile_path.exists():
-                raise FileNotFoundError(
-                    f"Missing tile: {tile_path}"
+            if len(truth) != 3 or not truth.isdigit():
+                raise ValueError(
+                    f"Invalid ground truth {truth!r} in {path}"
                 )
 
-            samples.append(
+            tile_number = int(row["tile"])
+
+            saved_path = row.get("path", "").strip()
+            if saved_path:
+                candidate = Path(saved_path)
+            else:
+                stem = Path(row["image"]).stem
+                candidate = output_dir / f"{stem}_tile_{tile_number}.png"
+
+            # Old split CSVs may contain absolute paths from another machine/run.
+            if not candidate.exists():
+                stem = Path(row["image"]).stem
+                candidate = output_dir / f"{stem}_tile_{tile_number}.png"
+
+            if not candidate.exists():
+                raise FileNotFoundError(
+                    f"Could not locate tile for {row['image']} tile {tile_number}: "
+                    f"{candidate}"
+                )
+
+            rows.append(
                 {
                     "image": row["image"],
-                    "tile": int(row["tile"]),
-                    "path": tile_path,
-                    "label": tuple(
-                        int(digit)
-                        for digit in ground_truth
-                    ),
-                    "ground_truth": ground_truth,
-                    "group": screenshot_group(
-                        row["image"]
-                    ),
+                    "tile": tile_number,
+                    "path": candidate,
+                    "ground_truth": truth,
+                    "label": tuple(int(d) for d in truth),
+                    "group": row.get("group", Path(row["image"]).stem),
                 }
             )
 
-    if not samples:
-        raise RuntimeError("No valid labeled samples found.")
+    return rows
 
-    return samples
-
-
-def grouped_split(
-    samples: list[dict],
-    seed: int,
-):
-    groups = [sample["group"] for sample in samples]
-
-    # 80% train+validation, 20% test
-    outer = GroupShuffleSplit(
-        n_splits=1,
-        test_size=0.20,
-        random_state=seed,
-    )
-
-    train_val_idx, test_idx = next(
-        outer.split(
-            samples,
-            groups=groups,
-        )
-    )
-
-    train_val = [
-        samples[index]
-        for index in train_val_idx
-    ]
-
-    test = [
-        samples[index]
-        for index in test_idx
-    ]
-
-    train_val_groups = [
-        sample["group"]
-        for sample in train_val
-    ]
-
-    # 20% of remaining data becomes validation.
-    # Overall approximately:
-    #
-    # train = 64%
-    # val   = 16%
-    # test  = 20%
-    inner = GroupShuffleSplit(
-        n_splits=1,
-        test_size=0.20,
-        random_state=seed + 1,
-    )
-
-    train_idx, val_idx = next(
-        inner.split(
-            train_val,
-            groups=train_val_groups,
-        )
-    )
-
-    train = [
-        train_val[index]
-        for index in train_idx
-    ]
-
-    val = [
-        train_val[index]
-        for index in val_idx
-    ]
-
-    return train, val, test
-
-
-# ---------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------
 
 class DigitTileDataset(Dataset):
-    def __init__(
-        self,
-        samples: list[dict],
-        transform,
-    ):
+    def __init__(self, samples: list[dict], transform):
         self.samples = samples
         self.transform = transform
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int):
         sample = self.samples[index]
 
-        image = Image.open(
-            sample["path"]
-        ).convert("RGB")
-
+        image = Image.open(sample["path"]).convert("RGB")
         image = self.transform(image)
 
-        label = torch.tensor(
+        target = torch.tensor(
             sample["label"],
             dtype=torch.long,
         )
 
         return (
             image,
-            label,
+            target,
             sample["ground_truth"],
             sample["image"],
             sample["tile"],
         )
 
 
-# ---------------------------------------------------------------------
-# Augmentation
-# ---------------------------------------------------------------------
-
 def build_transforms():
     weights = ConvNeXt_Tiny_Weights.DEFAULT
-
-    mean = weights.transforms().mean
-    std = weights.transforms().std
+    preprocessing = weights.transforms()
 
     train_transform = transforms.Compose(
         [
-            transforms.Resize(
-                (IMAGE_SIZE, IMAGE_SIZE)
-            ),
-
+            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
             transforms.RandomAffine(
-                degrees=7,
-                translate=(0.04, 0.04),
-                scale=(0.92, 1.08),
-                shear=3,
+                degrees=5,
+                translate=(0.03, 0.03),
+                scale=(0.95, 1.05),
+                shear=2,
+                fill=255,
             ),
-
             transforms.ColorJitter(
-                brightness=0.20,
-                contrast=0.20,
-                saturation=0.15,
-                hue=0.03,
+                brightness=0.12,
+                contrast=0.12,
+                saturation=0.08,
+                hue=0.02,
             ),
-
             transforms.RandomApply(
                 [
                     transforms.GaussianBlur(
                         kernel_size=3,
-                        sigma=(0.1, 1.2),
+                        sigma=(0.1, 0.8),
                     )
                 ],
-                p=0.20,
+                p=0.12,
             ),
-
             transforms.ToTensor(),
-
             transforms.Normalize(
-                mean=mean,
-                std=std,
+                mean=preprocessing.mean,
+                std=preprocessing.std,
             ),
         ]
     )
 
     eval_transform = transforms.Compose(
         [
-            transforms.Resize(
-                (IMAGE_SIZE, IMAGE_SIZE)
-            ),
+            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
             transforms.ToTensor(),
             transforms.Normalize(
-                mean=mean,
-                std=std,
+                mean=preprocessing.mean,
+                std=preprocessing.std,
             ),
         ]
     )
@@ -321,45 +172,29 @@ def build_transforms():
     return train_transform, eval_transform
 
 
-# ---------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------
-
 class ConvNeXtThreeDigit(nn.Module):
     def __init__(self):
         super().__init__()
 
-        weights = ConvNeXt_Tiny_Weights.DEFAULT
-
         backbone = convnext_tiny(
-            weights=weights
+            weights=ConvNeXt_Tiny_Weights.DEFAULT
         )
 
-        feature_dim = (
-            backbone.classifier[2].in_features
-        )
+        feature_dim = backbone.classifier[2].in_features
 
-        # Keep ConvNeXt's feature extractor.
         self.features = backbone.features
         self.avgpool = backbone.avgpool
-
-        # Preserve its final LayerNorm/flatten behavior.
         self.norm = backbone.classifier[0]
         self.flatten = backbone.classifier[1]
 
-        self.dropout = nn.Dropout(p=0.25)
+        self.dropout = nn.Dropout(0.20)
 
-        self.head_1 = nn.Linear(
-            feature_dim,
-            10,
-        )
-        self.head_2 = nn.Linear(
-            feature_dim,
-            10,
-        )
-        self.head_3 = nn.Linear(
-            feature_dim,
-            10,
+        self.heads = nn.ModuleList(
+            [
+                nn.Linear(feature_dim, 10),
+                nn.Linear(feature_dim, 10),
+                nn.Linear(feature_dim, 10),
+            ]
         )
 
     def forward(self, x):
@@ -369,65 +204,55 @@ class ConvNeXtThreeDigit(nn.Module):
         x = self.flatten(x)
         x = self.dropout(x)
 
-        return (
-            self.head_1(x),
-            self.head_2(x),
-            self.head_3(x),
-        )
+        return tuple(head(x) for head in self.heads)
 
 
-# ---------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------
+def freeze_backbone(model: ConvNeXtThreeDigit) -> None:
+    for parameter in model.features.parameters():
+        parameter.requires_grad = False
+
+    for parameter in model.norm.parameters():
+        parameter.requires_grad = False
+
+    for parameter in model.heads.parameters():
+        parameter.requires_grad = True
+
+
+def unfreeze_last_blocks(
+    model: ConvNeXtThreeDigit,
+    num_blocks: int = 2,
+) -> None:
+    # Keep early ConvNeXt representation frozen.
+    for parameter in model.features.parameters():
+        parameter.requires_grad = False
+
+    children = list(model.features.children())
+
+    for block in children[-num_blocks:]:
+        for parameter in block.parameters():
+            parameter.requires_grad = True
+
+    for parameter in model.norm.parameters():
+        parameter.requires_grad = True
+
+    for parameter in model.heads.parameters():
+        parameter.requires_grad = True
+
 
 def predictions_from_logits(outputs):
-    predictions = []
-
-    for output in outputs:
-        predictions.append(
-            output.argmax(dim=1)
-        )
-
     return torch.stack(
-        predictions,
+        [output.argmax(dim=1) for output in outputs],
         dim=1,
     )
 
 
-def calculate_batch_metrics(
-    predictions,
-    targets,
-):
-    digit_correct = (
-        predictions == targets
-    )
+def compute_loss(outputs, targets, criterion):
+    losses = [
+        criterion(outputs[position], targets[:, position])
+        for position in range(3)
+    ]
 
-    exact_correct = (
-        digit_correct.all(dim=1)
-    )
-
-    return (
-        digit_correct.sum().item(),
-        exact_correct.sum().item(),
-        targets.numel(),
-        targets.shape[0],
-    )
-
-
-# ---------------------------------------------------------------------
-# Training / evaluation
-# ---------------------------------------------------------------------
-
-def compute_loss(
-    outputs,
-    targets,
-    criterion,
-):
-    return (
-        criterion(outputs[0], targets[:, 0])
-        + criterion(outputs[1], targets[:, 1])
-        + criterion(outputs[2], targets[:, 2])
-    )
+    return sum(losses) / 3.0
 
 
 def train_epoch(
@@ -439,59 +264,46 @@ def train_epoch(
 ):
     model.train()
 
-    total_loss = 0.0
+    loss_sum = 0.0
+    digit_correct = 0
     exact_correct = 0
-    sample_count = 0
+    digit_total = 0
+    sample_total = 0
 
     for images, targets, *_ in loader:
         images = images.to(device)
         targets = targets.to(device)
 
-        optimizer.zero_grad(
-            set_to_none=True
-        )
+        optimizer.zero_grad(set_to_none=True)
 
         outputs = model(images)
-
-        loss = compute_loss(
-            outputs,
-            targets,
-            criterion,
-        )
+        loss = compute_loss(outputs, targets, criterion)
 
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(
-            model.parameters(),
+            [p for p in model.parameters() if p.requires_grad],
             max_norm=1.0,
         )
 
         optimizer.step()
 
-        predictions = predictions_from_logits(
-            outputs
-        )
+        predictions = predictions_from_logits(outputs)
+        matches = predictions.eq(targets)
 
-        _, batch_exact, _, batch_samples = (
-            calculate_batch_metrics(
-                predictions,
-                targets,
-            )
-        )
+        batch_size = targets.shape[0]
 
-        total_loss += (
-            loss.item()
-            * images.size(0)
-        )
+        loss_sum += loss.item() * batch_size
+        digit_correct += matches.sum().item()
+        exact_correct += matches.all(dim=1).sum().item()
 
-        exact_correct += batch_exact
-        sample_count += batch_samples
+        digit_total += targets.numel()
+        sample_total += batch_size
 
     return {
-        "loss": total_loss / sample_count,
-        "exact_accuracy": (
-            exact_correct / sample_count
-        ),
+        "loss": loss_sum / sample_total,
+        "digit_accuracy": digit_correct / digit_total,
+        "exact_accuracy": exact_correct / sample_total,
     }
 
 
@@ -501,59 +313,36 @@ def evaluate(
     loader,
     criterion,
     device,
-    collect_predictions=False,
+    collect_predictions: bool = False,
 ):
     model.eval()
 
-    total_loss = 0.0
+    loss_sum = 0.0
     digit_correct = 0
     exact_correct = 0
-    digit_count = 0
-    sample_count = 0
+    digit_total = 0
+    sample_total = 0
 
-    prediction_rows = []
+    rows = []
 
-    for (
-        images,
-        targets,
-        truths,
-        image_names,
-        tile_numbers,
-    ) in loader:
+    for images, targets, truths, image_names, tile_numbers in loader:
         images = images.to(device)
         targets = targets.to(device)
 
         outputs = model(images)
+        loss = compute_loss(outputs, targets, criterion)
 
-        loss = compute_loss(
-            outputs,
-            targets,
-            criterion,
-        )
+        predictions = predictions_from_logits(outputs)
+        matches = predictions.eq(targets)
 
-        predictions = predictions_from_logits(
-            outputs
-        )
+        batch_size = targets.shape[0]
 
-        (
-            batch_digit_correct,
-            batch_exact,
-            batch_digits,
-            batch_samples,
-        ) = calculate_batch_metrics(
-            predictions,
-            targets,
-        )
+        loss_sum += loss.item() * batch_size
+        digit_correct += matches.sum().item()
+        exact_correct += matches.all(dim=1).sum().item()
 
-        total_loss += (
-            loss.item()
-            * images.size(0)
-        )
-
-        digit_correct += batch_digit_correct
-        exact_correct += batch_exact
-        digit_count += batch_digits
-        sample_count += batch_samples
+        digit_total += targets.numel()
+        sample_total += batch_size
 
         if collect_predictions:
             probabilities = [
@@ -561,133 +350,53 @@ def evaluate(
                 for output in outputs
             ]
 
-            predictions_cpu = (
-                predictions.cpu()
-            )
+            predictions_cpu = predictions.cpu()
 
-            for index in range(
-                len(truths)
-            ):
-                predicted_digits = (
-                    predictions_cpu[index]
-                    .tolist()
-                )
+            for index in range(batch_size):
+                predicted_digits = predictions_cpu[index].tolist()
 
                 prediction = "".join(
                     str(digit)
                     for digit in predicted_digits
                 )
 
-                digit_confidences = []
+                confidences = [
+                    probabilities[position][
+                        index,
+                        predicted_digits[position],
+                    ].item()
+                    for position in range(3)
+                ]
 
-                for position in range(3):
-                    predicted_digit = (
-                        predicted_digits[position]
-                    )
-
-                    confidence = (
-                        probabilities[position][
-                            index,
-                            predicted_digit,
-                        ]
-                        .item()
-                    )
-
-                    digit_confidences.append(
-                        confidence
-                    )
-
-                prediction_rows.append(
+                rows.append(
                     {
                         "image": image_names[index],
-                        "tile": int(
-                            tile_numbers[index]
-                        ),
+                        "tile": int(tile_numbers[index]),
                         "ground_truth": truths[index],
                         "prediction": prediction,
-                        "correct": (
-                            prediction
-                            == truths[index]
-                        ),
-                        "confidence_1": round(
-                            digit_confidences[0],
-                            6,
-                        ),
-                        "confidence_2": round(
-                            digit_confidences[1],
-                            6,
-                        ),
-                        "confidence_3": round(
-                            digit_confidences[2],
-                            6,
-                        ),
-                        "min_confidence": round(
-                            min(
-                                digit_confidences
-                            ),
+                        "correct": prediction == truths[index],
+                        "confidence_1": round(confidences[0], 6),
+                        "confidence_2": round(confidences[1], 6),
+                        "confidence_3": round(confidences[2], 6),
+                        "min_confidence": round(min(confidences), 6),
+                        "mean_confidence": round(
+                            sum(confidences) / 3.0,
                             6,
                         ),
                     }
                 )
 
     return {
-        "loss": total_loss / sample_count,
-        "digit_accuracy": (
-            digit_correct / digit_count
-        ),
-        "exact_accuracy": (
-            exact_correct / sample_count
-        ),
+        "loss": loss_sum / sample_total,
+        "digit_accuracy": digit_correct / digit_total,
+        "exact_accuracy": exact_correct / sample_total,
         "correct": exact_correct,
-        "total": sample_count,
-        "predictions": prediction_rows,
+        "total": sample_total,
+        "predictions": rows,
     }
 
 
-# ---------------------------------------------------------------------
-# Output
-# ---------------------------------------------------------------------
-
-def save_split(
-    path: Path,
-    samples: list[dict],
-):
-    with path.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "image",
-                "tile",
-                "ground_truth",
-                "path",
-                "group",
-            ],
-        )
-
-        writer.writeheader()
-
-        for sample in samples:
-            writer.writerow(
-                {
-                    "image": sample["image"],
-                    "tile": sample["tile"],
-                    "ground_truth": (
-                        sample["ground_truth"]
-                    ),
-                    "path": sample["path"],
-                    "group": sample["group"],
-                }
-            )
-
-
-def save_predictions(
-    path: Path,
-    rows: list[dict],
-):
+def save_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
 
@@ -698,60 +407,150 @@ def save_predictions(
     ) as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=rows[0].keys(),
+            fieldnames=list(rows[0].keys()),
         )
-
         writer.writeheader()
         writer.writerows(rows)
 
 
-# ---------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------
+def save_split_copy(path: Path, samples: list[dict]) -> None:
+    rows = [
+        {
+            "image": sample["image"],
+            "tile": sample["tile"],
+            "ground_truth": sample["ground_truth"],
+            "path": str(sample["path"]),
+            "group": sample["group"],
+        }
+        for sample in samples
+    ]
+
+    save_csv(path, rows)
+
+
+def build_head_optimizer(
+    model: ConvNeXtThreeDigit,
+    learning_rate: float,
+):
+    return torch.optim.AdamW(
+        model.heads.parameters(),
+        lr=learning_rate,
+        weight_decay=1e-4,
+    )
+
+
+def build_finetune_optimizer(
+    model: ConvNeXtThreeDigit,
+    backbone_lr: float,
+    head_lr: float,
+):
+    backbone_parameters = []
+    head_parameters = []
+
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+
+        if name.startswith("heads."):
+            head_parameters.append(parameter)
+        else:
+            backbone_parameters.append(parameter)
+
+    return torch.optim.AdamW(
+        [
+            {
+                "params": backbone_parameters,
+                "lr": backbone_lr,
+            },
+            {
+                "params": head_parameters,
+                "lr": head_lr,
+            },
+        ],
+        weight_decay=1e-4,
+    )
+
+
+def is_better_checkpoint(
+    current_digit_accuracy: float,
+    current_loss: float,
+    best_digit_accuracy: float,
+    best_loss: float,
+) -> bool:
+    if current_digit_accuracy > best_digit_accuracy:
+        return True
+
+    if (
+        current_digit_accuracy == best_digit_accuracy
+        and current_loss < best_loss
+    ):
+        return True
+
+    return False
+
 
 def main():
     parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--labels",
-        type=Path,
-        default=DEFAULT_LABELS,
-    )
 
     parser.add_argument(
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
     )
-
+    parser.add_argument(
+        "--split-dir",
+        type=Path,
+        default=DEFAULT_SPLIT_DIR,
+    )
     parser.add_argument(
         "--run-dir",
         type=Path,
         default=DEFAULT_RUN_DIR,
     )
-
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=40,
-    )
-
     parser.add_argument(
         "--batch-size",
         type=int,
         default=16,
     )
-
     parser.add_argument(
-        "--lr",
-        type=float,
-        default=2e-5,
+        "--warmup-epochs",
+        type=int,
+        default=12,
     )
-
+    parser.add_argument(
+        "--finetune-epochs",
+        type=int,
+        default=35,
+    )
+    parser.add_argument(
+        "--head-lr",
+        type=float,
+        default=8e-4,
+    )
+    parser.add_argument(
+        "--backbone-lr",
+        type=float,
+        default=8e-6,
+    )
+    parser.add_argument(
+        "--finetune-head-lr",
+        type=float,
+        default=8e-5,
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=10,
+    )
     parser.add_argument(
         "--seed",
         type=int,
         default=SEED,
+    )
+    parser.add_argument(
+        "--evaluate-test",
+        action="store_true",
+        help="Evaluate the locked test set after training. Leave off while tuning.",
     )
 
     args = parser.parse_args()
@@ -764,164 +563,217 @@ def main():
     )
 
     device = get_device()
-
     print(f"Device: {device}")
 
-    samples = load_samples(
-        args.labels,
+    train_samples = load_split_csv(
+        args.split_dir / "train_split.csv",
+        args.output,
+    )
+    val_samples = load_split_csv(
+        args.split_dir / "val_split.csv",
+        args.output,
+    )
+    test_samples = load_split_csv(
+        args.split_dir / "test_split.csv",
         args.output,
     )
 
-    print(
-        f"Loaded {len(samples)} labeled tiles."
-    )
-
-    train_samples, val_samples, test_samples = (
-        grouped_split(
-            samples,
-            args.seed,
-        )
-    )
-
     print()
-    print("Dataset split:")
-    print(
-        f"  Train: {len(train_samples)} tiles / "
-        f"{len(set(x['group'] for x in train_samples))} screenshots"
-    )
-    print(
-        f"  Val:   {len(val_samples)} tiles / "
-        f"{len(set(x['group'] for x in val_samples))} screenshots"
-    )
-    print(
-        f"  Test:  {len(test_samples)} tiles / "
-        f"{len(set(x['group'] for x in test_samples))} screenshots"
-    )
+    print("Locked dataset split:")
+    print(f"  Train: {len(train_samples)}")
+    print(f"  Val:   {len(val_samples)}")
+    print(f"  Test:  {len(test_samples)}")
 
-    train_groups = {
-        x["group"]
-        for x in train_samples
-    }
+    train_groups = {sample["group"] for sample in train_samples}
+    val_groups = {sample["group"] for sample in val_samples}
+    test_groups = {sample["group"] for sample in test_samples}
 
-    val_groups = {
-        x["group"]
-        for x in val_samples
-    }
+    assert train_groups.isdisjoint(val_groups)
+    assert train_groups.isdisjoint(test_groups)
+    assert val_groups.isdisjoint(test_groups)
 
-    test_groups = {
-        x["group"]
-        for x in test_samples
-    }
-
-    assert train_groups.isdisjoint(
-        val_groups
-    )
-    assert train_groups.isdisjoint(
-        test_groups
-    )
-    assert val_groups.isdisjoint(
-        test_groups
-    )
-
-    save_split(
+    save_split_copy(
         args.run_dir / "train_split.csv",
         train_samples,
     )
-
-    save_split(
+    save_split_copy(
         args.run_dir / "val_split.csv",
         val_samples,
     )
-
-    save_split(
+    save_split_copy(
         args.run_dir / "test_split.csv",
         test_samples,
     )
 
-    train_transform, eval_transform = (
-        build_transforms()
-    )
-
-    train_dataset = DigitTileDataset(
-        train_samples,
-        train_transform,
-    )
-
-    val_dataset = DigitTileDataset(
-        val_samples,
-        eval_transform,
-    )
-
-    test_dataset = DigitTileDataset(
-        test_samples,
-        eval_transform,
-    )
+    train_transform, eval_transform = build_transforms()
 
     train_loader = DataLoader(
-        train_dataset,
+        DigitTileDataset(train_samples, train_transform),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=0,
     )
 
     val_loader = DataLoader(
-        val_dataset,
+        DigitTileDataset(val_samples, eval_transform),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
     )
 
     test_loader = DataLoader(
-        test_dataset,
+        DigitTileDataset(test_samples, eval_transform),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
     )
 
     print()
-    print(
-        "Loading pretrained ConvNeXt-Tiny..."
-    )
-
-    model = ConvNeXtThreeDigit().to(
-        device
-    )
+    print("Loading pretrained ConvNeXt-Tiny...")
+    model = ConvNeXtThreeDigit().to(device)
 
     criterion = nn.CrossEntropyLoss(
-        label_smoothing=0.05
+        label_smoothing=0.03
     )
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=1e-4,
-    )
-
-    scheduler = (
-        torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=args.epochs,
-        )
-    )
-
-    best_val_accuracy = -1.0
-    patience = 10
-    epochs_without_improvement = 0
-
-    history = []
 
     checkpoint_path = (
         args.run_dir / "best_model.pt"
     )
 
-    print()
-    print("Training...")
-    print()
+    history: list[dict] = []
 
-    for epoch in range(
+    best_digit_accuracy = -1.0
+    best_val_loss = float("inf")
+    best_epoch = 0
+    global_epoch = 0
+
+    # -------------------------------------------------------------
+    # Stage 1: learn only the randomly initialized digit heads.
+    # -------------------------------------------------------------
+
+    print()
+    print("=" * 72)
+    print("STAGE 1 — HEAD WARMUP")
+    print("=" * 72)
+
+    freeze_backbone(model)
+
+    optimizer = build_head_optimizer(
+        model,
+        args.head_lr,
+    )
+
+    for stage_epoch in range(
         1,
-        args.epochs + 1,
+        args.warmup_epochs + 1,
     ):
+        global_epoch += 1
+
+        train_metrics = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device,
+        )
+
+        val_metrics = evaluate(
+            model,
+            val_loader,
+            criterion,
+            device,
+        )
+
+        row = {
+            "epoch": global_epoch,
+            "stage": "head_warmup",
+            "stage_epoch": stage_epoch,
+            "train_loss": train_metrics["loss"],
+            "train_digit_accuracy": train_metrics["digit_accuracy"],
+            "train_exact_accuracy": train_metrics["exact_accuracy"],
+            "val_loss": val_metrics["loss"],
+            "val_digit_accuracy": val_metrics["digit_accuracy"],
+            "val_exact_accuracy": val_metrics["exact_accuracy"],
+        }
+
+        history.append(row)
+
+        print(
+            f"Epoch {global_epoch:02d} | "
+            f"train digit {train_metrics['digit_accuracy']:.2%} | "
+            f"train exact {train_metrics['exact_accuracy']:.2%} | "
+            f"val digit {val_metrics['digit_accuracy']:.2%} | "
+            f"val exact {val_metrics['exact_accuracy']:.2%} | "
+            f"val loss {val_metrics['loss']:.4f}"
+        )
+
+        if is_better_checkpoint(
+            val_metrics["digit_accuracy"],
+            val_metrics["loss"],
+            best_digit_accuracy,
+            best_val_loss,
+        ):
+            best_digit_accuracy = val_metrics["digit_accuracy"]
+            best_val_loss = val_metrics["loss"]
+            best_epoch = global_epoch
+
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "epoch": global_epoch,
+                    "stage": "head_warmup",
+                    "val_digit_accuracy": best_digit_accuracy,
+                    "val_loss": best_val_loss,
+                    "seed": args.seed,
+                },
+                checkpoint_path,
+            )
+
+            print("  ↳ new best checkpoint")
+
+    # Start fine-tuning from the strongest warmup checkpoint.
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location=device,
+        weights_only=True,
+    )
+    model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
+
+    # -------------------------------------------------------------
+    # Stage 2: fine-tune only the later pretrained ConvNeXt blocks.
+    # -------------------------------------------------------------
+
+    print()
+    print("=" * 72)
+    print("STAGE 2 — LATE-BLOCK FINE-TUNING")
+    print("=" * 72)
+
+    unfreeze_last_blocks(
+        model,
+        num_blocks=2,
+    )
+
+    optimizer = build_finetune_optimizer(
+        model,
+        backbone_lr=args.backbone_lr,
+        head_lr=args.finetune_head_lr,
+    )
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=args.finetune_epochs,
+    )
+
+    epochs_without_improvement = 0
+
+    for stage_epoch in range(
+        1,
+        args.finetune_epochs + 1,
+    ):
+        global_epoch += 1
+
         train_metrics = train_epoch(
             model,
             train_loader,
@@ -939,195 +791,132 @@ def main():
 
         scheduler.step()
 
-        history.append(
-            {
-                "epoch": epoch,
-                "train_loss": (
-                    train_metrics["loss"]
-                ),
-                "train_exact_accuracy": (
-                    train_metrics[
-                        "exact_accuracy"
-                    ]
-                ),
-                "val_loss": (
-                    val_metrics["loss"]
-                ),
-                "val_digit_accuracy": (
-                    val_metrics[
-                        "digit_accuracy"
-                    ]
-                ),
-                "val_exact_accuracy": (
-                    val_metrics[
-                        "exact_accuracy"
-                    ]
-                ),
-            }
-        )
+        row = {
+            "epoch": global_epoch,
+            "stage": "finetune",
+            "stage_epoch": stage_epoch,
+            "train_loss": train_metrics["loss"],
+            "train_digit_accuracy": train_metrics["digit_accuracy"],
+            "train_exact_accuracy": train_metrics["exact_accuracy"],
+            "val_loss": val_metrics["loss"],
+            "val_digit_accuracy": val_metrics["digit_accuracy"],
+            "val_exact_accuracy": val_metrics["exact_accuracy"],
+        }
+
+        history.append(row)
 
         print(
-            f"Epoch {epoch:02d}/{args.epochs} | "
-            f"train loss "
-            f"{train_metrics['loss']:.4f} | "
-            f"train exact "
-            f"{train_metrics['exact_accuracy']:.2%} | "
-            f"val digit "
-            f"{val_metrics['digit_accuracy']:.2%} | "
-            f"val exact "
-            f"{val_metrics['exact_accuracy']:.2%}"
+            f"Epoch {global_epoch:02d} | "
+            f"train digit {train_metrics['digit_accuracy']:.2%} | "
+            f"train exact {train_metrics['exact_accuracy']:.2%} | "
+            f"val digit {val_metrics['digit_accuracy']:.2%} | "
+            f"val exact {val_metrics['exact_accuracy']:.2%} | "
+            f"val loss {val_metrics['loss']:.4f}"
         )
 
-        current_accuracy = (
-            val_metrics["exact_accuracy"]
+        improved = is_better_checkpoint(
+            val_metrics["digit_accuracy"],
+            val_metrics["loss"],
+            best_digit_accuracy,
+            best_val_loss,
         )
 
-        if (
-            current_accuracy
-            > best_val_accuracy
-        ):
-            best_val_accuracy = (
-                current_accuracy
-            )
-
+        if improved:
+            best_digit_accuracy = val_metrics["digit_accuracy"]
+            best_val_loss = val_metrics["loss"]
+            best_epoch = global_epoch
             epochs_without_improvement = 0
 
             torch.save(
                 {
-                    "model_state_dict": (
-                        model.state_dict()
-                    ),
-                    "epoch": epoch,
-                    "val_exact_accuracy": (
-                        best_val_accuracy
-                    ),
+                    "model_state_dict": model.state_dict(),
+                    "epoch": global_epoch,
+                    "stage": "finetune",
+                    "val_digit_accuracy": best_digit_accuracy,
+                    "val_loss": best_val_loss,
                     "seed": args.seed,
                 },
                 checkpoint_path,
             )
 
-            print(
-                "  ↳ new best checkpoint"
-            )
-
+            print("  ↳ new best checkpoint")
         else:
             epochs_without_improvement += 1
 
-        if (
-            epochs_without_improvement
-            >= patience
-        ):
+        if epochs_without_improvement >= args.patience:
             print()
             print(
-                "Early stopping: "
-                f"no improvement for "
-                f"{patience} epochs."
+                f"Early stopping after {args.patience} "
+                "fine-tuning epochs without validation improvement."
             )
             break
 
-    # Save training history.
-    history_path = (
-        args.run_dir / "history.csv"
+    save_csv(
+        args.run_dir / "history.csv",
+        history,
     )
 
-    with history_path.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=history[0].keys(),
+    print()
+    print("=" * 72)
+    print("VALIDATION RESULT")
+    print("=" * 72)
+    print(f"Best epoch: {best_epoch}")
+    print(
+        f"Best validation digit accuracy: "
+        f"{best_digit_accuracy:.2%}"
+    )
+    print(
+        f"Best validation loss: "
+        f"{best_val_loss:.4f}"
+    )
+
+    print()
+    print(
+        "The locked test set is NOT evaluated automatically in run_002."
+    )
+    print(
+        "Use --evaluate-test only after the training recipe is accepted."
+    )
+
+    if args.evaluate_test:
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=device,
+            weights_only=True,
+        )
+        model.load_state_dict(
+            checkpoint["model_state_dict"]
         )
 
-        writer.writeheader()
-        writer.writerows(history)
+        test_metrics = evaluate(
+            model,
+            test_loader,
+            criterion,
+            device,
+            collect_predictions=True,
+        )
 
-    print()
-    print(
-        f"Loading best checkpoint: "
-        f"{checkpoint_path}"
-    )
+        save_csv(
+            args.run_dir / "test_predictions.csv",
+            test_metrics["predictions"],
+        )
 
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location=device,
-        weights_only=True,
-    )
-
-    model.load_state_dict(
-        checkpoint["model_state_dict"]
-    )
-
-    # Test set is touched exactly once here.
-    test_metrics = evaluate(
-        model,
-        test_loader,
-        criterion,
-        device,
-        collect_predictions=True,
-    )
-
-    save_predictions(
-        args.run_dir / "test_predictions.csv",
-        test_metrics["predictions"],
-    )
-
-    print()
-    print("=" * 60)
-    print("CONVNEXT-TINY FINAL TEST RESULT")
-    print("=" * 60)
-
-    print(
-        f"Best validation exact accuracy: "
-        f"{best_val_accuracy:.2%}"
-    )
-
-    print(
-        f"Test digit accuracy: "
-        f"{test_metrics['digit_accuracy']:.2%}"
-    )
-
-    print(
-        f"Test exact 3-digit accuracy: "
-        f"{test_metrics['exact_accuracy']:.2%}"
-    )
-
-    print(
-        f"Correct tiles: "
-        f"{test_metrics['correct']}/"
-        f"{test_metrics['total']}"
-    )
-
-    print("=" * 60)
-
-    baseline = 0.9103
-
-    if (
-        test_metrics["exact_accuracy"]
-        > baseline
-    ):
+        print()
+        print("=" * 72)
+        print("LOCKED TEST RESULT")
+        print("=" * 72)
         print(
-            "🔥 BEATS EXISTING 91.03% BASELINE"
+            f"Test digit accuracy: "
+            f"{test_metrics['digit_accuracy']:.2%}"
         )
-    else:
-        difference = (
-            baseline
-            - test_metrics[
-                "exact_accuracy"
-            ]
-        )
-
         print(
-            "Does not beat baseline yet. "
-            f"Gap: {difference:.2%}"
+            f"Test exact 3-digit accuracy: "
+            f"{test_metrics['exact_accuracy']:.2%}"
         )
-
-    print()
-    print(
-        f"Everything saved under: "
-        f"{args.run_dir.resolve()}"
-    )
+        print(
+            f"Correct tiles: "
+            f"{test_metrics['correct']}/{test_metrics['total']}"
+        )
 
 
 if __name__ == "__main__":
