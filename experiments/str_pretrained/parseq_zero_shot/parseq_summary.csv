@@ -1,0 +1,2 @@
+model,validation_tiles,raw_exact_correct,raw_exact_accuracy,cleaned_exact_correct,cleaned_exact_accuracy
+parseq,81,78,0.962963,78,0.962963

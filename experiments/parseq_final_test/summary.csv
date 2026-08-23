@@ -1,0 +1,3 @@
+model,correct,total,accuracy,mean_confidence
+parseq_zero_shot,107,108,0.9907407407407407,0.9439146088229285
+parseq_finetuned,107,108,0.9907407407407407,0.9944230058678875
