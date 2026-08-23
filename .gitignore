@@ -129,3 +129,12 @@ fusion_errors/
 
 tesseract_results.csv
 tesseract_leaderboard.csv
+
+# ML model checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# ML caches
+__pycache__/
+*.pyc
