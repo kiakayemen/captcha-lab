@@ -350,10 +350,16 @@ def click_selected_captcha_tiles(page: Page, selected_tiles: tuple[int, ...]) ->
     for tile_number in selected_tiles:
         if tile_number < 1 or tile_number > len(tiles):
             raise ValueError(f"Selected tile {tile_number} is outside the 1..{len(tiles)} range")
-        tile = tiles[tile_number - 1]
-        tile.scroll_into_view_if_needed(timeout=10_000)
-        tile.click(timeout=10_000)
-        logger.info("Clicked tile %s", tile_number)
+        click_captcha_tile(tiles[tile_number - 1], tile_number)
+
+
+def click_captcha_tile(tile: Locator, tile_number: int) -> None:
+    """Click the image receiving the CAPTCHA's onclick handler."""
+    image = tile.locator("img.captcha-img").first
+    target = image if image.count() else tile
+    target.scroll_into_view_if_needed(timeout=10_000)
+    target.click(timeout=10_000)
+    logger.info("Clicked tile %s", tile_number)
 
 
 def click_verify_selection(page: Page) -> None:

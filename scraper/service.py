@@ -30,6 +30,7 @@ from flows.appointment_flow import (
 from flows.captcha_flow import (
     captcha_instruction_present,
     click_background_submit,
+    click_captcha_tile,
     click_nav_book_new_appointment,
     click_ok_dialog,
     click_selected_captcha_tiles,
@@ -37,11 +38,11 @@ from flows.captcha_flow import (
     click_verify_selection,
     find_true_captcha_label,
     find_true_captcha_label_in_scope,
-    get_captcha_tiles_in_scope,
     get_verify_selection_frame,
     login_captcha_invalid,
     login_captcha_succeeded,
     save_captcha_crop,
+    wait_for_captcha_tiles_ready,
 )
 from flows.login_flow import (
     fill_visible_password,
@@ -73,6 +74,34 @@ logger = logging.getLogger(
 # We deliberately do NOT retry forever. If BLS changes or is down,
 # an infinite unattended browser loop would be dangerous.
 MAX_SUBTYPE_ATTEMPTS = 5
+
+
+def log_captcha_decision(stage: str, decision) -> None:
+    """Temporary detailed CAPTCHA diagnostics for live scraper runs."""
+    logger.info(
+        "%s decision: status=%s target=%s selected=%s uncertain=%s",
+        stage,
+        decision.status,
+        decision.target,
+        list(decision.selected_tiles),
+        list(decision.uncertain_tiles),
+    )
+    for tile in decision.tiles:
+        attempts = ", ".join(
+            f"{attempt['variant']}={attempt['prediction'] or '-'}"
+            f"({float(attempt['confidence']):.3f})"
+            for attempt in tile.attempts
+        )
+        logger.info(
+            "%s tile=%s final=%s score=%.3f votes=%s match=%s | %s",
+            stage,
+            tile.tile,
+            tile.prediction or "-",
+            tile.score,
+            tile.votes,
+            tile.matches_target,
+            attempts,
+        )
 
 
 def run_login_step(page) -> None:
@@ -256,8 +285,9 @@ def run_captcha_step(
         "Waiting for all 9 login CAPTCHA tiles."
     )
 
-    get_captcha_tiles_in_scope(
-        page
+    wait_for_captcha_tiles_ready(
+        page,
+        page,
     )
 
     #
@@ -311,6 +341,14 @@ def run_captcha_step(
         time.perf_counter()
         - solve_start
     )
+
+    logger.info(
+        "Login CAPTCHA image shape=%s | extracted tiles=%s | solve_time=%.3fs",
+        getattr(captcha_image, "shape", None),
+        len(tiles),
+        solve_seconds,
+    )
+    log_captcha_decision("Login CAPTCHA", decision)
 
     logger.info(
         "Login CAPTCHA solved in %.3fs. "
@@ -499,10 +537,9 @@ def run_second_captcha_step(
         "Waiting for all 9 second CAPTCHA tiles."
     )
 
-    tiles_in_frame = (
-        get_captcha_tiles_in_scope(
-            frame
-        )
+    tiles_in_frame = wait_for_captcha_tiles_ready(
+        page,
+        frame,
     )
 
     page.wait_for_timeout(
@@ -555,6 +592,14 @@ def run_second_captcha_step(
     )
 
     logger.info(
+        "Second CAPTCHA image shape=%s | extracted tiles=%s | solve_time=%.3fs",
+        getattr(captcha_image, "shape", None),
+        len(tiles),
+        solve_seconds,
+    )
+    log_captcha_decision("Second CAPTCHA", decision)
+
+    logger.info(
         "Second CAPTCHA solved in %.3fs. "
         "Status=%s | Selected tiles=%s | "
         "Uncertain tiles=%s",
@@ -590,20 +635,8 @@ def run_second_captcha_step(
                 "range"
             )
 
-        tile = tiles_in_frame[
-            tile_number - 1
-        ]
-
-        tile.scroll_into_view_if_needed(
-            timeout=10_000
-        )
-
-        tile.click(
-            timeout=10_000
-        )
-
-        logger.info(
-            "Clicked second CAPTCHA tile=%s",
+        click_captcha_tile(
+            tiles_in_frame[tile_number - 1],
             tile_number,
         )
 

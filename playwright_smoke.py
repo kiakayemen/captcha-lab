@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from scraper.models import ScraperConfig
@@ -52,6 +53,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # Temporary diagnostics for the standalone live scraper.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+    )
+
     args = parse_args()
 
     config = ScraperConfig(
