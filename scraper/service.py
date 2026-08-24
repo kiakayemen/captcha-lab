@@ -284,7 +284,7 @@ def run_captcha_step(
     )
 
     logger.info(
-        "Loading EasyOCR. GPU=%s",
+        "Loading fine-tuned PARSeq. GPU=%s",
         gpu,
     )
 
@@ -525,7 +525,7 @@ def run_second_captcha_step(
     )
 
     logger.info(
-        "Loading EasyOCR for second CAPTCHA. "
+        "Loading fine-tuned PARSeq for second CAPTCHA. "
         "GPU=%s",
         gpu,
     )

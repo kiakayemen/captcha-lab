@@ -6,10 +6,10 @@ from collections import defaultdict
 from pathlib import Path
 
 import cv2
-import easyocr
 import numpy as np
 
 from fusion import FusionSelector, OCRResult
+from ocr import build_reader, recognize
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -110,28 +110,11 @@ def preprocessing_variants(tile: np.ndarray) -> dict[str, np.ndarray]:
 
 
 def recognize_variant(
-    reader: easyocr.Reader,
+    reader,
     image: np.ndarray,
 ) -> tuple[str, float]:
-    results = reader.readtext(
-        image,
-        detail=1,
-        paragraph=False,
-        allowlist="0123456789",
-    )
-
-    if not results:
-        return "", 0.0
-
-    # Prefer a valid three-digit candidate. If none exists, use the
-    # highest-confidence OCR result and let fusion decide how useful it is.
-    cleaned = [
-        (clean_prediction(str(item[1])), float(item[2]))
-        for item in results
-    ]
-    valid = [item for item in cleaned if len(item[0]) == EXPECTED_DIGITS]
-    candidates = valid or cleaned
-    return max(candidates, key=lambda item: item[1])
+    result = recognize(reader, image, "variant")
+    return result.prediction, result.confidence
 
 
     scores: dict[str, float] = defaultdict(float)
@@ -234,8 +217,8 @@ def main() -> None:
     grid, tiles = split_grid(image)
     cv2.imwrite(str(OUTPUT_DIR / "grid.png"), grid)
 
-    print("Loading EasyOCR model...")
-    reader = easyocr.Reader(["en"], gpu=GPU)
+    print("Loading fine-tuned PARSeq model...")
+    reader = build_reader(gpu=GPU)
     selector: FusionSelector = load_selector()
 
     rows: list[dict[str, object]] = []

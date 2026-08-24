@@ -6,8 +6,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import cv2
-import easyocr
 import numpy as np
+from ocr import build_reader, recognize as recognize_ocr
 
 
 LABELS_PATH = Path("ocr_results.csv")
@@ -26,8 +26,8 @@ def clean_prediction(text: str) -> str:
 
 def ensure_bgr(image: np.ndarray) -> np.ndarray:
     """
-    EasyOCR accepts grayscale or color images, but returning BGR
-    everywhere keeps the variants consistent.
+    PARSeq receives RGB through the shared adapter, while returning BGR
+    here keeps the variants consistent.
     """
     if image.ndim == 2:
         return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
@@ -403,54 +403,13 @@ def save_results(
 # -------------------------------------------------------------------
 
 def recognize(
-    reader: easyocr.Reader,
+    reader,
     image: np.ndarray,
 ) -> tuple[str, float]:
-    image = add_white_padding(
-        ensure_bgr(image),
-        padding=15,
-    )
+    image = ensure_bgr(image)
 
-    results = reader.readtext(
-        image,
-        detail=1,
-        paragraph=False,
-        allowlist="0123456789",
-    )
-
-    if not results:
-        return "", 0.0
-
-    parsed_results: list[tuple[str, float]] = []
-
-    for result in results:
-        text = clean_prediction(
-            str(result[1])
-        )
-
-        confidence = float(result[2])
-
-        parsed_results.append(
-            (text, confidence)
-        )
-
-    # Prefer a three-digit result when EasyOCR returns several boxes.
-    three_digit_results = [
-        result
-        for result in parsed_results
-        if len(result[0]) == 3
-    ]
-
-    candidates = (
-        three_digit_results
-        if three_digit_results
-        else parsed_results
-    )
-
-    return max(
-        candidates,
-        key=lambda result: result[1],
-    )
+    result = recognize_ocr(reader, image, "benchmark")
+    return result.prediction, result.confidence
 
 
 def build_leaderboard(
@@ -591,12 +550,8 @@ def main() -> None:
         f"{len(labeled_tiles) * len(VARIANTS)}"
     )
     print()
-    print("Loading EasyOCR...")
-
-    reader = easyocr.Reader(
-        ["en"],
-        gpu=False,
-    )
+    print("Loading fine-tuned PARSeq...")
+    reader = build_reader(gpu=False)
 
     result_map = dict(existing_results)
 

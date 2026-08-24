@@ -111,25 +111,9 @@ def extract_target_from_prompt(
     if prompt.size == 0:
         raise RuntimeError("The CAPTCHA prompt crop is empty")
 
-    results = reader.readtext(
-        prompt,
-        detail=0,
-        paragraph=True,
-    )
-    text = " ".join(str(item) for item in results).strip()
-
-    match = TARGET_PATTERN.search(text)
-    if match:
-        return validate_target(match.group(1))
-
-    # Fallback for OCR that reads the sentence poorly but still sees the number.
-    three_digit_numbers = re.findall(r"(?<!\d)\d{3}(?!\d)", text)
-    if len(three_digit_numbers) == 1:
-        return validate_target(three_digit_numbers[0])
-
     raise RuntimeError(
-        "Could not identify one unambiguous three-digit target from the "
-        f"CAPTCHA prompt. OCR text was: {text!r}"
+        "Prompt OCR is not supported by PARSeq. Read the target from the "
+        "CAPTCHA DOM or pass --target."
     )
 
 
@@ -196,19 +180,17 @@ def solve_captcha_image(
     """
     Solve a CAPTCHA image.
 
-    Browser code should pass the target extracted from the true visible DOM
-    label. When target is omitted, the solver OCRs the prompt as a fallback.
+    Browser code must pass the target extracted from the true visible DOM.
+    PARSeq is trained for three-digit tiles and cannot OCR the prompt.
     """
     tiles, boxes, grid_box, debug = extract_tiles_from_screenshot(image)
 
     if reader is None:
         reader = build_reader(gpu=gpu)
 
-    resolved_target = (
-        validate_target(target)
-        if target is not None
-        else extract_target_from_prompt(image, grid_box, reader)
-    )
+    if target is None:
+        raise ValueError("target is required with PARSeq; read it from the CAPTCHA DOM or pass --target")
+    resolved_target = validate_target(target)
 
     decision = solve_tiles(tiles, resolved_target, reader)
     return decision, tiles, boxes, debug
@@ -264,8 +246,7 @@ def print_decision(decision: CaptchaDecision) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Solve one 3x3 CAPTCHA screenshot. The target is automatically "
-            "OCRed from the instruction unless --target is supplied."
+            "Solve one 3x3 CAPTCHA screenshot with fine-tuned PARSeq."
         )
     )
     parser.add_argument(
@@ -291,7 +272,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gpu",
         action="store_true",
-        help="Ask EasyOCR to use a supported GPU",
+        help="Use CUDA when available (MPS is selected automatically)",
     )
     return parser.parse_args()
 
@@ -303,7 +284,7 @@ def main() -> int:
     if image is None:
         raise FileNotFoundError(f"Could not load image: {args.image}")
 
-    print("Loading EasyOCR...")
+    print("Loading fine-tuned PARSeq...")
     reader = build_reader(gpu=args.gpu)
 
     decision, tiles, _boxes, debug = solve_captcha_image(

@@ -21,7 +21,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--gpu",
             action="store_true",
-            help="Ask EasyOCR to use a supported GPU.",
+            help="Use CUDA when available (MPS is selected automatically).",
         )
 
         parser.add_argument(

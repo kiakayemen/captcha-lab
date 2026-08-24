@@ -13,7 +13,7 @@ The production recognizer follows this sequence:
 1. Load the CAPTCHA image.
 2. Detect and crop the 3×3 tile grid.
 3. Generate the configured preprocessing variants for each tile.
-4. Run EasyOCR on every preprocessing variant.
+4. Run the fine-tuned PARSeq model on every preprocessing variant.
 5. Clean and normalize the OCR predictions.
 6. Pass all OCR candidates to the trained fusion selector.
 7. Return one final number prediction and fusion score for each tile.
@@ -74,7 +74,7 @@ The oracle result means that at least one preprocessing variant produced the cor
 
 ## Frozen dependency versions
 
-* Python package `easyocr`: 1.7.2
+* Fine-tuned PARSeq checkpoint: `experiments/parseq_finetune/run_001/best_model.pt`
 * Python package `opencv-python`: 5.0.0
 * Python package `numpy`: 2.5.1
 * Python package `pandas`: 3.0.3

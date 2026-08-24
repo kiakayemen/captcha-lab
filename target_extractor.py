@@ -81,7 +81,7 @@ def _candidate_from_results(results: list[Any]) -> tuple[str, float] | None:
         for match in THREE_DIGITS.finditer(text):
             candidates.append((match.group(1), confidence))
 
-    # EasyOCR may split the three digits into separate neighboring boxes.
+    # Legacy helper retained for reviewing old OCR result files.
     ordered = sorted(results, key=_box_left)
     joined_digits = "".join(re.sub(r"\D", "", str(item[1])) for item in ordered)
     for match in THREE_DIGITS.finditer(joined_digits):
@@ -99,31 +99,7 @@ def extract_target(
     image: np.ndarray,
     grid_box: tuple[int, int, int, int],
 ) -> TargetResult:
-    prompt = crop_instruction_region(image, grid_box)
-    candidates: list[tuple[str, float, str]] = []
-
-    for variant_name, variant in instruction_variants(prompt).items():
-        results = reader.readtext(
-            variant,
-            detail=1,
-            paragraph=False,
-            allowlist="0123456789",
-        )
-        candidate = _candidate_from_results(results)
-        if candidate is not None:
-            target, confidence = candidate
-            candidates.append((target, confidence, variant_name))
-
-    if not candidates:
-        raise RuntimeError(
-            "Could not extract a three-digit target from the instruction region. "
-            "Inspect output/live_solver/instruction.png or pass the target manually."
-        )
-
-    target, confidence, variant_name = max(candidates, key=lambda item: item[1])
-    return TargetResult(
-        target=target,
-        confidence=confidence,
-        variant=variant_name,
-        prompt_crop=prompt,
+    raise RuntimeError(
+        "Target extraction from screenshot text is not supported by PARSeq. "
+        "Read the target from the CAPTCHA DOM instead."
     )

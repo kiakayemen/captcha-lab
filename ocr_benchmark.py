@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 import cv2
-import easyocr
+from ocr import build_reader, recognize
 
 
 EXTRACTED_DIR = Path("extracted")
@@ -55,7 +55,7 @@ def load_existing_labels() -> dict[tuple[str, int], str]:
 
 
 def recognize_tile(
-    reader: easyocr.Reader,
+    reader,
     tile_path: Path,
 ) -> tuple[str, float]:
     tile = cv2.imread(str(tile_path))
@@ -63,25 +63,8 @@ def recognize_tile(
     if tile is None:
         raise ValueError(f"Could not read tile: {tile_path}")
 
-    results = reader.readtext(
-        tile,
-        detail=1,
-        paragraph=False,
-        allowlist="0123456789",
-    )
-
-    if not results:
-        return "", 0.0
-
-    best_result = max(
-        results,
-        key=lambda result: float(result[2]),
-    )
-
-    prediction = clean_prediction(str(best_result[1]))
-    confidence = float(best_result[2])
-
-    return prediction, confidence
+    result = recognize(reader, tile, "benchmark")
+    return result.prediction, result.confidence
 
 
 def find_tiles() -> list[tuple[str, int, Path]]:
@@ -127,11 +110,8 @@ def main() -> None:
 
     existing_labels = load_existing_labels()
 
-    print("Loading EasyOCR...")
-    reader = easyocr.Reader(
-        ["en"],
-        gpu=False,
-    )
+    print("Loading fine-tuned PARSeq...")
+    reader = build_reader(gpu=False)
 
     rows: list[dict[str, object]] = []
 

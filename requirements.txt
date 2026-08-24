@@ -1,4 +1,9 @@
-easyocr
 opencv-python
 numpy
+torch
+torchvision
+Pillow
+einops
+timm
+lightning
 gunicorn

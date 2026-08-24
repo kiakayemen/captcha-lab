@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 
 import cv2
-import easyocr
 import numpy as np
+from ocr import build_reader, recognize
 
 
 def intersection_over_union(
@@ -221,25 +221,11 @@ GPU = False
 
 
 def recognize_tile(
-    reader: easyocr.Reader,
+    reader,
     tile: np.ndarray,
 ) -> tuple[str, float]:
-    results = reader.readtext(
-        tile,
-        detail=1,
-        paragraph=False,
-        allowlist="0123456789",
-    )
-
-    if not results:
-        return "", 0.0
-
-    cleaned = [
-        (clean_prediction(str(item[1])), float(item[2]))
-        for item in results
-    ]
-    valid = [item for item in cleaned if len(item[0]) == 3]
-    return max(valid or cleaned, key=lambda item: item[1])
+    result = recognize(reader, tile, "benchmark")
+    return result.prediction, result.confidence
 
 
 def load_labels() -> dict[tuple[str, int], str]:
@@ -277,8 +263,8 @@ def main() -> None:
         raise FileNotFoundError(
             f"No images found inside: {DATASET_DIR.resolve()}")
 
-    print("Loading EasyOCR model...")
-    reader = easyocr.Reader(["en"], gpu=GPU)
+    print("Loading fine-tuned PARSeq model...")
+    reader = build_reader(gpu=GPU)
 
     rows: list[dict[str, object]] = []
     variant_totals: dict[str, int] = {}
