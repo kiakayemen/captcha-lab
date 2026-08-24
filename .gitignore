@@ -114,6 +114,10 @@ cnn_full_training_history.csv
 # =========================
 # Benchmark / analysis outputs
 # =========================
+**/train_split.csv
+**/val_split.csv
+**/test_split.csv
+
 fusion_predictions.csv
 fusion_results.csv
 fusion_leaderboard.csv
