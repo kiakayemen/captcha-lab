@@ -314,7 +314,7 @@ def run_captcha_step(
     )
 
     logger.info(
-        "Loading fine-tuned PARSeq. GPU=%s",
+        "Loading PARSeq-tiny. GPU=%s",
         gpu,
     )
 
@@ -562,7 +562,7 @@ def run_second_captcha_step(
     )
 
     logger.info(
-        "Loading fine-tuned PARSeq for second CAPTCHA. "
+        "Loading PARSeq-tiny for second CAPTCHA. "
         "GPU=%s",
         gpu,
     )

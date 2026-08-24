@@ -246,7 +246,7 @@ def print_decision(decision: CaptchaDecision) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Solve one 3x3 CAPTCHA screenshot with fine-tuned PARSeq."
+            "Solve one 3x3 CAPTCHA screenshot with PARSeq-tiny."
         )
     )
     parser.add_argument(
@@ -284,7 +284,7 @@ def main() -> int:
     if image is None:
         raise FileNotFoundError(f"Could not load image: {args.image}")
 
-    print("Loading fine-tuned PARSeq...")
+    print("Loading PARSeq-tiny...")
     reader = build_reader(gpu=args.gpu)
 
     decision, tiles, _boxes, debug = solve_captcha_image(

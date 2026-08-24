@@ -17,7 +17,7 @@ At a high level, the solver:
 2. finds the 3x3 tile grid in the image;
 3. crops each tile;
 4. applies a fixed set of preprocessing transformations to each tile;
-5. runs fine-tuned PARSeq over each transformed variant;
+5. runs pretrained PARSeq-tiny over each transformed variant;
 6. combines the OCR candidates using a trained fusion selector;
 7. determines which tiles match the requested 3-digit target;
 8. writes debug artifacts so the detection and OCR process can be inspected.
@@ -34,7 +34,7 @@ The most relevant files and directories are:
 - `captcha_solver.py`: the main CLI solver for a screenshot or image path
 - `solver.py`: tile-level recognition logic and OCR/fusion helpers
 - `target_extractor.py`: target-number extraction utilities
-- `ocr.py`: PARSeq reader setup and checkpoint loading
+- `ocr.py`: PARSeq-tiny reader setup
 - `fusion.py`: fusion selector model loading and candidate aggregation
 - `preprocess.py`: preprocessing helpers used by the recognition pipeline
 - `extract_tiles.py`: grid detection, box selection, tile cropping, and debug overlays
@@ -126,7 +126,7 @@ These variant names and transformations are part of the production baseline. The
 
 ### 4. OCR
 
-Fine-tuned PARSeq is run across the preprocessing variants.
+Pretrained PARSeq-tiny is run across the preprocessing variants.
 
 ### 5. Fusion
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import cv2
@@ -14,7 +13,7 @@ from preprocess import ensure_bgr
 
 DIGITS_ONLY = re.compile(r"\D")
 EXPECTED_DIGITS = 3
-DEFAULT_PARSEQ_CHECKPOINT = Path(__file__).resolve().parent / "experiments/parseq_finetune/run_001/best_model.pt"
+PARSEQ_MODEL_NAME = "parseq_tiny"
 
 
 @dataclass(frozen=True)
@@ -55,7 +54,7 @@ def _device_for(gpu: bool) -> torch.device:
 
 
 class PARSeqReader:
-    """Adapter exposing the shared OCR boundary over fine-tuned PARSeq."""
+    """Adapter exposing the shared OCR boundary over PARSeq-tiny."""
 
     def __init__(self, model: Any, transform: Any, device: torch.device) -> None:
         self.model = model.eval()
@@ -77,18 +76,18 @@ class PARSeqReader:
 
 def build_reader(
     gpu: bool = False,
-    checkpoint_path: Path = DEFAULT_PARSEQ_CHECKPOINT,
 ) -> PARSeqReader:
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"PARSeq checkpoint was not found: {checkpoint_path}")
     device = _device_for(gpu)
-    model = torch.hub.load("baudm/parseq", "parseq", pretrained=True, trust_repo=True).to(device)
+    model = torch.hub.load(
+        "baudm/parseq",
+        PARSEQ_MODEL_NAME,
+        pretrained=True,
+        trust_repo=True,
+    ).to(device)
     try:
         from strhub.data.module import SceneTextDataModule
     except ImportError as error:
         raise RuntimeError("PARSeq dependencies are not installed. Run: pip install -r requirements.txt") from error
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    model.load_state_dict(checkpoint["model_state_dict"])
     transform = SceneTextDataModule.get_transform(model.hparams.img_size)
     return PARSeqReader(model, transform, device)
 

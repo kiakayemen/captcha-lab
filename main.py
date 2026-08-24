@@ -217,7 +217,7 @@ def main() -> None:
     grid, tiles = split_grid(image)
     cv2.imwrite(str(OUTPUT_DIR / "grid.png"), grid)
 
-    print("Loading fine-tuned PARSeq model...")
+    print("Loading PARSeq-tiny model...")
     reader = build_reader(gpu=GPU)
     selector: FusionSelector = load_selector()
 
