@@ -75,13 +75,6 @@ class PARSeqReader:
             confidence = confidence.detach().float().mean().item()
         return prediction, float(confidence)
 
-    def readtext(self, *_args: Any, **_kwargs: Any) -> list[Any]:
-        raise RuntimeError(
-            "PARSeqReader recognizes three-digit CAPTCHA tiles only. "
-            "Read the target from the CAPTCHA DOM or pass --target."
-        )
-
-
 def build_reader(
     gpu: bool = False,
     checkpoint_path: Path = DEFAULT_PARSEQ_CHECKPOINT,
