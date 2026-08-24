@@ -344,6 +344,19 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--eval-split",
+        choices=[
+            "val",
+            "test",
+        ],
+        default="val",
+        help=(
+            "Existing locked split to evaluate. "
+            "Default: val"
+        ),
+    )
+
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
@@ -375,15 +388,29 @@ def main() -> None:
         f"Device: {device}"
     )
 
-    val_samples = load_split(
+    split_filename = (
+        f"{args.eval_split}_split.csv"
+    )
+
+    split_path = (
         args.split_dir
-        / "val_split.csv",
+        / split_filename
+    )
+
+    samples = load_split(
+        split_path,
         args.output_dir,
     )
 
+    split_display = (
+        "Validation"
+        if args.eval_split == "val"
+        else "Test"
+    )
+
     print(
-        f"Validation tiles: "
-        f"{len(val_samples)}"
+        f"{split_display} tiles: "
+        f"{len(samples)}"
     )
 
     print()
@@ -422,7 +449,7 @@ def main() -> None:
     )
 
     dataset = TileDataset(
-        val_samples,
+        samples,
         transform,
     )
 
@@ -436,7 +463,7 @@ def main() -> None:
     print()
     print(
         "Running zero-shot "
-        "validation benchmark..."
+        f"{args.eval_split} benchmark..."
     )
 
     rows, metrics = benchmark(
@@ -452,7 +479,10 @@ def main() -> None:
 
     predictions_path = (
         args.run_dir
-        / f"{args.model}_val_predictions.csv"
+        / (
+            f"{args.model}_"
+            f"{args.eval_split}_predictions.csv"
+        )
     )
 
     save_csv(
@@ -463,7 +493,8 @@ def main() -> None:
     summary_rows = [
         {
             "model": args.model,
-            "validation_tiles": (
+            "split": args.eval_split,
+            "tiles": (
                 metrics["total"]
             ),
             "raw_exact_correct": (
@@ -491,9 +522,16 @@ def main() -> None:
         }
     ]
 
-    save_csv(
+    summary_path = (
         args.run_dir
-        / f"{args.model}_summary.csv",
+        / (
+            f"{args.model}_"
+            f"{args.eval_split}_summary.csv"
+        )
+    )
+
+    save_csv(
+        summary_path,
         summary_rows,
     )
 
@@ -501,7 +539,8 @@ def main() -> None:
     print("=" * 72)
     print(
         f"{args.model.upper()} "
-        "ZERO-SHOT VALIDATION RESULT"
+        f"ZERO-SHOT "
+        f"{args.eval_split.upper()} RESULT"
     )
     print("=" * 72)
 
@@ -530,9 +569,20 @@ def main() -> None:
     )
 
     print(
-        "Locked test set was "
-        "NOT evaluated."
+        f"Summary: "
+        f"{summary_path}"
     )
+
+    if args.eval_split == "val":
+        print(
+            "Locked test set was "
+            "NOT evaluated."
+        )
+    else:
+        print(
+            "Corrected locked test set "
+            "WAS evaluated."
+        )
 
 
 if __name__ == "__main__":
