@@ -106,7 +106,7 @@ def build_default_scraper_config() -> ScraperConfig:
     return ScraperConfig(
         headless=_env_bool(
             "SCRAPER_HEADLESS",
-            True,
+            False,
         ),
         gpu=_env_bool(
             "SCRAPER_GPU",

@@ -14,7 +14,7 @@ class ScraperStatus(str, Enum):
 
 @dataclass(frozen=True)
 class ScraperConfig:
-    headless: bool = True
+    headless: bool = False
     gpu: bool = False
     output_dir: Path = Path("output/live_solver")
     visa_sub_types: tuple[str, ...] = (
