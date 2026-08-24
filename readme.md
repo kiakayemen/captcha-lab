@@ -169,6 +169,18 @@ The repository is set up as a Python project. A typical local workflow is:
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium
+```
+
+`pip install -r requirements.txt` installs the Playwright Python package, but
+it does not install the browser binary. `playwright install chromium` is
+required before running `playwright_smoke.py`, Celery scraper tasks, or any
+other browser automation.
+
+On Linux, install the Chromium system dependencies as well when required:
+
+```bash
+playwright install --with-deps chromium
 ```
 
 If you are working on the frozen production path, make sure `models/fusion_model.joblib` is present before running the solver.
