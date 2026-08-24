@@ -1,2 +1,0 @@
-best_epoch,best_stage,best_val_accuracy,best_val_correct,best_val_total,best_val_mean_confidence,zero_shot_accuracy,zero_shot_correct
-20,full_model,0.9629629629629629,78,81,0.9944915285816899,0.9629629629629629,78
