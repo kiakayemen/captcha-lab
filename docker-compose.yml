@@ -1,0 +1,55 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  web:
+    build: .
+    restart: unless-stopped
+    command: ["web"]
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      DJANGO_SQLITE_PATH: /app/data/db.sqlite3
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - app_data:/app/data
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["worker"]
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DJANGO_SQLITE_PATH: /app/data/db.sqlite3
+    depends_on:
+      - redis
+    volumes:
+      - app_data:/app/data
+
+  beat:
+    build: .
+    restart: unless-stopped
+    command: ["beat"]
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      DJANGO_SQLITE_PATH: /app/data/db.sqlite3
+    depends_on:
+      - redis
+    volumes:
+      - app_data:/app/data
+
+volumes:
+  app_data:
+  redis_data:

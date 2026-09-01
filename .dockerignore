@@ -1,0 +1,17 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+.env
+output
+dataset
+extracted
+real_sample
+benchmarks
+*.zip
+*.csv
+*.png
+*.log
+db.sqlite3
+celerybeat-schedule.db
+.DS_Store

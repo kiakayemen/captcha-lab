@@ -9,6 +9,20 @@ The codebase contains two closely related layers:
 
 This repository currently reflects a frozen production baseline. The trained fusion model is treated as a required artifact, not an optional convenience. The goal of this README is to explain what lives in the repository, how the solver works, how to run it, and where the important outputs are written.
 
+## Docker / PaaS deployment
+
+The repository includes a single production image in `Dockerfile`. Configure the PaaS process commands as:
+
+```text
+web: web
+worker: worker
+beat: beat
+```
+
+Set `DJANGO_DEBUG=False`, a strong `DJANGO_SECRET_KEY`, the public hostname in `DJANGO_ALLOWED_HOSTS`, and Redis URLs for `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`. SQLite is suitable only when persistent storage is attached; PostgreSQL is recommended for production.
+
+For local container testing, copy `.env.example` to `.env` and run `docker compose up --build`. The Compose stack includes Redis, the Celery worker, and Celery Beat; the admin panel is available at `http://localhost:8000/admin/`.
+
 ## What This Project Does
 
 At a high level, the solver:
