@@ -4,6 +4,8 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 BASE_DIR = (
     Path(__file__)
@@ -11,6 +13,11 @@ BASE_DIR = (
     .parent
     .parent
 )
+
+# Load local configuration files when running outside Compose/PaaS.
+# Environment variables supplied by the platform still take precedence.
+load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env.secrets")
 
 
 def env_bool(

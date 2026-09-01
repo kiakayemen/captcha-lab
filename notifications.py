@@ -20,7 +20,9 @@ from typing import Any
 try:
     from dotenv import load_dotenv
 
-    load_dotenv()
+    base_dir = Path(__file__).resolve().parent
+    load_dotenv(base_dir / ".env")
+    load_dotenv(base_dir / ".env.secrets")
 except ImportError:
     pass
 

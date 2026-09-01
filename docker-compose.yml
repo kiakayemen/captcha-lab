@@ -9,7 +9,11 @@ services:
     build: .
     restart: unless-stopped
     command: ["web"]
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.secrets
+        required: false
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
@@ -26,7 +30,11 @@ services:
     build: .
     restart: unless-stopped
     command: ["worker"]
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.secrets
+        required: false
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
@@ -40,7 +48,11 @@ services:
     build: .
     restart: unless-stopped
     command: ["beat"]
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.secrets
+        required: false
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0

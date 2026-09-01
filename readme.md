@@ -21,7 +21,9 @@ beat: beat
 
 Set `DJANGO_DEBUG=False`, a strong `DJANGO_SECRET_KEY`, the public hostname in `DJANGO_ALLOWED_HOSTS`, and Redis URLs for `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`. SQLite is suitable only when persistent storage is attached; PostgreSQL is recommended for production.
 
-For local container testing, copy `.env.example` to `.env` and run `docker compose up --build`. The Compose stack includes Redis, the Celery worker, and Celery Beat; the admin panel is available at `http://localhost:8000/admin/`.
+For local container testing, copy `.env.example` to `.env` and `.env.secrets.example` to `.env.secrets`, fill in the secrets file, then run `docker compose up --build`. Keep `.env.secrets` out of source control. The Compose stack includes Redis, the Celery worker, and Celery Beat; the admin panel is available at `http://localhost:8000/admin/`.
+
+When running Python commands directly, the application loads both `.env` and `.env.secrets`; platform-provided environment variables continue to work unchanged.
 
 ## What This Project Does
 
