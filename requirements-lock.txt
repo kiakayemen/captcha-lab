@@ -5,8 +5,9 @@ gunicorn==23.0.0
 whitenoise==6.9.0
 python-dotenv==1.2.2
 playwright==1.61.0
-torch==2.5.1
-torchvision==0.20.1
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
 Pillow==12.3.0
 einops==0.8.1
 timm==1.0.28
