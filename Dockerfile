@@ -15,7 +15,9 @@ RUN pip install --upgrade pip \
 COPY . .
 COPY docker/entrypoint.sh /usr/local/bin/captcha-lab-entrypoint
 RUN chmod +x /usr/local/bin/captcha-lab-entrypoint \
-    && mkdir -p /app/staticfiles /app/media
+    && mkdir -p /app/staticfiles /app/media /app/data \
+    && python -m compileall -q . \
+    && python -c "import django, celery, cv2, joblib, numpy, pandas, sklearn, torch; import playwright.sync_api; import timm; import lightning"
 
 EXPOSE 8000
 ENTRYPOINT ["captcha-lab-entrypoint"]
