@@ -193,6 +193,7 @@ def run_captcha_step(
     *,
     gpu: bool,
     output_dir: Path,
+    reader,
 ) -> None:
     """
     Solve the login CAPTCHA once.
@@ -314,17 +315,8 @@ def run_captcha_step(
         screenshot_path,
     )
 
-    logger.info(
-        "Loading PARSeq-tiny. GPU=%s",
-        gpu,
-    )
-
     solve_start = (
         time.perf_counter()
-    )
-
-    reader = build_reader(
-        gpu=gpu
     )
 
     (
@@ -447,6 +439,7 @@ def run_second_captcha_step(
     *,
     gpu: bool,
     output_dir: Path,
+    reader,
 ) -> None:
     """
     Solve Verify Selection CAPTCHA once.
@@ -562,18 +555,8 @@ def run_second_captcha_step(
         screenshot_path,
     )
 
-    logger.info(
-        "Loading PARSeq-tiny for second CAPTCHA. "
-        "GPU=%s",
-        gpu,
-    )
-
     solve_start = (
         time.perf_counter()
-    )
-
-    reader = build_reader(
-        gpu=gpu
     )
 
     (
@@ -756,6 +739,7 @@ def _run_single_subtype_attempt(
     config: ScraperConfig,
     visa_sub_type: str,
     attempt_number: int,
+    reader,
 ) -> ScraperResult:
     """
     One completely fresh browser attempt for exactly one visa subtype.
@@ -867,6 +851,7 @@ def _run_single_subtype_attempt(
                     / visa_sub_type
                     / f"browser_attempt_{attempt_number:02d}"
                 ),
+                reader=reader,
             )
 
             #
@@ -897,6 +882,7 @@ def _run_single_subtype_attempt(
                     / visa_sub_type
                     / f"browser_attempt_{attempt_number:02d}"
                 ),
+                reader=reader,
             )
 
             logger.info(
@@ -1254,6 +1240,9 @@ def run_scraper(
         MAX_SUBTYPE_ATTEMPTS,
     )
 
+    logger.info("Loading PARSeq-tiny once for this worker. GPU=%s", config.gpu)
+    reader = build_reader(gpu=config.gpu)
+
     successful_results: list[
         ScraperResult
     ] = []
@@ -1294,6 +1283,7 @@ def run_scraper(
                     config=config,
                     visa_sub_type=visa_sub_type,
                     attempt_number=attempt_number,
+                    reader=reader,
                 )
             )
 
