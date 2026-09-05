@@ -17,6 +17,7 @@ torch==2.13.0
 torchvision==0.28.0
 pytorch-lightning==2.6.5
 timm==1.0.28
+nltk
 
 # Fusion, benchmarks, and analysis
 pandas==3.0.3
