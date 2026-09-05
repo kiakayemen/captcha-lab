@@ -1,17 +1,25 @@
+name: Deploy to Hamravesh
+
+on:
+  push:
+    branches:
+      - main
+
 jobs:
   darkube_build_bls-scraper_safir-credit_hamravesh-c11:
+    runs-on: ubuntu-latest
     container:
       image: hamravesh/darkube-cli:v1.1
       options: --user root
+
     env:
       IMAGE_NAME: registry.hamdocker.ir/safir-credit/bls-scraper
-    runs-on: ubuntu-latest
 
     steps:
-      - name: checkout commit
+      - name: Checkout commit
         uses: actions/checkout@v4
 
-      - name: darkube-cli build & push
+      - name: Darkube CLI build and push
         env:
           DOCKER_AUTH_CONFIG: ${{ secrets.DOCKER_AUTH_CONFIG }}
         run: |
@@ -24,22 +32,21 @@ jobs:
             --build-context .
 
   darkube_deploy_bls-scraper_safir-credit_hamravesh-c11:
+    runs-on: ubuntu-latest
     container:
       image: hamravesh/darkube-cli:v1.1
+
     needs:
       - darkube_build_bls-scraper_safir-credit_hamravesh-c11
-    runs-on: ubuntu-latest
 
     steps:
-      - name: darkube-cli deploy
+      - name: Darkube CLI deploy
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN_BLS_SCRAPER_SAFIR_CREDIT_HAMRAVESH_C11 }}
+          APP_ID: ${{ secrets.APP_ID_BLS_SCRAPER_SAFIR_CREDIT_HAMRAVESH_C11 }}
         run: |
           darkube deploy \
-            --token "${{ secrets.DEPLOY_TOKEN_BLS_SCRAPER_SAFIR_CREDIT_HAMRAVESH_C11 }}" \
-            --app-id "${{ secrets.APP_ID_BLS_SCRAPER_SAFIR_CREDIT_HAMRAVESH_C11 }}" \
+            --token "$DEPLOY_TOKEN" \
+            --app-id "$APP_ID" \
             --image-tag "${GITHUB_SHA:0:7}" \
-            --job-id "${GITHUB_RUN_ID}"
-
-on:
-  push:
-    branches:
-      - main
+            --job-id "$GITHUB_RUN_ID"
