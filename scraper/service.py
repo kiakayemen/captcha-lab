@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -793,9 +794,19 @@ def _run_single_subtype_attempt(
         page = None
 
         try:
+            browser_options = {
+                "headless": config.headless,
+            }
+            executable_path = os.getenv(
+                "PLAYWRIGHT_EXECUTABLE_PATH",
+                "",
+            ).strip()
+            if executable_path:
+                browser_options["executable_path"] = executable_path
+
             browser = (
                 playwright.chromium.launch(
-                    headless=config.headless,
+                    **browser_options,
                 )
             )
 
