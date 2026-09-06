@@ -4,6 +4,7 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+import dj_database_url
 from dotenv import load_dotenv
 
 
@@ -149,26 +150,28 @@ WSGI_APPLICATION = (
 # Database
 # ------------------------------------------------------------------
 #
-# Keep SQLite as the development default.
-#
-# Once you tell me the deployment target we'll decide whether this
-# stays SQLite or moves to PostgreSQL.
-#
+# Use the shared PostgreSQL database in the PaaS when configured;
+# retain SQLite as the local-development fallback.
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-DATABASES = {
-    "default": {
-        "ENGINE": (
-            "django.db.backends.sqlite3"
-        ),
-        "NAME": os.getenv(
-            "DJANGO_SQLITE_PATH",
-            str(
-                BASE_DIR
-                / "db.sqlite3"
-            ),
-        ),
+if DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": os.getenv(
+                "DJANGO_SQLITE_PATH",
+                str(BASE_DIR / "db.sqlite3"),
+            ),
+        }
+    }
 
 
 # ------------------------------------------------------------------
