@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from threading import Lock
 from dataclasses import dataclass
 from typing import Any
 
@@ -90,6 +91,25 @@ def build_reader(
         raise RuntimeError("PARSeq dependencies are not installed. Run: pip install -r requirements.txt") from error
     transform = SceneTextDataModule.get_transform(model.hparams.img_size)
     return PARSeqReader(model, transform, device)
+
+
+_READER_CACHE: dict[bool, PARSeqReader] = {}
+_READER_CACHE_LOCK = Lock()
+
+
+def get_reader(gpu: bool = False) -> PARSeqReader:
+    """Return the PARSeq reader cached by this worker process."""
+    reader = _READER_CACHE.get(gpu)
+    if reader is not None:
+        return reader
+
+    with _READER_CACHE_LOCK:
+        reader = _READER_CACHE.get(gpu)
+        if reader is None:
+            reader = build_reader(gpu=gpu)
+            _READER_CACHE[gpu] = reader
+
+    return reader
 
 
 def recognize(reader: Any, image: np.ndarray, variant: str) -> OCRResult:

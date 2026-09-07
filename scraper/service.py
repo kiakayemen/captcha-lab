@@ -56,7 +56,7 @@ from notifications import (
     log_no_appointment,
     notify_admin,
 )
-from ocr import build_reader
+from ocr import get_reader
 
 from scraper.models import (
     ScraperConfig,
@@ -1240,8 +1240,8 @@ def run_scraper(
         MAX_SUBTYPE_ATTEMPTS,
     )
 
-    logger.info("Loading PARSeq-tiny once for this worker. GPU=%s", config.gpu)
-    reader = build_reader(gpu=config.gpu)
+    logger.info("Getting PARSeq-tiny reader for this worker. GPU=%s", config.gpu)
+    reader = get_reader(gpu=config.gpu)
 
     successful_results: list[
         ScraperResult
