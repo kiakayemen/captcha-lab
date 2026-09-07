@@ -41,6 +41,7 @@ class ScraperScheduleAdmin(
         "enabled",
         "interval_minutes",
         "last_dispatched_at",
+        "next_run",
         "updated_at",
     )
 
@@ -48,13 +49,22 @@ class ScraperScheduleAdmin(
         "enabled",
         "interval_minutes",
         "last_dispatched_at",
+        "next_run",
         "updated_at",
     )
 
     readonly_fields = (
         "last_dispatched_at",
+        "next_run",
         "updated_at",
     )
+
+    @admin.display(description="Next scraper run")
+    def next_run(self, obj: ScraperSchedule):
+        next_run_at = obj.next_run_at
+        if next_run_at is None:
+            return "Disabled"
+        return next_run_at
 
     def has_add_permission(
         self,

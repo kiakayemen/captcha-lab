@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 
 
 class ScraperRun(models.Model):
@@ -191,6 +193,17 @@ class ScraperSchedule(models.Model):
         return (
             f"{state} — every "
             f"{self.interval_minutes} minute(s)"
+        )
+
+    @property
+    def next_run_at(self):
+        """Estimated next dispatch time used by the admin UI."""
+        if not self.enabled:
+            return None
+        if self.last_dispatched_at is None:
+            return timezone.now()
+        return self.last_dispatched_at + timedelta(
+            minutes=self.interval_minutes
         )
 
     def save(
