@@ -37,6 +37,7 @@ Thumbs.db
 # Logs & caches
 # =========================
 *.log
+logs/
 .rdb
 dump.rdb
 .pytest_cache/

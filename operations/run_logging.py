@@ -4,7 +4,9 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 
+from django.conf import settings
 from django.utils import timezone
 
 from .models import (
@@ -81,6 +83,31 @@ class ScraperRunDatabaseHandler(
             pass
 
 
+class ScraperRunFileHandler(
+    logging.FileHandler
+):
+    """Write a complete, separate transcript for one scraper run."""
+
+    def __init__(
+        self,
+        run: ScraperRun,
+    ) -> None:
+        logs_dir = Path(settings.BASE_DIR) / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+
+        started_at = run.started_at or run.created_at
+        timestamp = timezone.localtime(started_at).strftime(
+            "%Y%m%d_%H%M%S"
+        )
+        path = logs_dir / f"scraper_{timestamp}_{run.pk}.log"
+
+        super().__init__(
+            filename=path,
+            mode="a",
+            encoding="utf-8",
+        )
+
+
 @contextmanager
 def bind_scraper_run_logging(
     run: ScraperRun,
@@ -103,9 +130,19 @@ def bind_scraper_run_logging(
         )
     )
 
+    file_handler = ScraperRunFileHandler(run)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+
     logger.addHandler(
         handler
     )
+    logger.addHandler(file_handler)
 
     with bind_scraper_event_context(run):
         token = (
@@ -123,8 +160,10 @@ def bind_scraper_run_logging(
             logger.removeHandler(
                 handler
             )
+            logger.removeHandler(file_handler)
 
             handler.close()
+            file_handler.close()
 
             _current_run_id.reset(
                 token
