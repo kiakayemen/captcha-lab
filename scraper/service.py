@@ -56,6 +56,8 @@ from notifications import (
     log_no_appointment,
     notify_admin,
 )
+from operations.events import record_scraper_event
+from operations.models import ScraperEvent
 from ocr import get_reader
 
 from scraper.models import (
@@ -79,6 +81,34 @@ MAX_SUBTYPE_ATTEMPTS = 5
 
 def log_captcha_decision(stage: str, decision) -> None:
     """Temporary detailed CAPTCHA diagnostics for live scraper runs."""
+    record_scraper_event(
+        ScraperEvent.EventType.CAPTCHA_DECISION,
+        status=str(decision.status),
+        data={
+            "stage": stage,
+            "target": decision.target,
+            "selected_tiles": list(decision.selected_tiles),
+            "uncertain_tiles": list(decision.uncertain_tiles),
+            "tiles": [
+                {
+                    "tile": tile.tile,
+                    "prediction": tile.prediction or "",
+                    "score": float(tile.score),
+                    "votes": tile.votes,
+                    "matches_target": tile.matches_target,
+                    "attempts": [
+                        {
+                            "variant": attempt["variant"],
+                            "prediction": attempt["prediction"] or "",
+                            "confidence": float(attempt["confidence"]),
+                        }
+                        for attempt in tile.attempts
+                    ],
+                }
+                for tile in decision.tiles
+            ],
+        },
+    )
     logger.info(
         "%s decision: status=%s target=%s selected=%s uncertain=%s",
         stage,
@@ -1098,6 +1128,7 @@ def _run_single_subtype_attempt(
             RuntimeError,
             ValueError,
             OSError,
+            AssertionError,
         ) as error:
             screenshot_path = (
                 config.output_dir

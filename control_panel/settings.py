@@ -6,6 +6,7 @@ from pathlib import Path
 
 import dj_database_url
 from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 
 
 BASE_DIR = (
@@ -150,28 +151,22 @@ WSGI_APPLICATION = (
 # Database
 # ------------------------------------------------------------------
 #
-# Use the shared PostgreSQL database in the PaaS when configured;
-# retain SQLite as the local-development fallback.
+# PostgreSQL is mandatory. SQLite is intentionally not a fallback because
+# scraper runs and structured events must never silently land in a local DB.
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if DATABASE_URL:
-    DATABASES = {
-        "default": dj_database_url.parse(
-            DATABASE_URL,
-            conn_max_age=600,
-            conn_health_checks=True,
-        )
-    }
-else:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": os.getenv(
-                "DJANGO_SQLITE_PATH",
-                str(BASE_DIR / "db.sqlite3"),
-            ),
-        }
-    }
+if not DATABASE_URL:
+    raise ImproperlyConfigured(
+        "DATABASE_URL is required. Refusing to fall back to SQLite."
+    )
+
+DATABASES = {
+    "default": dj_database_url.parse(
+        DATABASE_URL,
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
+}
 
 
 # ------------------------------------------------------------------

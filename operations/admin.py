@@ -21,6 +21,7 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
+    ScraperEvent,
     ScraperRun,
     ScraperSchedule,
 )
@@ -31,6 +32,51 @@ from .services import (
     recover_stale_scraper_runs
 )
 from .tasks import run_scraper_task
+
+
+@admin.register(ScraperEvent)
+class ScraperEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_at",
+        "event_type",
+        "visa_sub_type",
+        "attempt_number",
+        "status",
+        "reason_code",
+        "duration_ms",
+        "run",
+        "execution_id",
+    )
+
+    list_filter = (
+        "event_type",
+        "status",
+        "reason_code",
+        "created_at",
+    )
+
+    search_fields = (
+        "run__id",
+        "execution_id",
+        "visa_sub_type",
+        "message",
+        "reason_code",
+    )
+
+    readonly_fields = (
+        "id",
+        "run",
+        "execution_id",
+        "created_at",
+        "event_type",
+        "visa_sub_type",
+        "attempt_number",
+        "status",
+        "reason_code",
+        "duration_ms",
+        "message",
+        "data",
+    )
 
 
 @admin.register(ScraperSchedule)

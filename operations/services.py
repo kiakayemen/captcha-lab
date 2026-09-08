@@ -12,6 +12,8 @@ from scraper.service import run_scraper
 from datetime import timedelta
 
 from .models import ScraperRun
+from .events import record_scraper_event
+from .models import ScraperEvent
 from .run_logging import bind_scraper_run_logging
 
 
@@ -24,6 +26,10 @@ PENDING_STALE_AFTER = timedelta(
 RUNNING_STALE_AFTER = timedelta(
     minutes=60
 )
+
+
+class ScraperRunAlreadyStarted(RuntimeError):
+    """Raised when duplicate task delivery targets one execution row."""
 
 
 def _env_bool(
@@ -106,7 +112,7 @@ def build_default_scraper_config() -> ScraperConfig:
     return ScraperConfig(
         headless=_env_bool(
             "SCRAPER_HEADLESS",
-            False,
+            True,
         ),
         gpu=_env_bool(
             "SCRAPER_GPU",
@@ -185,6 +191,15 @@ def execute_scraper_run(
             trigger=trigger,
         )
 
+    if (
+        db_run.status != ScraperRun.Status.PENDING
+        or db_run.started_at is not None
+    ):
+        raise ScraperRunAlreadyStarted(
+            "ScraperRun has already started and cannot be executed again. "
+            f"Run ID={db_run.pk} | Status={db_run.status}"
+        )
+
     now = timezone.now()
 
 
@@ -241,6 +256,17 @@ def execute_scraper_run(
                 ", ".join(
                     config.visa_sub_types
                 ),
+            )
+
+            record_scraper_event(
+                ScraperEvent.EventType.RUN_STARTED,
+                status=db_run.status,
+                data={
+                    "trigger": trigger,
+                    "headless": config.headless,
+                    "gpu": config.gpu,
+                    "visa_sub_types": list(config.visa_sub_types),
+                },
             )
 
             with (
@@ -328,12 +354,40 @@ def execute_scraper_run(
                 result.duration_seconds,
             )
 
-            if result.visa_sub_type:
+            if (
+                db_run.status
+                == ScraperRun.Status.APPOINTMENT_FOUND
+                and result.visa_sub_type
+            ):
+                record_scraper_event(
+                    ScraperEvent.EventType.APPOINTMENT_DETECTED,
+                    visa_sub_type=result.visa_sub_type,
+                    status=db_run.status,
+                    duration_ms=round(
+                        result.duration_seconds * 1000
+                    ),
+                    data={
+                        "page_url": result.page_url or "",
+                    },
+                )
+
                 logger.info(
                     "Appointment availability detected "
                     "for visa subtype=%s",
                     result.visa_sub_type,
                 )
+
+            record_scraper_event(
+                ScraperEvent.EventType.RUN_FINISHED,
+                status=db_run.status,
+                duration_ms=round(
+                    result.duration_seconds * 1000
+                ),
+                data={
+                    "page_url": result.page_url or "",
+                    "error_type": result.error_type or "",
+                },
+            )
 
             if result.error_message:
                 logger.error(
@@ -382,6 +436,18 @@ def execute_scraper_run(
 
             logger.exception(
                 "Scraper run crashed unexpectedly."
+            )
+
+            record_scraper_event(
+                ScraperEvent.EventType.RUN_FAILED,
+                status=db_run.status,
+                reason_code=type(exc).__name__.upper(),
+                duration_ms=round(
+                    db_run.duration_seconds * 1000
+                )
+                if db_run.duration_seconds is not None
+                else None,
+                message=str(exc),
             )
 
             raise

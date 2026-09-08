@@ -140,6 +140,102 @@ class ScraperRunLog(models.Model):
         )
 
 
+class ScraperEvent(models.Model):
+    """Durable, queryable facts emitted during one scraper execution."""
+
+    class EventType(models.TextChoices):
+        RUN_STARTED = "run_started", "Run started"
+        RUN_FINISHED = "run_finished", "Run finished"
+        RUN_FAILED = "run_failed", "Run failed"
+        RUN_RECOVERED = "run_recovered", "Run recovered"
+        SUBTYPE_STARTED = "subtype_started", "Subtype started"
+        SUBTYPE_FINISHED = "subtype_finished", "Subtype finished"
+        SUBTYPE_RETRY = "subtype_retry", "Subtype retry"
+        CAPTCHA_STARTED = "captcha_started", "CAPTCHA started"
+        CAPTCHA_DECISION = "captcha_decision", "CAPTCHA decision"
+        CAPTCHA_FINISHED = "captcha_finished", "CAPTCHA finished"
+        BROWSER_STARTED = "browser_started", "Browser started"
+        BROWSER_FAILED = "browser_failed", "Browser failed"
+        NAVIGATION_FAILED = "navigation_failed", "Navigation failed"
+        APPOINTMENT_DETECTED = "appointment_detected", "Appointment detected"
+        NOTIFICATION_SENT = "notification_sent", "Notification sent"
+        NOTIFICATION_FAILED = "notification_failed", "Notification failed"
+
+    run = models.ForeignKey(
+        ScraperRun,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+
+    # One ScraperRun can be accidentally invoked more than once by a
+    # duplicated task delivery. This UUID distinguishes those executions.
+    execution_id = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        db_index=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        db_index=True,
+    )
+
+    event_type = models.CharField(
+        max_length=64,
+        choices=EventType.choices,
+        db_index=True,
+    )
+
+    visa_sub_type = models.CharField(
+        max_length=255,
+        blank=True,
+        db_index=True,
+    )
+
+    attempt_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+    )
+
+    status = models.CharField(
+        max_length=64,
+        blank=True,
+    )
+
+    reason_code = models.CharField(
+        max_length=128,
+        blank=True,
+        db_index=True,
+    )
+
+    duration_ms = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+    )
+
+    message = models.TextField(
+        blank=True,
+    )
+
+    data = models.JSONField(
+        default=dict,
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(
+                fields=["run", "created_at"],
+                name="scraper_event_run_time_idx",
+            ),
+            models.Index(
+                fields=["run", "event_type"],
+                name="scraper_event_run_type_idx",
+            ),
+        ]
+
+
 class ScraperSchedule(models.Model):
     """
     Singleton database configuration for automatic scraper runs.

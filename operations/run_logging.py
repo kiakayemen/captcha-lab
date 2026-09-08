@@ -11,6 +11,10 @@ from .models import (
     ScraperRun,
     ScraperRunLog,
 )
+from .events import (
+    bind_scraper_event_context,
+    record_event_from_log,
+)
 
 
 _current_run_id: ContextVar[
@@ -48,6 +52,8 @@ class ScraperRunDatabaseHandler(
                 message=message,
             )
 
+            record_event_from_log(message)
+
             #
             # Every meaningful scraper log acts as a heartbeat.
             #
@@ -83,14 +89,6 @@ def bind_scraper_run_logging(
         "captcha_lab"
     )
 
-    token = (
-        _current_run_id.set(
-            str(
-                run.pk
-            )
-        )
-    )
-
     handler = (
         ScraperRunDatabaseHandler()
     )
@@ -109,16 +107,25 @@ def bind_scraper_run_logging(
         handler
     )
 
-    try:
-        yield
-
-    finally:
-        logger.removeHandler(
-            handler
+    with bind_scraper_event_context(run):
+        token = (
+            _current_run_id.set(
+                str(
+                    run.pk
+                )
+            )
         )
 
-        handler.close()
+        try:
+            yield
 
-        _current_run_id.reset(
-            token
-        )
+        finally:
+            logger.removeHandler(
+                handler
+            )
+
+            handler.close()
+
+            _current_run_id.reset(
+                token
+            )
