@@ -212,7 +212,7 @@ LANGUAGE_CODE = (
 
 TIME_ZONE = os.getenv(
     "DJANGO_TIME_ZONE",
-    "UTC",
+    "Asia/Tehran",
 )
 
 
