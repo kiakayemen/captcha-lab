@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+
 from django.contrib import (
     admin,
     messages,
@@ -23,6 +25,7 @@ from django.utils.html import format_html
 from .models import (
     ScraperEvent,
     ScraperRun,
+    ScraperRunLog,
     ScraperSchedule,
 )
 from .services import (
@@ -149,6 +152,7 @@ class ScraperRunAdmin(
         "appointment_visa_sub_type",
         "duration_seconds",
         "log_count",
+        "download_logs",
     )
 
     list_filter = (
@@ -244,6 +248,20 @@ class ScraperRunAdmin(
 
         return obj.logs.count()
 
+    @admin.display(description="Download")
+    def download_logs(
+        self,
+        obj: ScraperRun,
+    ):
+        url = reverse(
+            "admin:operations_scraperrun_download_logs",
+            args=[obj.pk],
+        )
+        return format_html(
+            '<a class="button" href="{}">Download CSV</a>',
+            url,
+        )
+
     @admin.display(
         description="Run log"
     )
@@ -325,6 +343,29 @@ class ScraperRunAdmin(
                     "scraperrun_live_state"
                 ),
             ),
+            path(
+                "download-logs/",
+                self.admin_site.admin_view(
+                    self.download_all_logs_view
+                ),
+                name=(
+                    "operations_"
+                    "scraperrun_download_all_logs"
+                ),
+            ),
+            path(
+                (
+                    "<uuid:run_id>/"
+                    "download-logs/"
+                ),
+                self.admin_site.admin_view(
+                    self.download_run_logs_view
+                ),
+                name=(
+                    "operations_"
+                    "scraperrun_download_logs"
+                ),
+            ),
         ]
 
         return (
@@ -399,6 +440,93 @@ class ScraperRunAdmin(
                 ],
             }
         )
+
+    def download_all_logs_view(
+        self,
+        request: HttpRequest,
+    ) -> HttpResponse:
+        logs = ScraperRunLog.objects.select_related("run").order_by(
+            "run__created_at",
+            "id",
+        )
+        return self._logs_csv_response(logs, "scraper_run_logs.csv")
+
+    def download_run_logs_view(
+        self,
+        request: HttpRequest,
+        run_id,
+    ) -> HttpResponse:
+        run = get_object_or_404(ScraperRun, pk=run_id)
+        logs = run.logs.select_related("run").order_by("id")
+        return self._logs_csv_response(
+            logs,
+            f"scraper_run_{run.pk}_logs.csv",
+        )
+
+    @staticmethod
+    def _logs_csv_response(logs, filename: str) -> HttpResponse:
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename}"'
+        )
+
+        fieldnames = [
+            "log_id",
+            "log_created_at",
+            "level",
+            "message",
+            "run_id",
+            "run_status",
+            "run_trigger",
+            "run_created_at",
+            "run_started_at",
+            "run_finished_at",
+            "run_duration_seconds",
+            "appointment_visa_sub_type",
+            "run_page_url",
+            "error_type",
+            "error_message",
+            "failure_screenshot",
+        ]
+        writer = csv.DictWriter(response, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for log in logs.iterator():
+            run = log.run
+            writer.writerow(
+                {
+                    "log_id": log.id,
+                    "log_created_at": log.created_at.isoformat(),
+                    "level": log.level,
+                    "message": log.message,
+                    "run_id": run.id,
+                    "run_status": run.status,
+                    "run_trigger": run.trigger,
+                    "run_created_at": run.created_at.isoformat(),
+                    "run_started_at": (
+                        run.started_at.isoformat()
+                        if run.started_at
+                        else ""
+                    ),
+                    "run_finished_at": (
+                        run.finished_at.isoformat()
+                        if run.finished_at
+                        else ""
+                    ),
+                    "run_duration_seconds": (
+                        run.duration_seconds
+                        if run.duration_seconds is not None
+                        else ""
+                    ),
+                    "appointment_visa_sub_type": run.appointment_visa_sub_type,
+                    "run_page_url": run.page_url,
+                    "error_type": run.error_type,
+                    "error_message": run.error_message,
+                    "failure_screenshot": run.failure_screenshot,
+                }
+            )
+
+        return response
 
     def run_now_view(
         self,

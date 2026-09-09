@@ -2,6 +2,11 @@
 
 {% block object-tools-items %}
     <li>
+        <a href="{% url 'admin:operations_scraperrun_download_all_logs' %}">
+            Download all logs (CSV)
+        </a>
+    </li>
+    <li>
         <form
             method="post"
             action="{% url 'admin:operations_scraperrun_run_now' %}"
