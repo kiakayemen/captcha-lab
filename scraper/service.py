@@ -1033,16 +1033,7 @@ def _run_single_subtype_attempt(
                 page.url,
             )
 
-            notify_admin(
-                (
-                    "Appointment availability detected. "
-                    "Manual booking is required."
-                ),
-                page_url=page.url,
-                visa_sub_type=visa_sub_type,
-            )
-
-            return ScraperResult(
+            result = ScraperResult(
                 status=(
                     ScraperStatus
                     .APPOINTMENT_FOUND
@@ -1054,6 +1045,21 @@ def _run_single_subtype_attempt(
                 page_url=page.url,
                 visa_sub_type=visa_sub_type,
             )
+
+            # Notify immediately when this form check finds an appointment.
+            # The overall run may continue checking other subtypes, but the
+            # alert must not wait for final run bookkeeping.
+            if result.appointment_found:
+                notify_admin(
+                    (
+                        "Appointment availability detected. "
+                        "Manual booking is required."
+                    ),
+                    page_url=result.page_url or page.url,
+                    visa_sub_type=result.visa_sub_type,
+                )
+
+            return result
 
         except PlaywrightTimeoutError as error:
             screenshot_path = (
