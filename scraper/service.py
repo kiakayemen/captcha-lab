@@ -858,6 +858,27 @@ def _run_single_subtype_attempt(
                     response.status,
                 )
 
+                if response.status == 403:
+                    message = (
+                        "The target site returned HTTP 403 Forbidden. "
+                        "Stopping immediately; this failure is not retryable."
+                    )
+                    logger.error(
+                        "%s Visa subtype=%s | URL=%s",
+                        message,
+                        visa_sub_type,
+                        page.url,
+                    )
+                    return ScraperResult(
+                        status=ScraperStatus.FAILED,
+                        started_at=started_at,
+                        finished_at=datetime.now(timezone.utc),
+                        page_url=page.url,
+                        visa_sub_type=visa_sub_type,
+                        error_type="HTTP403Forbidden",
+                        error_message=message,
+                    )
+
             #
             # CAPTCHA 1
             #
@@ -1329,6 +1350,21 @@ def run_scraper(
                 break
 
             last_failure = result
+
+            if result.error_type == "HTTP403Forbidden":
+                logger.error(
+                    "HTTP 403 is terminal; stopping without another attempt."
+                )
+                return ScraperResult(
+                    status=ScraperStatus.FAILED,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=visa_sub_type,
+                    error_type=result.error_type,
+                    error_message=result.error_message,
+                    failure_screenshot=result.failure_screenshot,
+                )
 
             logger.warning(
                 "Subtype attempt failed; "
