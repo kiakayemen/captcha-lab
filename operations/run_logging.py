@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import Path
 
 from django.conf import settings
@@ -19,28 +18,20 @@ from .events import (
 )
 
 
-_current_run_id: ContextVar[
-    str | None
-] = ContextVar(
-    "scraper_run_id",
-    default=None,
-)
-
-
 class ScraperRunDatabaseHandler(
     logging.Handler
 ):
+    def __init__(
+        self,
+        run_id: str,
+    ) -> None:
+        super().__init__()
+        self.run_id = str(run_id)
+
     def emit(
         self,
         record: logging.LogRecord,
     ) -> None:
-        run_id = (
-            _current_run_id.get()
-        )
-
-        if run_id is None:
-            return
-
         try:
             message = (
                 self.format(
@@ -49,7 +40,7 @@ class ScraperRunDatabaseHandler(
             )
 
             ScraperRunLog.objects.create(
-                run_id=run_id,
+                run_id=self.run_id,
                 level=record.levelname,
                 message=message,
             )
@@ -63,7 +54,7 @@ class ScraperRunDatabaseHandler(
             # this timestamp stops advancing.
             #
             ScraperRun.objects.filter(
-                pk=run_id,
+                pk=self.run_id,
                 status=(
                     ScraperRun
                     .Status
@@ -117,7 +108,9 @@ def bind_scraper_run_logging(
     )
 
     handler = (
-        ScraperRunDatabaseHandler()
+        ScraperRunDatabaseHandler(
+            run_id=str(run.pk),
+        )
     )
 
     handler.setLevel(
@@ -145,14 +138,6 @@ def bind_scraper_run_logging(
     logger.addHandler(file_handler)
 
     with bind_scraper_event_context(run):
-        token = (
-            _current_run_id.set(
-                str(
-                    run.pk
-                )
-            )
-        )
-
         try:
             yield
 
@@ -164,7 +149,3 @@ def bind_scraper_run_logging(
 
             handler.close()
             file_handler.close()
-
-            _current_run_id.reset(
-                token
-            )

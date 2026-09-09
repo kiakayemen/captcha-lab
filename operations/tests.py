@@ -1,10 +1,14 @@
+import contextvars
+import logging
+
 from django.test import TestCase
 from django.utils import timezone
 
 from scraper.models import ScraperConfig
 
-from .events import bind_scraper_event_context, record_event_from_log
-from .models import ScraperEvent, ScraperRun
+from .events import bind_scraper_event_context, record_event_from_log, record_scraper_event
+from .models import ScraperEvent, ScraperRun, ScraperRunLog
+from .run_logging import ScraperRunDatabaseHandler
 from .services import ScraperRunAlreadyStarted, execute_scraper_run
 
 
@@ -58,3 +62,44 @@ class ScraperEventTests(TestCase):
                 ),
                 db_run=self.run,
             )
+
+
+class ScraperRunLoggingTests(TestCase):
+    def setUp(self):
+        self.run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            visa_sub_types=["Student Visa"],
+        )
+
+    def test_database_handler_keeps_run_id_without_contextvar(self):
+        handler = ScraperRunDatabaseHandler(str(self.run.pk))
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        try:
+            handler.emit(
+                logging.LogRecord(
+                    name="captcha_lab",
+                    level=logging.INFO,
+                    pathname=__file__,
+                    lineno=1,
+                    msg="Chromium browser launched.",
+                    args=(),
+                    exc_info=None,
+                )
+            )
+        finally:
+            handler.close()
+
+        log = ScraperRunLog.objects.get()
+        self.assertEqual(log.run_id, self.run.pk)
+        self.assertEqual(log.message, "Chromium browser launched.")
+
+    def test_structured_event_keeps_context_across_contextvar_switch(self):
+        with bind_scraper_event_context(self.run):
+            contextvars.Context().run(
+                record_scraper_event,
+                ScraperEvent.EventType.BROWSER_STARTED,
+            )
+
+        event = ScraperEvent.objects.get()
+        self.assertEqual(event.run_id, self.run.pk)

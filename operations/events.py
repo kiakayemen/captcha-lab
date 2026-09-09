@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -18,6 +19,29 @@ _attempt_context: ContextVar[tuple[str, int] | None] = ContextVar(
     default=None,
 )
 
+# Playwright's synchronous bridge can switch greenlet execution contexts while
+# remaining on the same OS thread.  ContextVars do not necessarily follow
+# that switch, so retain a thread-local fallback for this synchronous scraper
+# execution path.  Celery's normal worker isolation keeps separate runs from
+# sharing this state.
+_thread_context = threading.local()
+
+
+def _current_event_context() -> tuple[str, uuid.UUID] | None:
+    return _event_context.get() or getattr(
+        _thread_context,
+        "event_context",
+        None,
+    )
+
+
+def _current_attempt_context() -> tuple[str, int] | None:
+    return _attempt_context.get() or getattr(
+        _thread_context,
+        "attempt_context",
+        None,
+    )
+
 
 @contextmanager
 def bind_scraper_event_context(
@@ -25,11 +49,24 @@ def bind_scraper_event_context(
 ) -> Iterator[uuid.UUID]:
     execution_id = uuid.uuid4()
     token = _event_context.set((str(run.pk), execution_id))
+    previous_event_context = getattr(
+        _thread_context,
+        "event_context",
+        None,
+    )
+    previous_attempt_context = getattr(
+        _thread_context,
+        "attempt_context",
+        None,
+    )
+    _thread_context.event_context = (str(run.pk), execution_id)
+    _thread_context.attempt_context = None
     try:
         yield execution_id
     finally:
         _event_context.reset(token)
-        _attempt_context.set(None)
+        _thread_context.event_context = previous_event_context
+        _thread_context.attempt_context = previous_attempt_context
 
 
 def record_scraper_event(
@@ -43,12 +80,12 @@ def record_scraper_event(
     message: str = "",
     data: dict | None = None,
 ) -> ScraperEvent | None:
-    context = _event_context.get()
+    context = _current_event_context()
     if context is None:
         return None
 
     run_id, execution_id = context
-    current_attempt = _attempt_context.get()
+    current_attempt = _current_attempt_context()
     if not visa_sub_type and current_attempt is not None:
         visa_sub_type = current_attempt[0]
     if attempt_number is None and current_attempt is not None:
@@ -97,12 +134,12 @@ def record_event_from_log(
         subtype_match = re.search(r"Visa subtype=([^|]+)", message)
         attempt_match = re.search(r"Attempt=(\d+)/(\d+)", message)
         if subtype_match and attempt_match:
-            _attempt_context.set(
-                (
-                    subtype_match.group(1).strip(),
-                    int(attempt_match.group(1)),
-                )
+            attempt_context = (
+                subtype_match.group(1).strip(),
+                int(attempt_match.group(1)),
             )
+            _attempt_context.set(attempt_context)
+            _thread_context.attempt_context = attempt_context
         record_scraper_event(
             ScraperEvent.EventType.SUBTYPE_STARTED,
             visa_sub_type=subtype_match.group(1).strip() if subtype_match else "",
