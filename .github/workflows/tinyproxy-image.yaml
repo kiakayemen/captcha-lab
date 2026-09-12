@@ -1,0 +1,36 @@
+name: Build Tinyproxy image
+
+on:
+  push:
+    branches:
+      - tinyproxy-egress
+    paths:
+      - proxy/**
+      - .github/workflows/tinyproxy-image.yaml
+  workflow_dispatch:
+
+jobs:
+  build-tinyproxy:
+    runs-on: ubuntu-latest
+    container:
+      image: hamravesh/darkube-cli:v1.1
+      options: --user root
+
+    env:
+      IMAGE_NAME: registry.hamdocker.ir/safir-credit/bls-scraper
+
+    steps:
+      - name: Checkout commit
+        uses: actions/checkout@v4
+
+      - name: Build and push Tinyproxy
+        env:
+          DOCKER_AUTH_CONFIG: ${{ secrets.DOCKER_AUTH_CONFIG }}
+        run: |
+          darkube build --push \
+            -t "$IMAGE_NAME:tinyproxy-egress" \
+            -t "$IMAGE_NAME:tinyproxy-${GITHUB_SHA:0:7}" \
+            --docker-auth-config "$DOCKER_AUTH_CONFIG" \
+            --workdir . \
+            --file ./proxy/Dockerfile \
+            --build-context .
