@@ -1,4 +1,12 @@
 services:
+  tinyproxy:
+    profiles:
+      - proxy
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped

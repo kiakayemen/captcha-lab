@@ -25,6 +25,36 @@ For local container testing, copy `.env.example` to `.env` and `.env.secrets.exa
 
 When running Python commands directly, the application loads both `.env` and `.env.secrets`; platform-provided environment variables continue to work unchanged.
 
+### Static outbound proxy apps
+
+The `proxy/` directory contains a standalone Tinyproxy image. It is separate
+from the web, worker, and beat image and can be deployed repeatedly from the
+same repository. In Hamravesh, create five apps using `proxy/Dockerfile`, give
+each app one replica and internal port `8888`, disable external access, and
+assign a different static outbound IP to each app.
+
+Configure the Celery worker with the five internal service addresses:
+
+```text
+SCRAPER_PROXY_URLS=http://tinyproxy-1.namespace.svc:8888,http://tinyproxy-2.namespace.svc:8888,http://tinyproxy-3.namespace.svc:8888,http://tinyproxy-4.namespace.svc:8888,http://tinyproxy-5.namespace.svc:8888
+```
+
+Each completely fresh Playwright browser attempt randomly chooses one endpoint
+and keeps that proxy for the entire browser session. When the variable is empty,
+the scraper retains its previous direct-network behavior.
+
+The proxy image accepts optional `TINYPROXY_USERNAME` and
+`TINYPROXY_PASSWORD` environment variables. Set both on every proxy app and
+include URL-encoded credentials in `SCRAPER_PROXY_URLS` if internal network
+access alone is not sufficient. Do not enable Hamravesh external access unless
+the proxy is authenticated and intentionally meant to be public.
+
+For local testing, start the optional proxy profile with:
+
+```text
+docker compose --profile proxy up --build tinyproxy
+```
+
 ## What This Project Does
 
 At a high level, the solver:

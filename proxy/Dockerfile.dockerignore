@@ -1,0 +1,4 @@
+**
+!proxy/
+!proxy/entrypoint.sh
+!proxy/tinyproxy.conf

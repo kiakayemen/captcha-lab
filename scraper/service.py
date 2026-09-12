@@ -65,6 +65,7 @@ from scraper.models import (
     ScraperResult,
     ScraperStatus,
 )
+from scraper.proxy import choose_playwright_proxy
 
 
 logger = logging.getLogger(
@@ -817,6 +818,18 @@ def _run_single_subtype_attempt(
             ).strip()
             if executable_path:
                 browser_options["executable_path"] = executable_path
+
+            selected_proxy = choose_playwright_proxy()
+            if selected_proxy is not None:
+                browser_options["proxy"] = selected_proxy
+                logger.info(
+                    "Using outbound proxy for browser attempt: %s",
+                    selected_proxy["server"],
+                )
+            else:
+                logger.info(
+                    "No outbound proxy configured; using direct network access."
+                )
 
             browser = (
                 playwright.chromium.launch(
