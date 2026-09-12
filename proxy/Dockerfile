@@ -13,4 +13,6 @@ RUN chmod +x /usr/local/bin/tinyproxy-entrypoint
 
 EXPOSE 8888
 
+USER tinyproxy
+
 ENTRYPOINT ["tinyproxy-entrypoint"]
