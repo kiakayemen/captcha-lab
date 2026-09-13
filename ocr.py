@@ -75,6 +75,46 @@ class PARSeqReader:
             confidence = confidence.detach().float().mean().item()
         return prediction, float(confidence)
 
+    @torch.inference_mode()
+    def recognize_batch(
+        self,
+        images: list[np.ndarray],
+    ) -> list[tuple[str, float]]:
+        """Recognize many crops in one PARSeq forward pass."""
+        if not images:
+            return []
+
+        tensors = []
+        for image in images:
+            prepared = add_white_padding(image, padding=15)
+            rgb = cv2.cvtColor(prepared, cv2.COLOR_BGR2RGB)
+            tensors.append(
+                self.transform(Image.fromarray(rgb))
+            )
+
+        batch = torch.stack(tensors).to(self.device)
+        logits = self.model(batch, max_length=EXPECTED_DIGITS)
+        labels, confidences = self.model.tokenizer.decode(logits.softmax(-1))
+
+        results: list[tuple[str, float]] = []
+        for index, label in enumerate(labels):
+            confidence = confidences[index]
+            if torch.is_tensor(confidence):
+                confidence = confidence.detach().float().mean().item()
+            results.append(
+                (
+                    clean_prediction(str(label)),
+                    float(confidence),
+                )
+            )
+
+        if len(results) != len(images):
+            raise RuntimeError(
+                "PARSeq returned a different number of results than inputs."
+            )
+
+        return results
+
 def build_reader(
     gpu: bool = False,
 ) -> PARSeqReader:

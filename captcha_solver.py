@@ -18,8 +18,9 @@ from extract_tiles import (
     find_square_candidates,
     select_grid_boxes,
 )
-from ocr import build_reader
-from solver import solve_tile
+from fusion import select_highest_confidence
+from ocr import OCRResult, build_reader
+from preprocess import preprocessing_variants
 
 
 TARGET_PATTERN = re.compile(
@@ -124,12 +125,58 @@ def solve_tiles(
 ) -> CaptchaDecision:
     target = validate_target(target)
 
+    variant_images: list[np.ndarray] = []
+    variant_keys: list[tuple[int, str]] = []
+    for tile_number, tile in enumerate(tiles, start=1):
+        for variant_name, processed in preprocessing_variants(tile).items():
+            variant_keys.append((tile_number, variant_name))
+            variant_images.append(processed)
+
+    if hasattr(reader, "recognize_batch"):
+        predictions = reader.recognize_batch(variant_images)
+    else:
+        predictions = [
+            reader.recognize(image)
+            for image in variant_images
+        ]
+
+    attempts_by_tile: dict[int, list[OCRResult]] = {
+        tile_number: []
+        for tile_number in range(1, len(tiles) + 1)
+    }
+    for (tile_number, variant_name), (prediction, confidence) in zip(
+        variant_keys,
+        predictions,
+        strict=True,
+    ):
+        attempts_by_tile[tile_number].append(
+            OCRResult(
+                variant=variant_name,
+                prediction=prediction,
+                confidence=confidence,
+            )
+        )
+
     decisions: list[TileDecision] = []
     selected: list[int] = []
     uncertain: list[int] = []
 
     for tile_number, tile in enumerate(tiles, start=1):
-        result = solve_tile(tile, reader, target=target)
+        attempts = attempts_by_tile[tile_number]
+        decision_result = select_highest_confidence(attempts)
+        result = {
+            "prediction": decision_result.prediction,
+            "score": decision_result.score,
+            "votes": decision_result.votes,
+            "supporting_variants": list(
+                decision_result.supporting_variants
+            ),
+            "matches_target": (
+                decision_result.prediction == target
+            ),
+            "uncertain": decision_result.prediction == "",
+            "attempts": [asdict(attempt) for attempt in attempts],
+        }
         decision = TileDecision(
             tile=tile_number,
             prediction=str(result["prediction"]),
