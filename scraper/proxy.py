@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+from dataclasses import dataclass, field
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 
@@ -18,13 +19,22 @@ def configured_proxy_urls() -> tuple[str, ...]:
         "",
     )
 
-    return tuple(
+    values = (
         value.strip()
         for value in raw_value.replace(
             "\n",
             ",",
         ).split(",")
-        if value.strip()
+    )
+
+    # Repeating an endpoint in the environment must not give that IP
+    # additional weight in the rotation.
+    return tuple(
+        dict.fromkeys(
+            value
+            for value in values
+            if value
+        )
     )
 
 
@@ -82,13 +92,46 @@ def playwright_proxy_config(
     return result
 
 
-def choose_playwright_proxy() -> dict[str, str] | None:
-    """Randomly choose one configured proxy for a fresh browser."""
-    proxy_urls = configured_proxy_urls()
+@dataclass
+class PlaywrightProxyRotator:
+    """Choose every configured proxy once per randomly shuffled cycle."""
 
-    if not proxy_urls:
-        return None
-
-    return playwright_proxy_config(
-        random.choice(proxy_urls)
+    proxy_urls: tuple[str, ...] = field(
+        default_factory=configured_proxy_urls
     )
+    _remaining: list[str] = field(
+        default_factory=list,
+        init=False,
+    )
+    _last_url: str | None = field(
+        default=None,
+        init=False,
+    )
+
+    def choose(self) -> dict[str, str] | None:
+        if not self.proxy_urls:
+            return None
+
+        if not self._remaining:
+            self._remaining = list(self.proxy_urls)
+            random.shuffle(self._remaining)
+
+            # A cycle boundary must not immediately reuse the proxy that
+            # ended the previous cycle when another endpoint is available.
+            if (
+                len(self._remaining) > 1
+                and self._remaining[0] == self._last_url
+            ):
+                self._remaining[0], self._remaining[1] = (
+                    self._remaining[1],
+                    self._remaining[0],
+                )
+
+        selected_url = self._remaining.pop(0)
+        self._last_url = selected_url
+        return playwright_proxy_config(selected_url)
+
+
+def choose_playwright_proxy() -> dict[str, str] | None:
+    """Choose a proxy for callers that need a single browser."""
+    return PlaywrightProxyRotator().choose()

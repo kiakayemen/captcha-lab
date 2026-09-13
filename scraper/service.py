@@ -65,7 +65,7 @@ from scraper.models import (
     ScraperResult,
     ScraperStatus,
 )
-from scraper.proxy import choose_playwright_proxy
+from scraper.proxy import PlaywrightProxyRotator
 
 
 logger = logging.getLogger(
@@ -771,6 +771,7 @@ def _run_single_subtype_attempt(
     visa_sub_type: str,
     attempt_number: int,
     reader,
+    proxy_config: dict[str, str] | None,
 ) -> ScraperResult:
     """
     One completely fresh browser attempt for exactly one visa subtype.
@@ -819,12 +820,11 @@ def _run_single_subtype_attempt(
             if executable_path:
                 browser_options["executable_path"] = executable_path
 
-            selected_proxy = choose_playwright_proxy()
-            if selected_proxy is not None:
-                browser_options["proxy"] = selected_proxy
+            if proxy_config is not None:
+                browser_options["proxy"] = proxy_config
                 logger.info(
                     "Using outbound proxy for browser attempt: %s",
-                    selected_proxy["server"],
+                    proxy_config["server"],
                 )
             else:
                 logger.info(
@@ -1313,6 +1313,7 @@ def run_scraper(
 
     logger.info("Getting PARSeq-tiny reader for this worker. GPU=%s", config.gpu)
     reader = get_reader(gpu=config.gpu)
+    proxy_rotator = PlaywrightProxyRotator()
 
     successful_results: list[
         ScraperResult
@@ -1355,6 +1356,7 @@ def run_scraper(
                     visa_sub_type=visa_sub_type,
                     attempt_number=attempt_number,
                     reader=reader,
+                    proxy_config=proxy_rotator.choose(),
                 )
             )
 

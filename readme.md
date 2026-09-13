@@ -39,9 +39,11 @@ Configure the Celery worker with the five internal service addresses:
 SCRAPER_PROXY_URLS=http://tinyproxy-1.namespace.svc:8888,http://tinyproxy-2.namespace.svc:8888,http://tinyproxy-3.namespace.svc:8888,http://tinyproxy-4.namespace.svc:8888,http://tinyproxy-5.namespace.svc:8888
 ```
 
-Each completely fresh Playwright browser attempt randomly chooses one endpoint
-and keeps that proxy for the entire browser session. When the variable is empty,
-the scraper retains its previous direct-network behavior.
+Each scraper run shuffles the configured endpoints and uses every proxy once
+before starting another shuffled cycle. Consecutive browser attempts do not
+reuse the same proxy when another endpoint is available. Each browser keeps its
+selected proxy for the entire session. When the variable is empty, the scraper
+retains its previous direct-network behavior.
 
 The proxy image accepts optional `TINYPROXY_USERNAME` and
 `TINYPROXY_PASSWORD` environment variables. Set both on every proxy app and
