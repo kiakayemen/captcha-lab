@@ -11,6 +11,7 @@ class ScraperStatus(str, Enum):
     APPOINTMENT_FOUND = "appointment_found"
     NO_APPOINTMENT = "no_appointment"
     SERVER_ERROR = "server_error"
+    STOPPED = "stopped"
     FAILED = "failed"
 
 

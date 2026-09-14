@@ -1,5 +1,21 @@
 {% extends "admin/change_form.html" %}
 
+{% block object-tools-items %}
+    {% if original.status == "pending" or original.status == "running" %}
+        <li>
+            <form method="post" action="{% url 'admin:operations_scraperrun_stop' original.pk %}">
+                {% csrf_token %}
+                <button type="submit" style="border:0;cursor:pointer;font:inherit;color:#ba2121;">
+                    Stop run safely
+                </button>
+            </form>
+        </li>
+    {% elif original.status == "stop_requested" %}
+        <li>Stop requested; waiting for worker</li>
+    {% endif %}
+    {{ block.super }}
+{% endblock %}
+
 {% block extrahead %}
     {{ block.super }}
 

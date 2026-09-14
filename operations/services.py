@@ -32,6 +32,45 @@ class ScraperRunAlreadyStarted(RuntimeError):
     """Raised when duplicate task delivery targets one execution row."""
 
 
+ACTIVE_RUN_STATUSES = (
+    ScraperRun.Status.PENDING,
+    ScraperRun.Status.RUNNING,
+    ScraperRun.Status.STOP_REQUESTED,
+)
+
+
+def active_scraper_runs():
+    return ScraperRun.objects.filter(status__in=ACTIVE_RUN_STATUSES).order_by(
+        "-created_at"
+    )
+
+
+def request_scraper_stop(run: ScraperRun) -> ScraperRun:
+    """Request cooperative cancellation without killing the worker."""
+    now = timezone.now()
+    if run.status == ScraperRun.Status.PENDING:
+        run.status = ScraperRun.Status.STOPPED
+        run.stop_requested_at = now
+        run.stopped_at = now
+        run.finished_at = now
+        run.save(
+            update_fields=[
+                "status",
+                "stop_requested_at",
+                "stopped_at",
+                "finished_at",
+            ]
+        )
+    elif run.status in {
+        ScraperRun.Status.RUNNING,
+        ScraperRun.Status.STOP_REQUESTED,
+    }:
+        run.status = ScraperRun.Status.STOP_REQUESTED
+        run.stop_requested_at = run.stop_requested_at or now
+        run.save(update_fields=["status", "stop_requested_at"])
+    return run
+
+
 def _env_bool(
     name: str,
     default: bool,
@@ -219,6 +258,8 @@ def execute_scraper_run(
     db_run.first_failure = None
     db_run.attempt_failures = []
     db_run.terminal_failure = None
+    db_run.stop_requested_at = None
+    db_run.stopped_at = None
 
     db_run.save(
         update_fields=[
@@ -231,6 +272,8 @@ def execute_scraper_run(
             "first_failure",
             "attempt_failures",
             "terminal_failure",
+            "stop_requested_at",
+            "stopped_at",
         ]
     )
 
@@ -284,7 +327,11 @@ def execute_scraper_run(
                 ),
             ):
                 result = run_scraper(
-                    config
+                    config,
+                    should_stop=lambda: ScraperRun.objects.filter(
+                        pk=db_run.pk,
+                        status=ScraperRun.Status.STOP_REQUESTED,
+                    ).exists(),
                 )
 
             stdout_writer.flush()
@@ -302,6 +349,8 @@ def execute_scraper_run(
                     ScraperRun.Status.NO_APPOINTMENT,
                 ScraperStatus.SERVER_ERROR:
                     ScraperRun.Status.SERVER_ERROR,
+                ScraperStatus.STOPPED:
+                    ScraperRun.Status.STOPPED,
                 ScraperStatus.FAILED:
                     ScraperRun.Status.FAILED,
             }
@@ -313,6 +362,8 @@ def execute_scraper_run(
             db_run.finished_at = (
                 timezone.now()
             )
+            if result.status is ScraperStatus.STOPPED:
+                db_run.stopped_at = db_run.finished_at
 
             db_run.page_url = (
                 result.page_url or ""
@@ -349,6 +400,7 @@ def execute_scraper_run(
                 update_fields=[
                     "status",
                     "finished_at",
+                    "stopped_at",
                     "page_url",
                     "appointment_visa_sub_type",
                     "error_type",
@@ -403,7 +455,10 @@ def execute_scraper_run(
                 },
             )
 
-            if result.error_message:
+            if (
+                result.error_message
+                and result.status is not ScraperStatus.STOPPED
+            ):
                 logger.error(
                     "Scraper reported failure. %s: %s",
                     result.error_type,

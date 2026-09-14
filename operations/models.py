@@ -12,6 +12,8 @@ class ScraperRun(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         RUNNING = "running", "Running"
+        STOP_REQUESTED = "stop_requested", "Stop Requested"
+        STOPPED = "stopped", "Stopped"
         APPOINTMENT_FOUND = (
             "appointment_found",
             "Appointment Found",
@@ -66,6 +68,9 @@ class ScraperRun(models.Model):
         null=True,
         blank=True,
     )
+
+    stop_requested_at = models.DateTimeField(null=True, blank=True)
+    stopped_at = models.DateTimeField(null=True, blank=True)
 
     visa_sub_types = models.JSONField(
         default=list,

@@ -235,6 +235,16 @@ class HttpDiagnosticsTests(TestCase):
 
 class FailureChainTests(TestCase):
     @patch("scraper.service.get_reader")
+    def test_stop_request_exits_before_loading_browser_dependencies(self, get_reader):
+        result = run_scraper(
+            ScraperConfig(visa_sub_types=("Student Visa",)),
+            should_stop=lambda: True,
+        )
+
+        self.assertEqual(result.status, ScraperStatus.STOPPED)
+        get_reader.assert_not_called()
+
+    @patch("scraper.service.get_reader")
     @patch("scraper.service._run_single_subtype_attempt")
     def test_terminal_403_is_stored_separately(self, run_attempt, _reader):
         now = datetime.now(timezone.utc)
@@ -255,14 +265,14 @@ class FailureChainTests(TestCase):
         self.assertEqual(result.terminal_failure, result.attempt_failures[0])
         self.assertEqual(result.terminal_failure["error_type"], "HTTP403Forbidden")
 
-    @patch("scraper.service.time.sleep")
+    @patch("scraper.service.interruptible_cooldown")
     @patch("scraper.service.get_reader")
     @patch("scraper.service._run_single_subtype_attempt")
     def test_recovered_run_preserves_all_attempt_failures(
         self,
         run_attempt,
         _reader,
-        _sleep,
+        _cooldown,
     ):
         now = datetime.now(timezone.utc)
         run_attempt.side_effect = (

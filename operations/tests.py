@@ -9,7 +9,12 @@ from scraper.models import ScraperConfig
 from .events import bind_scraper_event_context, record_event_from_log, record_scraper_event
 from .models import ScraperEvent, ScraperRun, ScraperRunLog
 from .run_logging import ScraperRunDatabaseHandler
-from .services import ScraperRunAlreadyStarted, execute_scraper_run
+from .services import (
+    ScraperRunAlreadyStarted,
+    active_scraper_runs,
+    execute_scraper_run,
+    request_scraper_stop,
+)
 
 
 class ScraperEventTests(TestCase):
@@ -62,6 +67,27 @@ class ScraperEventTests(TestCase):
                 ),
                 db_run=self.run,
             )
+
+    def test_pending_run_stops_immediately(self):
+        request_scraper_stop(self.run)
+        self.run.refresh_from_db()
+
+        self.assertEqual(self.run.status, ScraperRun.Status.STOPPED)
+        self.assertIsNotNone(self.run.stop_requested_at)
+        self.assertIsNotNone(self.run.stopped_at)
+        self.assertFalse(active_scraper_runs().filter(pk=self.run.pk).exists())
+
+    def test_running_run_becomes_stop_requested(self):
+        self.run.status = ScraperRun.Status.RUNNING
+        self.run.started_at = timezone.now()
+        self.run.save(update_fields=["status", "started_at"])
+
+        request_scraper_stop(self.run)
+        self.run.refresh_from_db()
+
+        self.assertEqual(self.run.status, ScraperRun.Status.STOP_REQUESTED)
+        self.assertIsNotNone(self.run.stop_requested_at)
+        self.assertTrue(active_scraper_runs().filter(pk=self.run.pk).exists())
 
 
 class ScraperRunLoggingTests(TestCase):

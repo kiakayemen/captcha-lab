@@ -30,10 +30,12 @@ from .models import (
     ScraperSchedule,
 )
 from .services import (
+    active_scraper_runs,
     build_default_scraper_config,
     create_scraper_run,
+    recover_stale_scraper_runs,
+    request_scraper_stop,
     serialize_scraper_config,
-    recover_stale_scraper_runs
 )
 from .tasks import run_scraper_task
 
@@ -177,6 +179,8 @@ class ScraperRunAdmin(
         "started_at",
         "heartbeat_at",
         "finished_at",
+        "stop_requested_at",
+        "stopped_at",
         "visa_sub_types",
         "appointment_visa_sub_type",
         "page_url",
@@ -202,6 +206,8 @@ class ScraperRunAdmin(
                     "started_at",
                     "heartbeat_at",
                     "finished_at",
+                    "stop_requested_at",
+                    "stopped_at",
                     "duration_seconds",
                 )
             },
@@ -328,6 +334,11 @@ class ScraperRunAdmin(
 
         custom_urls = [
             path(
+                "<uuid:run_id>/stop/",
+                self.admin_site.admin_view(self.stop_run_view),
+                name="operations_scraperrun_stop",
+            ),
+            path(
                 "run-now/",
                 self.admin_site.admin_view(
                     self.run_now_view
@@ -428,6 +439,7 @@ class ScraperRunAdmin(
                         ScraperRun.Status.APPOINTMENT_FOUND,
                         ScraperRun.Status.NO_APPOINTMENT,
                         ScraperRun.Status.SERVER_ERROR,
+                        ScraperRun.Status.STOPPED,
                         ScraperRun.Status.FAILED,
                     }
                 ),
@@ -447,6 +459,19 @@ class ScraperRunAdmin(
                     in entries
                 ],
             }
+        )
+
+    def stop_run_view(self, request: HttpRequest, run_id) -> HttpResponse:
+        run = get_object_or_404(ScraperRun, pk=run_id)
+        if request.method == "POST":
+            request_scraper_stop(run)
+            self.message_user(
+                request,
+                f"Stop requested for scraper run {run.pk}.",
+                level=messages.WARNING,
+            )
+        return redirect(
+            reverse("admin:operations_scraperrun_change", args=[run.pk])
         )
 
     def download_all_logs_view(
@@ -557,19 +582,7 @@ class ScraperRunAdmin(
 
         recover_stale_scraper_runs()
 
-        active_run = (
-            ScraperRun.objects
-            .filter(
-                status__in=[
-                    ScraperRun.Status.PENDING,
-                    ScraperRun.Status.RUNNING,
-                ]
-            )
-            .order_by(
-                "-created_at"
-            )
-            .first()
-        )
+        active_run = active_scraper_runs().first()
 
         if active_run is not None:
             self.message_user(

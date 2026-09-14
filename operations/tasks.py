@@ -12,6 +12,7 @@ from .models import (
     ScraperSchedule,
 )
 from .services import (
+    ACTIVE_RUN_STATUSES,
     build_default_scraper_config,
     create_scraper_run,
     deserialize_scraper_config,
@@ -41,6 +42,17 @@ def run_scraper_task(
     db_run = ScraperRun.objects.get(
         pk=run_id,
     )
+    if db_run.status in {
+        ScraperRun.Status.STOPPED,
+        ScraperRun.Status.STOP_REQUESTED,
+    }:
+        if db_run.status == ScraperRun.Status.STOP_REQUESTED:
+            now = timezone.now()
+            db_run.status = ScraperRun.Status.STOPPED
+            db_run.stopped_at = now
+            db_run.finished_at = now
+            db_run.save(update_fields=["status", "stopped_at", "finished_at"])
+        return str(db_run.pk)
 
     config = deserialize_scraper_config(
         config_data
@@ -129,10 +141,7 @@ def run_scheduled_scraper_task() -> str:
         active_run = (
             ScraperRun.objects
             .filter(
-                status__in=[
-                    ScraperRun.Status.PENDING,
-                    ScraperRun.Status.RUNNING,
-                ]
+                status__in=ACTIVE_RUN_STATUSES
             )
             .order_by(
                 "-created_at"

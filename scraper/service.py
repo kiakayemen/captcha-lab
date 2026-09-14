@@ -7,6 +7,7 @@ import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from playwright.sync_api import (
     Error as PlaywrightError,
@@ -92,6 +93,25 @@ SUBTYPE_RETRY_BACKOFF_SECONDS = (
 LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS = 15
 MAX_SECOND_CAPTCHA_ATTEMPTS = 3
 SECOND_CAPTCHA_RETRY_SETTLE_MS = 3_000
+
+
+class ScraperStopRequested(RuntimeError):
+    pass
+
+
+def check_stop_requested(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise ScraperStopRequested("Scraper stop was requested by an operator.")
+
+
+def interruptible_cooldown(
+    seconds: int,
+    should_stop: Callable[[], bool] | None,
+) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        check_stop_requested(should_stop)
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
 
 
 def subtype_retry_delay_seconds(attempt_number: int) -> int:
@@ -631,9 +651,11 @@ def run_second_captcha_step(
     gpu: bool,
     output_dir: Path,
     reader,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
     """Solve a regenerated Verify Selection CAPTCHA in the same session."""
     for attempt_number in range(1, MAX_SECOND_CAPTCHA_ATTEMPTS + 1):
+        check_stop_requested(should_stop)
         logger.info(
             "Second CAPTCHA attempt %s/%s.",
             attempt_number,
@@ -1026,6 +1048,7 @@ def _run_single_subtype_attempt(
     reader,
     proxy_config: dict[str, str] | None,
     login_request_state: dict[str, float | None],
+    should_stop: Callable[[], bool] | None,
 ) -> ScraperResult:
     """
     One completely fresh browser attempt for exactly one visa subtype.
@@ -1064,6 +1087,7 @@ def _run_single_subtype_attempt(
         page = None
 
         try:
+            check_stop_requested(should_stop)
             browser_options = {
                 "headless": config.headless,
             }
@@ -1125,6 +1149,7 @@ def _run_single_subtype_attempt(
                 wait_until="domcontentloaded",
                 timeout=60_000,
             )
+            check_stop_requested(should_stop)
 
             if response is not None:
                 login_response_data = response_diagnostics(
@@ -1198,6 +1223,7 @@ def _run_single_subtype_attempt(
                 ),
                 reader=reader,
             )
+            check_stop_requested(should_stop)
 
             #
             # CAPTCHA 2
@@ -1228,7 +1254,9 @@ def _run_single_subtype_attempt(
                     / f"browser_attempt_{attempt_number:02d}"
                 ),
                 reader=reader,
+                should_stop=should_stop,
             )
+            check_stop_requested(should_stop)
 
             logger.info(
                 "Second CAPTCHA complete."
@@ -1245,6 +1273,7 @@ def _run_single_subtype_attempt(
             click_ok_dialog(
                 page
             )
+            check_stop_requested(should_stop)
 
             logger.info(
                 "Visa type disclaimer accepted."
@@ -1263,6 +1292,7 @@ def _run_single_subtype_attempt(
                 page,
                 visa_sub_type=visa_sub_type,
             )
+            check_stop_requested(should_stop)
 
             logger.info(
                 "Appointment form filled. "
@@ -1375,6 +1405,21 @@ def _run_single_subtype_attempt(
                 )
 
             return result
+
+        except ScraperStopRequested as error:
+            logger.warning(
+                "Stopping scraper safely and closing browser. Visa subtype=%s",
+                visa_sub_type,
+            )
+            return ScraperResult(
+                status=ScraperStatus.STOPPED,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url if page is not None else None,
+                visa_sub_type=visa_sub_type,
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
 
         except PlaywrightTimeoutError as error:
             page_state = inspect_page_state(page)
@@ -1576,6 +1621,8 @@ def _run_single_subtype_attempt(
 
 def run_scraper(
     config: ScraperConfig,
+    *,
+    should_stop: Callable[[], bool] | None = None,
 ) -> ScraperResult:
     """
     Complete one scraper job.
@@ -1616,6 +1663,17 @@ def run_scraper(
         MAX_SUBTYPE_ATTEMPTS,
     )
 
+    try:
+        check_stop_requested(should_stop)
+    except ScraperStopRequested as error:
+        return ScraperResult(
+            status=ScraperStatus.STOPPED,
+            started_at=overall_started_at,
+            finished_at=datetime.now(timezone.utc),
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
+
     logger.info("Getting PARSeq-tiny reader for this worker. GPU=%s", config.gpu)
     reader = get_reader(gpu=config.gpu)
     proxy_rotator = PlaywrightProxyRotator()
@@ -1635,6 +1693,18 @@ def run_scraper(
     for visa_sub_type in (
         config.visa_sub_types
     ):
+        try:
+            check_stop_requested(should_stop)
+        except ScraperStopRequested as error:
+            return ScraperResult(
+                status=ScraperStatus.STOPPED,
+                started_at=overall_started_at,
+                finished_at=datetime.now(timezone.utc),
+                error_type=type(error).__name__,
+                error_message=str(error),
+                first_failure=(attempt_failures[0] if attempt_failures else None),
+                attempt_failures=tuple(attempt_failures),
+            )
         logger.info(
             "--------------------------------------------------"
         )
@@ -1667,12 +1737,26 @@ def run_scraper(
                     reader=reader,
                     proxy_config=proxy_rotator.choose(),
                     login_request_state=login_request_state,
+                    should_stop=should_stop,
                 )
             )
 
             if result.succeeded:
                 subtype_result = result
                 break
+
+            if result.status is ScraperStatus.STOPPED:
+                return ScraperResult(
+                    status=ScraperStatus.STOPPED,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=visa_sub_type,
+                    error_type=result.error_type,
+                    error_message=result.error_message,
+                    first_failure=(attempt_failures[0] if attempt_failures else None),
+                    attempt_failures=tuple(attempt_failures),
+                )
 
             last_failure = result
             current_failure = failure_record(
@@ -1742,7 +1826,19 @@ def run_scraper(
                     MAX_SUBTYPE_ATTEMPTS,
                     retry_delay,
                 )
-                time.sleep(retry_delay)
+                try:
+                    interruptible_cooldown(retry_delay, should_stop)
+                except ScraperStopRequested as error:
+                    return ScraperResult(
+                        status=ScraperStatus.STOPPED,
+                        started_at=overall_started_at,
+                        finished_at=datetime.now(timezone.utc),
+                        visa_sub_type=visa_sub_type,
+                        error_type=type(error).__name__,
+                        error_message=str(error),
+                        first_failure=attempt_failures[0],
+                        attempt_failures=tuple(attempt_failures),
+                    )
 
         if subtype_result is None:
             logger.error(
