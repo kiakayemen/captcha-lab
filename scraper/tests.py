@@ -23,6 +23,7 @@ from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
 
 from scraper.proxy import (
     PlaywrightProxyRotator,
+    ProxyConfigurationError,
     choose_playwright_proxy,
     configured_proxy_urls,
     playwright_proxy_config,
@@ -146,6 +147,15 @@ class ProxyConfigurationTests(TestCase):
             ],
         )
 
+    def test_worker_proxy_pool_requires_exactly_two_endpoints(self):
+        for urls in ((), ("http://one:8888",), ("http://one:8888", "http://two:8888", "http://three:8888")):
+            with self.subTest(urls=urls), self.assertRaises(ProxyConfigurationError):
+                PlaywrightProxyRotator(proxy_urls=urls).validate_required_pool()
+
+        PlaywrightProxyRotator(
+            proxy_urls=("http://one:8888", "http://two:8888")
+        ).validate_required_pool()
+
     @patch.dict(
         "os.environ",
         {
@@ -233,6 +243,10 @@ class HttpDiagnosticsTests(TestCase):
         self.assertIn("finished_at", payload["data"])
 
 
+@patch.dict(
+    "os.environ",
+    {"SCRAPER_PROXY_URLS": "http://proxy-1:8888,http://proxy-2:8888"},
+)
 class FailureChainTests(TestCase):
     @patch("scraper.service.get_reader")
     def test_stop_request_exits_before_loading_browser_dependencies(self, get_reader):

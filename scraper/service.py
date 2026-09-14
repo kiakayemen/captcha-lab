@@ -71,7 +71,7 @@ from scraper.http_diagnostics import (
     resolve_egress_ip_hash,
     response_diagnostics,
 )
-from scraper.proxy import PlaywrightProxyRotator
+from scraper.proxy import PlaywrightProxyRotator, ProxyConfigurationError
 
 
 logger = logging.getLogger(
@@ -1674,9 +1674,24 @@ def run_scraper(
             error_message=str(error),
         )
 
+    proxy_rotator = PlaywrightProxyRotator()
+    try:
+        proxy_rotator.validate_required_pool()
+    except ProxyConfigurationError as error:
+        logger.error("Proxy configuration rejected: %s", error)
+        return ScraperResult(
+            status=ScraperStatus.FAILED,
+            started_at=overall_started_at,
+            finished_at=datetime.now(timezone.utc),
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
+
+    logger.info(
+        "Validated two-proxy fail-closed egress pool; direct browser egress is disabled."
+    )
     logger.info("Getting PARSeq-tiny reader for this worker. GPU=%s", config.gpu)
     reader = get_reader(gpu=config.gpu)
-    proxy_rotator = PlaywrightProxyRotator()
     login_request_state: dict[str, float | None] = {
         "previous_request_monotonic": None,
     }
