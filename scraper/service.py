@@ -1688,7 +1688,9 @@ def run_scraper(
         )
 
     logger.info(
-        "Validated two-proxy fail-closed egress pool; direct browser egress is disabled."
+        "Validated fail-closed proxy pool with %s endpoints; "
+        "direct browser egress is disabled.",
+        len(proxy_rotator.proxy_urls),
     )
     logger.info("Getting PARSeq-tiny reader for this worker. GPU=%s", config.gpu)
     reader = get_reader(gpu=config.gpu)

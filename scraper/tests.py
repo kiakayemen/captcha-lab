@@ -147,13 +147,20 @@ class ProxyConfigurationTests(TestCase):
             ],
         )
 
-    def test_worker_proxy_pool_requires_exactly_two_endpoints(self):
-        for urls in ((), ("http://one:8888",), ("http://one:8888", "http://two:8888", "http://three:8888")):
+    def test_worker_proxy_pool_requires_at_least_two_endpoints(self):
+        for urls in ((), ("http://one:8888",)):
             with self.subTest(urls=urls), self.assertRaises(ProxyConfigurationError):
                 PlaywrightProxyRotator(proxy_urls=urls).validate_required_pool()
 
         PlaywrightProxyRotator(
             proxy_urls=("http://one:8888", "http://two:8888")
+        ).validate_required_pool()
+        PlaywrightProxyRotator(
+            proxy_urls=(
+                "http://one:8888",
+                "http://two:8888",
+                "http://three:8888",
+            )
         ).validate_required_pool()
 
     @patch.dict(

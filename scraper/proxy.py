@@ -10,7 +10,7 @@ SUPPORTED_PROXY_SCHEMES = {
     "http",
     "https",
 }
-REQUIRED_PROXY_COUNT = 2
+MINIMUM_PROXY_COUNT = 2
 
 
 class ProxyConfigurationError(RuntimeError):
@@ -114,9 +114,9 @@ class PlaywrightProxyRotator:
     )
 
     def validate_required_pool(self) -> None:
-        if len(self.proxy_urls) != REQUIRED_PROXY_COUNT:
+        if len(self.proxy_urls) < MINIMUM_PROXY_COUNT:
             raise ProxyConfigurationError(
-                "SCRAPER_PROXY_URLS must contain exactly two distinct proxy "
+                "SCRAPER_PROXY_URLS must contain at least two distinct proxy "
                 f"endpoints; found {len(self.proxy_urls)}. Direct egress is disabled."
             )
 
