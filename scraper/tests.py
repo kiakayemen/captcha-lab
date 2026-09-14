@@ -7,6 +7,7 @@ from flows.captcha_flow import (
     click_background_submit,
     click_ok_dialog,
     click_selected_captcha_tiles,
+    SITE_ERROR_PATTERN,
 )
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
@@ -160,6 +161,14 @@ class ProxyConfigurationTests(TestCase):
 
 
 class CaptchaPacingTests(TestCase):
+    def test_exact_bls_processing_error_is_classified_as_server_error(self):
+        message = (
+            "An error occured while processing your request. "
+            "Please try again after some time."
+        )
+
+        self.assertIsNotNone(SITE_ERROR_PATTERN.search(message))
+
     @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
     def test_background_submit_skips_when_form_is_already_visible(self, _form_visible):
         page = MagicMock()
