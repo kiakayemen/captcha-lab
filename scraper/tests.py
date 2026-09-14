@@ -4,11 +4,13 @@ from unittest.mock import MagicMock, call, patch
 from flows.captcha_flow import (
     CAPTCHA_POST_SELECTION_SETTLE_MS,
     CAPTCHA_PRE_CLICK_SETTLE_MS,
+    click_background_submit,
     click_ok_dialog,
     click_selected_captcha_tiles,
 )
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
+    inspect_page_state,
     run_second_captcha_step,
     subtype_retry_delay_seconds,
 )
@@ -158,6 +160,23 @@ class ProxyConfigurationTests(TestCase):
 
 
 class CaptchaPacingTests(TestCase):
+    @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
+    def test_background_submit_skips_when_form_is_already_visible(self, _form_visible):
+        page = MagicMock()
+
+        click_background_submit(page)
+
+        page.wait_for_timeout.assert_not_called()
+        page.locator.return_value.last.click.assert_not_called()
+
+    @patch("scraper.service.site_error_page_visible", return_value=True)
+    @patch("scraper.service.no_appointments_dialog_visible", return_value=False)
+    def test_page_state_checks_server_error_before_retry(self, _no_slots, _error):
+        state = inspect_page_state(MagicMock())
+
+        self.assertTrue(state["server_error"])
+        self.assertFalse(state["no_appointment"])
+
     @patch(
         "scraper.service._run_second_captcha_attempt",
         side_effect=(False, True),

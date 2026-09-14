@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import random
+import re
 import time
 
 import cv2
@@ -31,7 +32,10 @@ from .selectors import (
 
 logger = logging.getLogger("captcha_lab")
 PRELOADER_SELECTOR = "div.preloader"
-SITE_ERROR_TEXT = "An error occured while processing your request. Please try again after sometime"
+SITE_ERROR_PATTERN = re.compile(
+    r"An error occurr?ed while processing your request",
+    re.IGNORECASE,
+)
 CAPTCHA_PRE_CLICK_SETTLE_MS = 1_500
 CAPTCHA_INTER_TILE_DELAY_MIN_MS = 350
 CAPTCHA_INTER_TILE_DELAY_MAX_MS = 750
@@ -54,7 +58,7 @@ def wait_for_preloader_to_clear(page: Page, timeout: int = 60_000) -> None:
 
 def site_error_page_visible(page: Page) -> bool:
     try:
-        return page.get_by_text(SITE_ERROR_TEXT, exact=False).first.is_visible()
+        return page.get_by_text(SITE_ERROR_PATTERN).first.is_visible()
     except Exception:
         return False
 
@@ -581,6 +585,15 @@ def click_submit_selection(page: Page) -> None:
 def click_background_submit(page: Page) -> None:
     background_submit = page.locator(BACKGROUND_SUBMIT_BUTTON_SELECTOR).last
     ok_button = page.locator('button:has-text("Ok"):visible').first
+    if appointment_form_visible(page) or ok_button.is_visible():
+        logger.info(
+            "Post-CAPTCHA destination is already visible; background Submit is complete."
+        )
+        return
+    if site_error_page_visible(page):
+        raise RuntimeError(
+            "Target site returned its temporary processing-error page."
+        )
     expect(background_submit).to_be_visible(timeout=30_000)
     expect(background_submit).to_be_enabled(timeout=30_000)
     logger.info(

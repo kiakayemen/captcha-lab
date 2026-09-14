@@ -43,6 +43,7 @@ from flows.captcha_flow import (
     login_captcha_invalid,
     login_captcha_succeeded,
     save_captcha_crop,
+    site_error_page_visible,
     wait_for_captcha_tiles_ready,
 )
 from flows.login_flow import (
@@ -98,6 +99,30 @@ def subtype_retry_delay_seconds(attempt_number: int) -> int:
         round(base_delay * 0.8),
         round(base_delay * 1.2),
     )
+
+
+def inspect_page_state(page) -> dict[str, bool]:
+    """Check known terminal and valid UI states before retrying."""
+    if page is None:
+        return {}
+    checks = {
+        "server_error": lambda: site_error_page_visible(page),
+        "no_appointment": lambda: no_appointments_dialog_visible(page),
+        "appointment_form": lambda: page.locator(
+            'label.form-label:has-text("Appointment Category")'
+        ).first.is_visible(),
+        "verified": lambda: page.get_by_text("Verified!", exact=True).first.is_visible(),
+        "disclaimer_ok": lambda: page.locator(
+            'button:has-text("Ok"):visible'
+        ).first.is_visible(),
+    }
+    state: dict[str, bool] = {}
+    for name, check in checks.items():
+        try:
+            state[name] = bool(check())
+        except Exception:
+            state[name] = False
+    return state
 
 
 def wait_for_login_captcha_outcome(page) -> str:
@@ -1149,6 +1174,7 @@ def _run_single_subtype_attempt(
             return result
 
         except PlaywrightTimeoutError as error:
+            page_state = inspect_page_state(page)
             screenshot_path = (
                 config.output_dir
                 / visa_sub_type
@@ -1172,6 +1198,10 @@ def _run_single_subtype_attempt(
                         ),
                         full_page=True,
                     )
+                    (screenshot_path.parent / "page_state.json").write_text(
+                        json.dumps(page_state, indent=2),
+                        encoding="utf-8",
+                    )
 
                     logger.error(
                         "Saved timeout screenshot: %s",
@@ -1191,9 +1221,16 @@ def _run_single_subtype_attempt(
                 MAX_SUBTYPE_ATTEMPTS,
             )
 
+            detected_status = (
+                ScraperStatus.SERVER_ERROR
+                if page_state.get("server_error")
+                else ScraperStatus.NO_APPOINTMENT
+                if page_state.get("no_appointment")
+                else ScraperStatus.FAILED
+            )
             return ScraperResult(
                 status=(
-                    ScraperStatus.FAILED
+                    detected_status
                 ),
                 started_at=started_at,
                 finished_at=datetime.now(
@@ -1223,6 +1260,7 @@ def _run_single_subtype_attempt(
             OSError,
             AssertionError,
         ) as error:
+            page_state = inspect_page_state(page)
             screenshot_path = (
                 config.output_dir
                 / visa_sub_type
@@ -1246,6 +1284,10 @@ def _run_single_subtype_attempt(
                         ),
                         full_page=True,
                     )
+                    (screenshot_path.parent / "page_state.json").write_text(
+                        json.dumps(page_state, indent=2),
+                        encoding="utf-8",
+                    )
 
                     logger.error(
                         "Saved failure screenshot: %s",
@@ -1265,9 +1307,16 @@ def _run_single_subtype_attempt(
                 MAX_SUBTYPE_ATTEMPTS,
             )
 
+            detected_status = (
+                ScraperStatus.SERVER_ERROR
+                if page_state.get("server_error")
+                else ScraperStatus.NO_APPOINTMENT
+                if page_state.get("no_appointment")
+                else ScraperStatus.FAILED
+            )
             return ScraperResult(
                 status=(
-                    ScraperStatus.FAILED
+                    detected_status
                 ),
                 started_at=started_at,
                 finished_at=datetime.now(
@@ -1418,6 +1467,21 @@ def run_scraper(
                 break
 
             last_failure = result
+
+            if result.status is ScraperStatus.SERVER_ERROR:
+                logger.error(
+                    "Target server error is terminal; stopping without another attempt."
+                )
+                return ScraperResult(
+                    status=ScraperStatus.SERVER_ERROR,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=visa_sub_type,
+                    error_type=result.error_type,
+                    error_message=result.error_message,
+                    failure_screenshot=result.failure_screenshot,
+                )
 
             if result.error_type == "HTTP403Forbidden":
                 logger.error(

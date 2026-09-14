@@ -20,6 +20,7 @@ class ScraperRun(models.Model):
             "no_appointment",
             "No Appointment",
         )
+        SERVER_ERROR = "server_error", "Server Error"
         FAILED = "failed", "Failed"
 
     class Trigger(models.TextChoices):

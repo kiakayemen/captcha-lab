@@ -294,6 +294,8 @@ def execute_scraper_run(
                     ScraperRun.Status.APPOINTMENT_FOUND,
                 ScraperStatus.NO_APPOINTMENT:
                     ScraperRun.Status.NO_APPOINTMENT,
+                ScraperStatus.SERVER_ERROR:
+                    ScraperRun.Status.SERVER_ERROR,
                 ScraperStatus.FAILED:
                     ScraperRun.Status.FAILED,
             }

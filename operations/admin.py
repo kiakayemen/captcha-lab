@@ -420,6 +420,7 @@ class ScraperRunAdmin(
                     in {
                         ScraperRun.Status.APPOINTMENT_FOUND,
                         ScraperRun.Status.NO_APPOINTMENT,
+                        ScraperRun.Status.SERVER_ERROR,
                         ScraperRun.Status.FAILED,
                     }
                 ),

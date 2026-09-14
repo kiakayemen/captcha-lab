@@ -9,6 +9,7 @@ from pathlib import Path
 class ScraperStatus(str, Enum):
     APPOINTMENT_FOUND = "appointment_found"
     NO_APPOINTMENT = "no_appointment"
+    SERVER_ERROR = "server_error"
     FAILED = "failed"
 
 
@@ -38,7 +39,10 @@ class ScraperResult:
 
     @property
     def succeeded(self) -> bool:
-        return self.status is not ScraperStatus.FAILED
+        return self.status in {
+            ScraperStatus.APPOINTMENT_FOUND,
+            ScraperStatus.NO_APPOINTMENT,
+        }
 
     @property
     def appointment_found(self) -> bool:
