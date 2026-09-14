@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
-from contextlib import redirect_stderr, redirect_stdout
+import threading
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from django.utils import timezone
+from django.db import close_old_connections
 import os
 
 from scraper.models import ScraperConfig, ScraperStatus
@@ -69,6 +71,39 @@ def request_scraper_stop(run: ScraperRun) -> ScraperRun:
         run.stop_requested_at = run.stop_requested_at or now
         run.save(update_fields=["status", "stop_requested_at"])
     return run
+
+
+@contextmanager
+def monitor_stop_requests(run_id):
+    """Poll in a normal thread and expose a DB-free cancellation callback."""
+    stop_event = threading.Event()
+    monitor_finished = threading.Event()
+
+    def monitor() -> None:
+        close_old_connections()
+        try:
+            while not monitor_finished.is_set():
+                if ScraperRun.objects.filter(
+                    pk=run_id,
+                    status=ScraperRun.Status.STOP_REQUESTED,
+                ).exists():
+                    stop_event.set()
+                    return
+                monitor_finished.wait(1)
+        finally:
+            close_old_connections()
+
+    thread = threading.Thread(
+        target=monitor,
+        name=f"scraper-stop-monitor-{run_id}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield stop_event.is_set
+    finally:
+        monitor_finished.set()
+        thread.join(timeout=2)
 
 
 def _env_bool(
@@ -318,21 +353,19 @@ def execute_scraper_run(
                 },
             )
 
-            with (
-                redirect_stdout(
-                    stdout_writer
-                ),
-                redirect_stderr(
-                    stderr_writer
-                ),
-            ):
-                result = run_scraper(
-                    config,
-                    should_stop=lambda: ScraperRun.objects.filter(
-                        pk=db_run.pk,
-                        status=ScraperRun.Status.STOP_REQUESTED,
-                    ).exists(),
-                )
+            with monitor_stop_requests(db_run.pk) as should_stop:
+                with (
+                    redirect_stdout(
+                        stdout_writer
+                    ),
+                    redirect_stderr(
+                        stderr_writer
+                    ),
+                ):
+                    result = run_scraper(
+                        config,
+                        should_stop=should_stop,
+                    )
 
             stdout_writer.flush()
             stderr_writer.flush()
