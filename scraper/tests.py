@@ -14,6 +14,7 @@ from flows.captcha_flow import (
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
     inspect_page_state,
+    run_captcha_step,
     run_second_captcha_step,
     record_captcha_stage,
     run_scraper,
@@ -417,6 +418,49 @@ class FailureChainTests(TestCase):
         page.wait_for_timeout.assert_called_once_with(
             SECOND_CAPTCHA_RETRY_SETTLE_MS
         )
+
+    @patch(
+        "scraper.service._run_login_captcha_attempt",
+        side_effect=("rejected", "succeeded"),
+    )
+    def test_rejected_login_captcha_is_retried_in_same_page(self, solve_attempt):
+        page = MagicMock()
+
+        run_captcha_step(
+            page,
+            gpu=False,
+            output_dir=MagicMock(),
+            reader=MagicMock(),
+        )
+
+        self.assertEqual(solve_attempt.call_count, 2)
+        self.assertIs(solve_attempt.call_args_list[0].args[0], page)
+        self.assertIs(solve_attempt.call_args_list[1].args[0], page)
+        self.assertEqual(
+            [item.kwargs["attempt_number"] for item in solve_attempt.call_args_list],
+            [1, 2],
+        )
+        page.wait_for_timeout.assert_called_once_with(
+            SECOND_CAPTCHA_RETRY_SETTLE_MS
+        )
+
+    @patch(
+        "scraper.service._run_login_captcha_attempt",
+        return_value="rejected",
+    )
+    def test_repeated_login_captcha_rejections_escalate(self, solve_attempt):
+        page = MagicMock()
+
+        with self.assertRaisesRegex(RuntimeError, "rejected 3 times"):
+            run_captcha_step(
+                page,
+                gpu=False,
+                output_dir=MagicMock(),
+                reader=MagicMock(),
+            )
+
+        self.assertEqual(solve_attempt.call_count, 3)
+        self.assertEqual(page.wait_for_timeout.call_count, 2)
 
     @patch("scraper.service.click_verify_selection")
     @patch("scraper.service.site_error_page_visible", return_value=False)

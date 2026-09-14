@@ -91,6 +91,7 @@ SUBTYPE_RETRY_BACKOFF_SECONDS = (
     180,
 )
 LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS = 15
+MAX_LOGIN_CAPTCHA_ATTEMPTS = 3
 MAX_SECOND_CAPTCHA_ATTEMPTS = 3
 SECOND_CAPTCHA_RETRY_SETTLE_MS = 3_000
 
@@ -366,25 +367,50 @@ def run_captcha_step(
     gpu: bool,
     output_dir: Path,
     reader,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
-    """
-    Solve the login CAPTCHA once.
+    """Retry rejected login CAPTCHAs without discarding the session."""
+    for attempt_number in range(1, MAX_LOGIN_CAPTCHA_ATTEMPTS + 1):
+        check_stop_requested(should_stop)
+        logger.info(
+            "Login CAPTCHA attempt %s/%s.",
+            attempt_number,
+            MAX_LOGIN_CAPTCHA_ATTEMPTS,
+        )
+        outcome = _run_login_captcha_attempt(
+            page,
+            gpu=gpu,
+            output_dir=output_dir,
+            reader=reader,
+            attempt_number=attempt_number,
+        )
+        if outcome == "succeeded":
+            return
+        if attempt_number < MAX_LOGIN_CAPTCHA_ATTEMPTS:
+            logger.warning(
+                "Login CAPTCHA was rejected or regenerated; re-solving it "
+                "in the current browser session."
+            )
+            page.wait_for_timeout(SECOND_CAPTCHA_RETRY_SETTLE_MS)
 
-    IMPORTANT:
-    We intentionally do not retry the CAPTCHA inside the same
-    browser session anymore.
+    raise RuntimeError(
+        "Login CAPTCHA was rejected "
+        f"{MAX_LOGIN_CAPTCHA_ATTEMPTS} times in the same browser session."
+    )
 
-    If this CAPTCHA fails, this function raises and the entire
-    subtype attempt is abandoned. The caller then starts a
-    completely fresh browser session.
-    """
+
+def _run_login_captcha_attempt(
+    page,
+    *,
+    gpu: bool,
+    output_dir: Path,
+    reader,
+    attempt_number: int,
+) -> str:
+    """Solve one rendered login CAPTCHA and classify its resulting state."""
 
     screenshot_path = Path(
         "captcha_page.png"
-    )
-
-    logger.info(
-        "Login CAPTCHA: single-attempt mode."
     )
 
     fill_password(
@@ -486,7 +512,7 @@ def run_captcha_step(
     record_captcha_stage(
         captcha="login",
         stage="image_acquisition",
-        attempt_number=1,
+        attempt_number=attempt_number,
         started_at=acquisition_started_at,
         duration_ms=round((time.perf_counter() - acquisition_started) * 1000),
     )
@@ -520,7 +546,7 @@ def run_captcha_step(
     record_captcha_stage(
         captcha="login",
         stage="ocr_inference",
-        attempt_number=1,
+        attempt_number=attempt_number,
         started_at=datetime.fromisoformat(str(solver_timings["ocr_started_at"])),
         finished_at=datetime.fromisoformat(str(solver_timings["ocr_finished_at"])),
         duration_ms=int(solver_timings["ocr_duration_ms"]),
@@ -561,7 +587,7 @@ def run_captcha_step(
     record_captcha_stage(
         captcha="login",
         stage="box_selection",
-        attempt_number=1,
+        attempt_number=attempt_number,
         started_at=selection_started_at,
         duration_ms=round((time.perf_counter() - selection_started) * 1000),
     )
@@ -581,7 +607,7 @@ def run_captcha_step(
     record_captcha_stage(
         captcha="login",
         stage="submission",
-        attempt_number=1,
+        attempt_number=attempt_number,
         started_at=submission_started_at,
         duration_ms=round((time.perf_counter() - submission_started) * 1000),
     )
@@ -593,7 +619,7 @@ def run_captcha_step(
     save_live_attempt_bundle(
         output_dir=output_dir,
         step_name="login_captcha",
-        attempt_number=1,
+        attempt_number=attempt_number,
         page_url=page.url,
         target=target,
         decision=decision,
@@ -608,16 +634,14 @@ def run_captcha_step(
     record_captcha_stage(
         captcha="login",
         stage="verification",
-        attempt_number=1,
+        attempt_number=attempt_number,
         started_at=verification_started_at,
         duration_ms=round((time.perf_counter() - verification_started) * 1000),
         status=outcome,
     )
 
     if outcome == "rejected":
-        raise RuntimeError(
-            "Login CAPTCHA was rejected."
-        )
+        return outcome
 
     if outcome == "succeeded":
         logger.info(
@@ -632,13 +656,10 @@ def run_captcha_step(
             decision,
         )
 
-        return
+        return outcome
 
     if outcome == "instruction_present":
-        raise RuntimeError(
-            "Login CAPTCHA instruction remained "
-            "present after verification."
-        )
+        return outcome
 
     raise RuntimeError(
         "Login CAPTCHA outcome was unclear."
@@ -1240,6 +1261,7 @@ def _run_single_subtype_attempt(
                     / f"browser_attempt_{attempt_number:02d}"
                 ),
                 reader=reader,
+                should_stop=should_stop,
             )
             check_stop_requested(should_stop)
 
