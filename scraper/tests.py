@@ -1,5 +1,13 @@
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
+
+from flows.captcha_flow import (
+    CAPTCHA_POST_SELECTION_SETTLE_MS,
+    CAPTCHA_PRE_CLICK_SETTLE_MS,
+    click_ok_dialog,
+    click_selected_captcha_tiles,
+)
+from scraper.service import subtype_retry_delay_seconds
 
 from scraper.proxy import (
     PlaywrightProxyRotator,
@@ -143,3 +151,66 @@ class ProxyConfigurationTests(TestCase):
             playwright_proxy_config(
                 "ftp://proxy.internal:8888"
             )
+
+
+class CaptchaPacingTests(TestCase):
+    @patch("flows.captcha_flow.random.randint", side_effect=(400, 700))
+    @patch("flows.captcha_flow.click_captcha_tile")
+    @patch("flows.captcha_flow.get_captcha_tiles")
+    def test_selected_tiles_are_paced_before_submit(
+        self,
+        get_tiles,
+        click_tile,
+        _random_delay,
+    ):
+        page = MagicMock()
+        tiles = [MagicMock() for _ in range(9)]
+        get_tiles.return_value = tiles
+
+        click_selected_captcha_tiles(page, (1, 3, 9))
+
+        self.assertEqual(
+            click_tile.call_args_list,
+            [
+                call(page, tiles[0], 1),
+                call(page, tiles[2], 3),
+                call(page, tiles[8], 9),
+            ],
+        )
+        self.assertEqual(
+            page.wait_for_timeout.call_args_list,
+            [
+                call(CAPTCHA_PRE_CLICK_SETTLE_MS),
+                call(400),
+                call(700),
+                call(CAPTCHA_POST_SELECTION_SETTLE_MS),
+            ],
+        )
+
+    @patch("flows.captcha_flow.click_captcha_tile")
+    def test_invalid_tile_is_rejected_before_any_click(self, click_tile):
+        page = MagicMock()
+        tiles = [MagicMock() for _ in range(9)]
+
+        with self.assertRaises(ValueError):
+            click_selected_captcha_tiles(
+                page,
+                (1, 10),
+                tiles=tiles,
+            )
+
+        click_tile.assert_not_called()
+        page.wait_for_timeout.assert_not_called()
+
+    @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
+    def test_missing_ok_is_accepted_when_form_already_visible(self, _form_visible):
+        page = MagicMock()
+
+        self.assertFalse(click_ok_dialog(page))
+        page.wait_for_timeout.assert_not_called()
+
+    def test_retry_cooldown_grows_between_fresh_attempts(self):
+        self.assertEqual(
+            [subtype_retry_delay_seconds(attempt) for attempt in range(1, 6)],
+            [30, 60, 120, 180, 0],
+        )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from playwright.sync_api import Locator, Page, expect
 
@@ -51,45 +52,62 @@ def _find_visible_dropdown_container(
     page: Page,
     label_text: str,
 ) -> Locator:
-    containers = page.locator("div.mb-3:visible")
-
-    matches = []
-
     pattern = re.compile(
         rf"^\s*{re.escape(label_text)}\s*\*?\s*$",
         re.IGNORECASE,
     )
+    deadline = time.monotonic() + 30
+    last_count = 0
 
-    for i in range(containers.count()):
-        container = containers.nth(i)
-        label = container.locator("label.form-label")
+    while time.monotonic() < deadline:
+        containers = page.locator("div.mb-3:visible")
+        matches = []
 
-        if label.count() == 0:
-            continue
-        if not pattern.match(label.first.inner_text().strip()):
-            continue
+        for i in range(containers.count()):
+            container = containers.nth(i)
+            label = container.locator("label.form-label")
 
-        hidden_input = container.locator(
-            'input[data-role="dropdownlist"]'
-        )
+            if label.count() == 0:
+                continue
+            if not pattern.match(label.first.inner_text().strip()):
+                continue
 
-        visible_widget = container.locator(
-            "span.k-widget.k-dropdown:visible"
-        )
+            hidden_input = container.locator(
+                'input[data-role="dropdownlist"]'
+            )
 
-        if hidden_input.count() == 1 and visible_widget.count() == 1:
-            matches.append(container)
-            _describe_container(container, label_text)
-    if len(matches) != 1:
-        _log(
-            f'expected one visible "{label_text}" dropdown, found {len(matches)}'
-        )
-        raise RuntimeError(
-            f'Expected one visible "{label_text}" dropdown, '
-            f"found {len(matches)}"
-        )
+            visible_widget = container.locator(
+                "span.k-widget.k-dropdown:visible"
+            )
 
-    return matches[0]
+            if hidden_input.count() == 1 and visible_widget.count() == 1:
+                matches.append(container)
+
+        last_count = len(matches)
+        if len(matches) == 1:
+            _describe_container(matches[0], label_text)
+            return matches[0]
+        if len(matches) > 1:
+            break
+
+        error_page = page.get_by_text(
+            "An error occured while processing your request.",
+            exact=False,
+        ).first
+        if error_page.is_visible():
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+
+        page.wait_for_timeout(250)
+
+    _log(
+        f'expected one visible "{label_text}" dropdown, found {last_count}'
+    )
+    raise RuntimeError(
+        f'Expected one visible "{label_text}" dropdown, '
+        f"found {last_count} after waiting 30 seconds"
+    )
 
 
 def _get_visible_dropdown_id(

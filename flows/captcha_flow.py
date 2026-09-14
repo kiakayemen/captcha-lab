@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import random
 import time
 
 import cv2
@@ -30,15 +31,43 @@ from .selectors import (
 
 logger = logging.getLogger("captcha_lab")
 PRELOADER_SELECTOR = "div.preloader"
+SITE_ERROR_TEXT = "An error occured while processing your request. Please try again after sometime"
+CAPTCHA_PRE_CLICK_SETTLE_MS = 1_500
+CAPTCHA_INTER_TILE_DELAY_MIN_MS = 350
+CAPTCHA_INTER_TILE_DELAY_MAX_MS = 750
+CAPTCHA_SELECTION_STATE_TIMEOUT_MS = 1_500
+CAPTCHA_POST_SELECTION_SETTLE_MS = 5_000
+POST_SECOND_CAPTCHA_SETTLE_MS = 3_000
 
 
 def wait_for_preloader_to_clear(page: Page, timeout: int = 60_000) -> None:
     preloader = page.locator(PRELOADER_SELECTOR)
     try:
         expect(preloader).to_be_hidden(timeout=timeout)
+    except Exception as exc:
+        if preloader.is_visible():
+            raise RuntimeError(
+                "Loading overlay remained visible and continued blocking the page."
+            ) from exc
+        logger.info("Preloader node remained attached but is no longer visible.")
+
+
+def site_error_page_visible(page: Page) -> bool:
+    try:
+        return page.get_by_text(SITE_ERROR_TEXT, exact=False).first.is_visible()
     except Exception:
-        logger.warning("Preloader did not clear cleanly; waiting an extra second.")
-        page.wait_for_timeout(1_000)
+        return False
+
+
+def appointment_form_visible(page: Page) -> bool:
+    try:
+        return (
+            page.locator('label.form-label:has-text("Appointment Category")')
+            .first
+            .is_visible()
+        )
+    except Exception:
+        return False
 
 
 def find_true_captcha_label(page: Page) -> tuple[Locator, str, str]:
@@ -345,21 +374,85 @@ def wait_for_captcha_tiles_ready(
     ) from last_error
 
 
-def click_selected_captcha_tiles(page: Page, selected_tiles: tuple[int, ...]) -> None:
-    tiles = get_captcha_tiles(page)
+def click_selected_captcha_tiles(
+    page: Page,
+    selected_tiles: tuple[int, ...],
+    *,
+    tiles: list[Locator] | None = None,
+) -> None:
+    if tiles is None:
+        tiles = get_captcha_tiles(page)
+
     for tile_number in selected_tiles:
         if tile_number < 1 or tile_number > len(tiles):
             raise ValueError(f"Selected tile {tile_number} is outside the 1..{len(tiles)} range")
-        click_captcha_tile(tiles[tile_number - 1], tile_number)
+
+    logger.info(
+        "Waiting %.1fs before CAPTCHA tile interaction.",
+        CAPTCHA_PRE_CLICK_SETTLE_MS / 1_000,
+    )
+    page.wait_for_timeout(CAPTCHA_PRE_CLICK_SETTLE_MS)
+
+    for index, tile_number in enumerate(selected_tiles):
+        click_captcha_tile(page, tiles[tile_number - 1], tile_number)
+
+        if index < len(selected_tiles) - 1:
+            delay_ms = random.randint(
+                CAPTCHA_INTER_TILE_DELAY_MIN_MS,
+                CAPTCHA_INTER_TILE_DELAY_MAX_MS,
+            )
+            logger.info(
+                "Waiting %.3fs before the next CAPTCHA tile.",
+                delay_ms / 1_000,
+            )
+            page.wait_for_timeout(delay_ms)
+
+    logger.info(
+        "Waiting %.1fs after CAPTCHA tile selection before submit.",
+        CAPTCHA_POST_SELECTION_SETTLE_MS / 1_000,
+    )
+    page.wait_for_timeout(CAPTCHA_POST_SELECTION_SETTLE_MS)
 
 
-def click_captcha_tile(tile: Locator, tile_number: int) -> None:
-    """Click the image receiving the CAPTCHA's onclick handler."""
+def _captcha_tile_state(tile: Locator) -> str:
     image = tile.locator("img.captcha-img").first
     target = image if image.count() else tile
+    return target.evaluate(
+        """element => {
+            const parent = element.parentElement;
+            const state = node => node ? {
+                className: String(node.className || ""),
+                style: node.getAttribute("style") || "",
+                ariaPressed: node.getAttribute("aria-pressed") || "",
+                ariaSelected: node.getAttribute("aria-selected") || "",
+                dataSelected: node.getAttribute("data-selected") || ""
+            } : null;
+            return JSON.stringify({element: state(element), parent: state(parent)});
+        }"""
+    )
+
+
+def click_captcha_tile(page: Page, tile: Locator, tile_number: int) -> None:
+    """Click one tile and allow its selected state to settle."""
+    image = tile.locator("img.captcha-img").first
+    target = image if image.count() else tile
+    before_state = _captcha_tile_state(tile)
     target.scroll_into_view_if_needed(timeout=10_000)
     target.click(timeout=10_000)
     logger.info("Clicked tile %s", tile_number)
+
+    deadline = time.monotonic() + CAPTCHA_SELECTION_STATE_TIMEOUT_MS / 1_000
+    while time.monotonic() < deadline:
+        if _captcha_tile_state(tile) != before_state:
+            logger.info("Confirmed visible state change for tile %s", tile_number)
+            return
+        page.wait_for_timeout(100)
+
+    logger.warning(
+        "Tile %s did not expose a visible selected-state change; "
+        "proceeding without a second click.",
+        tile_number,
+    )
 
 
 def click_verify_selection(page: Page) -> None:
@@ -388,7 +481,19 @@ def wait_for_book_now(page: Page) -> None:
 def click_nav_book_new_appointment(page: Page) -> None:
     wait_for_preloader_to_clear(page, timeout=90_000)
     nav_link = page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR)
-    expect(nav_link).to_be_visible(timeout=60_000)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        if nav_link.is_visible():
+            break
+        page.wait_for_timeout(250)
+    else:
+        raise RuntimeError(
+            "Book New Appointment link did not become visible within 60 seconds."
+        )
     expect(nav_link).to_be_enabled(timeout=60_000)
     nav_link.click(timeout=30_000)
     logger.info("Clicked navbar Book New Appointment")
@@ -425,10 +530,29 @@ def click_book_now(page: Page) -> None:
     logger.info("Clicked Book Now")
 
 
-def click_ok_dialog(page: Page) -> None:
+def click_ok_dialog(page: Page) -> bool:
     ok_button = page.locator('button:has-text("Ok"):visible').first
-    expect(ok_button).to_be_visible(timeout=30_000)
-    expect(ok_button).to_be_enabled(timeout=30_000)
+    deadline = time.monotonic() + 30
+
+    while time.monotonic() < deadline:
+        if appointment_form_visible(page):
+            logger.info(
+                "Appointment form is already visible; no disclaimer dialog is required."
+            )
+            return False
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        if ok_button.is_visible() and ok_button.is_enabled():
+            break
+        page.wait_for_timeout(250)
+    else:
+        raise RuntimeError(
+            "Neither the disclaimer OK button nor the appointment form "
+            "appeared within 30 seconds."
+        )
+
     ok_button.scroll_into_view_if_needed(timeout=10_000)
 
     try:
@@ -443,6 +567,7 @@ def click_ok_dialog(page: Page) -> None:
         logger.warning("Dialog did not report hidden cleanly; waiting an extra second.")
         page.wait_for_timeout(1_000)
     logger.info("Clicked OK dialog button")
+    return True
 
 
 def click_submit_selection(page: Page) -> None:
@@ -455,10 +580,35 @@ def click_submit_selection(page: Page) -> None:
 
 def click_background_submit(page: Page) -> None:
     background_submit = page.locator(BACKGROUND_SUBMIT_BUTTON_SELECTOR).last
+    ok_button = page.locator('button:has-text("Ok"):visible').first
     expect(background_submit).to_be_visible(timeout=30_000)
     expect(background_submit).to_be_enabled(timeout=30_000)
+    logger.info(
+        "Waiting %.1fs for the verified state to settle before background Submit.",
+        POST_SECOND_CAPTCHA_SETTLE_MS / 1_000,
+    )
+    page.wait_for_timeout(POST_SECOND_CAPTCHA_SETTLE_MS)
     background_submit.click(timeout=10_000)
     logger.info("Clicked background Submit")
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if appointment_form_visible(page) or ok_button.is_visible():
+            return
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        page.wait_for_timeout(250)
+
+    if background_submit.is_visible() and background_submit.is_enabled():
+        logger.warning(
+            "Background Submit produced no visible transition; "
+            "waiting 2s and clicking it once more."
+        )
+        page.wait_for_timeout(2_000)
+        background_submit.click(timeout=10_000)
+        logger.info("Retried background Submit once")
 
 
 def get_verify_selection_frame(page: Page) -> FrameLocator:

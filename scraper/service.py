@@ -31,7 +31,6 @@ from flows.appointment_flow import (
 from flows.captcha_flow import (
     captcha_instruction_present,
     click_background_submit,
-    click_captcha_tile,
     click_nav_book_new_appointment,
     click_ok_dialog,
     click_selected_captcha_tiles,
@@ -78,6 +77,36 @@ logger = logging.getLogger(
 # We deliberately do NOT retry forever. If BLS changes or is down,
 # an infinite unattended browser loop would be dangerous.
 MAX_SUBTYPE_ATTEMPTS = 5
+SUBTYPE_RETRY_BACKOFF_SECONDS = (
+    30,
+    60,
+    120,
+    180,
+)
+LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS = 15
+
+
+def subtype_retry_delay_seconds(attempt_number: int) -> int:
+    """Return the cooldown before the next fresh browser attempt."""
+    if attempt_number < 1 or attempt_number >= MAX_SUBTYPE_ATTEMPTS:
+        return 0
+    return SUBTYPE_RETRY_BACKOFF_SECONDS[attempt_number - 1]
+
+
+def wait_for_login_captcha_outcome(page) -> str:
+    """Wait for rejection or successful navigation after CAPTCHA submit."""
+    deadline = time.monotonic() + LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS
+
+    while time.monotonic() < deadline:
+        if login_captcha_invalid(page):
+            return "rejected"
+        if login_captcha_succeeded(page):
+            return "succeeded"
+        page.wait_for_timeout(250)
+
+    if captcha_instruction_present(page):
+        return "instruction_present"
+    return "unclear"
 
 
 def log_captcha_decision(stage: str, decision) -> None:
@@ -412,10 +441,6 @@ def run_captcha_step(
         "Submitted login CAPTCHA selection."
     )
 
-    page.wait_for_timeout(
-        1_000
-    )
-
     save_live_attempt_bundle(
         output_dir=output_dir,
         step_name="login_captcha",
@@ -428,16 +453,14 @@ def run_captcha_step(
         tiles=tiles,
     )
 
-    if login_captcha_invalid(
-        page
-    ):
+    outcome = wait_for_login_captcha_outcome(page)
+
+    if outcome == "rejected":
         raise RuntimeError(
             "Login CAPTCHA was rejected."
         )
 
-    if login_captcha_succeeded(
-        page
-    ):
+    if outcome == "succeeded":
         logger.info(
             "Login CAPTCHA verification succeeded."
         )
@@ -452,9 +475,7 @@ def run_captcha_step(
 
         return
 
-    if captcha_instruction_present(
-        page
-    ):
+    if outcome == "instruction_present":
         raise RuntimeError(
             "Login CAPTCHA instruction remained "
             "present after verification."
@@ -632,28 +653,11 @@ def run_second_captcha_step(
         decision
     )
 
-    for tile_number in (
-        decision.selected_tiles
-    ):
-        if (
-            tile_number < 1
-            or tile_number
-            > len(
-                tiles_in_frame
-            )
-        ):
-            raise ValueError(
-                f"Selected tile "
-                f"{tile_number} "
-                "is outside the "
-                f"1..{len(tiles_in_frame)} "
-                "range"
-            )
-
-        click_captcha_tile(
-            tiles_in_frame[tile_number - 1],
-            tile_number,
-        )
+    click_selected_captcha_tiles(
+        page,
+        decision.selected_tiles,
+        tiles=tiles_in_frame,
+    )
 
     click_submit_selection(
         frame
@@ -1394,6 +1398,18 @@ def run_scraper(
                 result.error_type,
                 result.error_message,
             )
+
+            retry_delay = subtype_retry_delay_seconds(attempt_number)
+            if retry_delay:
+                logger.info(
+                    "Cooling down before the next fresh browser attempt. "
+                    "Visa subtype=%s | Next attempt=%s/%s | Delay=%ss",
+                    visa_sub_type,
+                    attempt_number + 1,
+                    MAX_SUBTYPE_ATTEMPTS,
+                    retry_delay,
+                )
+                time.sleep(retry_delay)
 
         if subtype_result is None:
             logger.error(
