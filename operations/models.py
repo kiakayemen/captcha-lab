@@ -96,6 +96,21 @@ class ScraperRun(models.Model):
         blank=True,
     )
 
+    first_failure = models.JSONField(
+        null=True,
+        blank=True,
+    )
+
+    attempt_failures = models.JSONField(
+        default=list,
+        blank=True,
+    )
+
+    terminal_failure = models.JSONField(
+        null=True,
+        blank=True,
+    )
+
     duration_seconds = models.FloatField(
         null=True,
         blank=True,

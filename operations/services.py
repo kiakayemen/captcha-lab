@@ -216,6 +216,9 @@ def execute_scraper_run(
     db_run.error_type = ""
 
     db_run.error_message = ""
+    db_run.first_failure = None
+    db_run.attempt_failures = []
+    db_run.terminal_failure = None
 
     db_run.save(
         update_fields=[
@@ -225,6 +228,9 @@ def execute_scraper_run(
             "finished_at",
             "error_type",
             "error_message",
+            "first_failure",
+            "attempt_failures",
+            "terminal_failure",
         ]
     )
 
@@ -331,6 +337,9 @@ def execute_scraper_run(
                 if result.failure_screenshot
                 else ""
             )
+            db_run.first_failure = result.first_failure
+            db_run.attempt_failures = list(result.attempt_failures)
+            db_run.terminal_failure = result.terminal_failure
 
             db_run.duration_seconds = (
                 result.duration_seconds
@@ -345,6 +354,9 @@ def execute_scraper_run(
                     "error_type",
                     "error_message",
                     "failure_screenshot",
+                    "first_failure",
+                    "attempt_failures",
+                    "terminal_failure",
                     "duration_seconds",
                 ]
             )

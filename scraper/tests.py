@@ -15,9 +15,11 @@ from scraper.service import (
     inspect_page_state,
     run_second_captcha_step,
     record_captcha_stage,
+    run_scraper,
     subtype_retry_delay_seconds,
 )
 from scraper.http_diagnostics import response_diagnostics
+from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
 
 from scraper.proxy import (
     PlaywrightProxyRotator,
@@ -229,6 +231,70 @@ class HttpDiagnosticsTests(TestCase):
         self.assertEqual(payload["data"]["attempt_number"], 2)
         self.assertEqual(payload["data"]["started_at"], started_at.isoformat())
         self.assertIn("finished_at", payload["data"])
+
+
+class FailureChainTests(TestCase):
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_terminal_403_is_stored_separately(self, run_attempt, _reader):
+        now = datetime.now(timezone.utc)
+        run_attempt.return_value = ScraperResult(
+            status=ScraperStatus.FAILED,
+            started_at=now,
+            finished_at=now,
+            error_type="HTTP403Forbidden",
+            error_message="blocked",
+        )
+
+        result = run_scraper(
+            ScraperConfig(visa_sub_types=("Student Visa",))
+        )
+
+        self.assertEqual(len(result.attempt_failures), 1)
+        self.assertEqual(result.first_failure, result.attempt_failures[0])
+        self.assertEqual(result.terminal_failure, result.attempt_failures[0])
+        self.assertEqual(result.terminal_failure["error_type"], "HTTP403Forbidden")
+
+    @patch("scraper.service.time.sleep")
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_recovered_run_preserves_all_attempt_failures(
+        self,
+        run_attempt,
+        _reader,
+        _sleep,
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.side_effect = (
+            ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                error_type="CaptchaRejected",
+                error_message="first",
+            ),
+            ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                error_type="MissingElement",
+                error_message="second",
+            ),
+            ScraperResult(
+                status=ScraperStatus.NO_APPOINTMENT,
+                started_at=now,
+                finished_at=now,
+            ),
+        )
+
+        result = run_scraper(
+            ScraperConfig(visa_sub_types=("Student Visa",))
+        )
+
+        self.assertEqual(len(result.attempt_failures), 2)
+        self.assertEqual(result.first_failure["error_message"], "first")
+        self.assertEqual(result.attempt_failures[1]["error_message"], "second")
+        self.assertIsNone(result.terminal_failure)
 
     @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
     def test_background_submit_skips_when_form_is_already_visible(self, _form_visible):

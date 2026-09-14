@@ -129,6 +129,26 @@ def inspect_page_state(page) -> dict[str, bool]:
     return state
 
 
+def failure_record(
+    result: ScraperResult,
+    *,
+    visa_sub_type: str,
+    attempt_number: int,
+) -> dict[str, object]:
+    return {
+        "visa_sub_type": visa_sub_type,
+        "attempt_number": attempt_number,
+        "status": result.status.value,
+        "error_type": result.error_type or "",
+        "error_message": result.error_message or "",
+        "page_url": result.page_url or "",
+        "failure_screenshot": (
+            str(result.failure_screenshot) if result.failure_screenshot else ""
+        ),
+        "occurred_at": result.finished_at.isoformat(),
+    }
+
+
 def wait_for_login_captcha_outcome(page) -> str:
     """Wait for rejection or successful navigation after CAPTCHA submit."""
     deadline = time.monotonic() + LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS
@@ -1610,6 +1630,7 @@ def run_scraper(
     appointment_results: list[
         ScraperResult
     ] = []
+    attempt_failures: list[dict[str, object]] = []
 
     for visa_sub_type in (
         config.visa_sub_types
@@ -1654,6 +1675,12 @@ def run_scraper(
                 break
 
             last_failure = result
+            current_failure = failure_record(
+                result,
+                visa_sub_type=visa_sub_type,
+                attempt_number=attempt_number,
+            )
+            attempt_failures.append(current_failure)
 
             if result.status is ScraperStatus.SERVER_ERROR:
                 logger.error(
@@ -1668,6 +1695,9 @@ def run_scraper(
                     error_type=result.error_type,
                     error_message=result.error_message,
                     failure_screenshot=result.failure_screenshot,
+                    first_failure=attempt_failures[0],
+                    attempt_failures=tuple(attempt_failures),
+                    terminal_failure=current_failure,
                 )
 
             if result.error_type == "HTTP403Forbidden":
@@ -1683,6 +1713,9 @@ def run_scraper(
                     error_type=result.error_type,
                     error_message=result.error_message,
                     failure_screenshot=result.failure_screenshot,
+                    first_failure=attempt_failures[0],
+                    attempt_failures=tuple(attempt_failures),
+                    terminal_failure=current_failure,
                 )
 
             logger.warning(
@@ -1753,6 +1786,22 @@ def run_scraper(
                     if last_failure
                     else None
                 ),
+                first_failure=(attempt_failures[0] if attempt_failures else None),
+                attempt_failures=tuple(attempt_failures),
+                terminal_failure={
+                    "visa_sub_type": visa_sub_type,
+                    "attempt_number": MAX_SUBTYPE_ATTEMPTS,
+                    "status": ScraperStatus.FAILED.value,
+                    "error_type": "SubtypeRetryExhausted",
+                    "error_message": "Fresh browser retry limit exhausted.",
+                    "page_url": last_failure.page_url if last_failure else "",
+                    "failure_screenshot": (
+                        str(last_failure.failure_screenshot)
+                        if last_failure and last_failure.failure_screenshot
+                        else ""
+                    ),
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                },
             )
 
         successful_results.append(
@@ -1829,6 +1878,8 @@ def run_scraper(
             visa_sub_type=(
                 appointment_subtypes
             ),
+            first_failure=(attempt_failures[0] if attempt_failures else None),
+            attempt_failures=tuple(attempt_failures),
         )
 
     logger.info(
@@ -1862,4 +1913,6 @@ def run_scraper(
             if last_result
             else None
         ),
+        first_failure=(attempt_failures[0] if attempt_failures else None),
+        attempt_failures=tuple(attempt_failures),
     )

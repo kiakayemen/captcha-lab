@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 
 class ScraperStatus(str, Enum):
@@ -36,6 +37,9 @@ class ScraperResult:
     error_type: str | None = None
     error_message: str | None = None
     failure_screenshot: Path | None = None
+    first_failure: dict[str, Any] | None = None
+    attempt_failures: tuple[dict[str, Any], ...] = ()
+    terminal_failure: dict[str, Any] | None = None
 
     @property
     def succeeded(self) -> bool:

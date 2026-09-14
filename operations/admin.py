@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 
 from django.contrib import (
     admin,
@@ -182,6 +183,9 @@ class ScraperRunAdmin(
         "error_type",
         "error_message",
         "failure_screenshot",
+        "first_failure",
+        "attempt_failures",
+        "terminal_failure",
         "duration_seconds",
         "run_log",
     )
@@ -219,6 +223,9 @@ class ScraperRunAdmin(
                     "error_type",
                     "error_message",
                     "failure_screenshot",
+                    "first_failure",
+                    "attempt_failures",
+                    "terminal_failure",
                 )
             },
         ),
@@ -488,6 +495,9 @@ class ScraperRunAdmin(
             "error_type",
             "error_message",
             "failure_screenshot",
+            "first_failure",
+            "attempt_failures",
+            "terminal_failure",
         ]
         writer = csv.DictWriter(response, fieldnames=fieldnames)
         writer.writeheader()
@@ -524,6 +534,9 @@ class ScraperRunAdmin(
                     "error_type": run.error_type,
                     "error_message": run.error_message,
                     "failure_screenshot": run.failure_screenshot,
+                    "first_failure": json.dumps(run.first_failure or {}),
+                    "attempt_failures": json.dumps(run.attempt_failures or []),
+                    "terminal_failure": json.dumps(run.terminal_failure or {}),
                 }
             )
 
