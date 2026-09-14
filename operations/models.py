@@ -154,6 +154,7 @@ class ScraperEvent(models.Model):
         SUBTYPE_RETRY = "subtype_retry", "Subtype retry"
         CAPTCHA_STARTED = "captcha_started", "CAPTCHA started"
         CAPTCHA_DECISION = "captcha_decision", "CAPTCHA decision"
+        CAPTCHA_STAGE = "captcha_stage", "CAPTCHA stage"
         CAPTCHA_FINISHED = "captcha_finished", "CAPTCHA finished"
         BROWSER_STARTED = "browser_started", "Browser started"
         BROWSER_FAILED = "browser_failed", "Browser failed"

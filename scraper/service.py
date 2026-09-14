@@ -201,6 +201,42 @@ def log_captcha_decision(stage: str, decision) -> None:
         )
 
 
+def record_captcha_stage(
+    *,
+    captcha: str,
+    stage: str,
+    attempt_number: int,
+    started_at: datetime,
+    duration_ms: int,
+    status: str = "completed",
+    finished_at: datetime | None = None,
+) -> None:
+    finished_at = finished_at or datetime.now(timezone.utc)
+    data = {
+        "captcha": captcha,
+        "stage": stage,
+        "attempt_number": attempt_number,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+    }
+    record_scraper_event(
+        ScraperEvent.EventType.CAPTCHA_STAGE,
+        attempt_number=attempt_number,
+        status=status,
+        duration_ms=max(0, duration_ms),
+        data=data,
+    )
+    logger.info(
+        "CAPTCHA telemetry: captcha=%s stage=%s attempt=%s "
+        "started_at=%s finished_at=%s duration_ms=%s status=%s",
+        captcha,
+        stage,
+        attempt_number,
+        data["started_at"],
+        data["finished_at"],
+        max(0, duration_ms),
+        status,
+    )
 def run_login_step(page) -> None:
     logger.info(
         "Submitting login email."
@@ -401,9 +437,18 @@ def run_captcha_step(
         "Taking solver screenshot."
     )
 
+    acquisition_started_at = datetime.now(timezone.utc)
+    acquisition_started = time.perf_counter()
     captcha_image = save_captcha_crop(
         page,
         screenshot_path,
+    )
+    record_captcha_stage(
+        captcha="login",
+        stage="image_acquisition",
+        attempt_number=1,
+        started_at=acquisition_started_at,
+        duration_ms=round((time.perf_counter() - acquisition_started) * 1000),
     )
 
     logger.info(
@@ -415,6 +460,7 @@ def run_captcha_step(
         time.perf_counter()
     )
 
+    solver_timings: dict[str, object] = {}
     (
         decision,
         tiles,
@@ -424,11 +470,20 @@ def run_captcha_step(
         captcha_image,
         target=target,
         reader=reader,
+        timings=solver_timings,
     )
 
     solve_seconds = (
         time.perf_counter()
         - solve_start
+    )
+    record_captcha_stage(
+        captcha="login",
+        stage="ocr_inference",
+        attempt_number=1,
+        started_at=datetime.fromisoformat(str(solver_timings["ocr_started_at"])),
+        finished_at=datetime.fromisoformat(str(solver_timings["ocr_finished_at"])),
+        duration_ms=int(solver_timings["ocr_duration_ms"]),
     )
 
     logger.info(
@@ -457,9 +512,18 @@ def run_captcha_step(
         decision
     )
 
+    selection_started_at = datetime.now(timezone.utc)
+    selection_started = time.perf_counter()
     click_selected_captcha_tiles(
         page,
         decision.selected_tiles,
+    )
+    record_captcha_stage(
+        captcha="login",
+        stage="box_selection",
+        attempt_number=1,
+        started_at=selection_started_at,
+        duration_ms=round((time.perf_counter() - selection_started) * 1000),
     )
 
     logger.info(
@@ -469,8 +533,17 @@ def run_captcha_step(
         ),
     )
 
+    submission_started_at = datetime.now(timezone.utc)
+    submission_started = time.perf_counter()
     click_verify_selection(
         page
+    )
+    record_captcha_stage(
+        captcha="login",
+        stage="submission",
+        attempt_number=1,
+        started_at=submission_started_at,
+        duration_ms=round((time.perf_counter() - submission_started) * 1000),
     )
 
     logger.info(
@@ -489,7 +562,17 @@ def run_captcha_step(
         tiles=tiles,
     )
 
+    verification_started_at = datetime.now(timezone.utc)
+    verification_started = time.perf_counter()
     outcome = wait_for_login_captcha_outcome(page)
+    record_captcha_stage(
+        captcha="login",
+        stage="verification",
+        attempt_number=1,
+        started_at=verification_started_at,
+        duration_ms=round((time.perf_counter() - verification_started) * 1000),
+        status=outcome,
+    )
 
     if outcome == "rejected":
         raise RuntimeError(
@@ -666,9 +749,18 @@ def _run_second_captcha_attempt(
         "Taking solver screenshot."
     )
 
+    acquisition_started_at = datetime.now(timezone.utc)
+    acquisition_started = time.perf_counter()
     captcha_image = save_captcha_crop(
         page,
         screenshot_path,
+    )
+    record_captcha_stage(
+        captcha="second",
+        stage="image_acquisition",
+        attempt_number=attempt_number,
+        started_at=acquisition_started_at,
+        duration_ms=round((time.perf_counter() - acquisition_started) * 1000),
     )
 
     logger.info(
@@ -680,6 +772,7 @@ def _run_second_captcha_attempt(
         time.perf_counter()
     )
 
+    solver_timings: dict[str, object] = {}
     (
         decision,
         tiles,
@@ -689,11 +782,20 @@ def _run_second_captcha_attempt(
         captcha_image,
         target=target,
         reader=reader,
+        timings=solver_timings,
     )
 
     solve_seconds = (
         time.perf_counter()
         - solve_start
+    )
+    record_captcha_stage(
+        captcha="second",
+        stage="ocr_inference",
+        attempt_number=attempt_number,
+        started_at=datetime.fromisoformat(str(solver_timings["ocr_started_at"])),
+        finished_at=datetime.fromisoformat(str(solver_timings["ocr_finished_at"])),
+        duration_ms=int(solver_timings["ocr_duration_ms"]),
     )
 
     logger.info(
@@ -722,14 +824,32 @@ def _run_second_captcha_attempt(
         decision
     )
 
+    selection_started_at = datetime.now(timezone.utc)
+    selection_started = time.perf_counter()
     click_selected_captcha_tiles(
         page,
         decision.selected_tiles,
         tiles=tiles_in_frame,
     )
+    record_captcha_stage(
+        captcha="second",
+        stage="box_selection",
+        attempt_number=attempt_number,
+        started_at=selection_started_at,
+        duration_ms=round((time.perf_counter() - selection_started) * 1000),
+    )
 
+    submission_started_at = datetime.now(timezone.utc)
+    submission_started = time.perf_counter()
     click_submit_selection(
         frame
+    )
+    record_captcha_stage(
+        captcha="second",
+        stage="submission",
+        attempt_number=attempt_number,
+        started_at=submission_started_at,
+        duration_ms=round((time.perf_counter() - submission_started) * 1000),
     )
 
     logger.info(
@@ -754,6 +874,8 @@ def _run_second_captcha_attempt(
         )
     )
 
+    verification_started_at = datetime.now(timezone.utc)
+    verification_started = time.perf_counter()
     try:
         expect(
             verified_label
@@ -763,16 +885,45 @@ def _run_second_captcha_attempt(
 
     except Exception as exc:
         if popup.is_visible():
+            record_captcha_stage(
+                captcha="second",
+                stage="verification",
+                attempt_number=attempt_number,
+                started_at=verification_started_at,
+                duration_ms=round(
+                    (time.perf_counter() - verification_started) * 1000
+                ),
+                status="rejected",
+            )
             logger.warning(
                 "Second CAPTCHA attempt %s was rejected; "
                 "the verification popup is still open.",
                 attempt_number,
             )
             return False
+        record_captcha_stage(
+            captcha="second",
+            stage="verification",
+            attempt_number=attempt_number,
+            started_at=verification_started_at,
+            duration_ms=round(
+                (time.perf_counter() - verification_started) * 1000
+            ),
+            status="unclear",
+        )
         raise RuntimeError(
             "Second CAPTCHA outcome was unclear because verification "
             "did not appear and the popup closed."
         ) from exc
+
+    record_captcha_stage(
+        captcha="second",
+        stage="verification",
+        attempt_number=attempt_number,
+        started_at=verification_started_at,
+        duration_ms=round((time.perf_counter() - verification_started) * 1000),
+        status="verified",
+    )
 
     logger.info(
         'Second CAPTCHA returned "Verified!".'

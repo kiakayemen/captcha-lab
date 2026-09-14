@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
 
@@ -13,6 +14,7 @@ from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
     inspect_page_state,
     run_second_captcha_step,
+    record_captcha_stage,
     subtype_retry_delay_seconds,
 )
 from scraper.http_diagnostics import response_diagnostics
@@ -205,6 +207,28 @@ class HttpDiagnosticsTests(TestCase):
         self.assertNotIn("set-cookie", data["response_headers"])
         self.assertNotIn("person@example.test", str(data))
         self.assertNotIn("secret", str(data))
+
+    @patch("scraper.service.record_scraper_event")
+    def test_captcha_stage_telemetry_has_timestamps_and_duration(self, record_event):
+        started_at = datetime.now(timezone.utc)
+
+        record_captcha_stage(
+            captcha="second",
+            stage="verification",
+            attempt_number=2,
+            started_at=started_at,
+            duration_ms=15321,
+            status="rejected",
+        )
+
+        payload = record_event.call_args.kwargs
+        self.assertEqual(payload["duration_ms"], 15321)
+        self.assertEqual(payload["status"], "rejected")
+        self.assertEqual(payload["data"]["captcha"], "second")
+        self.assertEqual(payload["data"]["stage"], "verification")
+        self.assertEqual(payload["data"]["attempt_number"], 2)
+        self.assertEqual(payload["data"]["started_at"], started_at.isoformat())
+        self.assertIn("finished_at", payload["data"])
 
     @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
     def test_background_submit_skips_when_form_is_already_visible(self, _form_visible):

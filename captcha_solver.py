@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +124,7 @@ def solve_tiles(
     tiles: list[np.ndarray],
     target: str,
     reader: Any,
+    timings: dict[str, object] | None = None,
 ) -> CaptchaDecision:
     target = validate_target(target)
 
@@ -132,6 +135,8 @@ def solve_tiles(
             variant_keys.append((tile_number, variant_name))
             variant_images.append(processed)
 
+    ocr_started_at = datetime.now(timezone.utc)
+    ocr_started = time.perf_counter()
     if hasattr(reader, "recognize_batch"):
         predictions = reader.recognize_batch(variant_images)
     else:
@@ -139,6 +144,12 @@ def solve_tiles(
             reader.recognize(image)
             for image in variant_images
         ]
+    if timings is not None:
+        timings["ocr_started_at"] = ocr_started_at.isoformat()
+        timings["ocr_finished_at"] = datetime.now(timezone.utc).isoformat()
+        timings["ocr_duration_ms"] = round(
+            (time.perf_counter() - ocr_started) * 1000
+        )
 
     attempts_by_tile: dict[int, list[OCRResult]] = {
         tile_number: []
@@ -218,6 +229,7 @@ def solve_captcha_image(
     target: str | None = None,
     reader: Any | None = None,
     gpu: bool = False,
+    timings: dict[str, object] | None = None,
 ) -> tuple[
     CaptchaDecision,
     list[np.ndarray],
@@ -239,7 +251,12 @@ def solve_captcha_image(
         raise ValueError("target is required with PARSeq; read it from the CAPTCHA DOM or pass --target")
     resolved_target = validate_target(target)
 
-    decision = solve_tiles(tiles, resolved_target, reader)
+    decision = solve_tiles(
+        tiles,
+        resolved_target,
+        reader,
+        timings=timings,
+    )
     return decision, tiles, boxes, debug
 
 
