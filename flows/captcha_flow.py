@@ -516,9 +516,9 @@ def login_captcha_invalid(page: Page) -> bool:
 
 def login_captcha_succeeded(page: Page) -> bool:
     try:
-        if "logincaptcha" in page.url:
+        if "logincaptcha" in page.url.lower():
             return False
-        return page.locator(LOGIN_FORM_SELECTOR).count() == 0
+        return page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible()
     except Exception:
         return False
 
@@ -601,7 +601,20 @@ def click_background_submit(page: Page) -> None:
         POST_SECOND_CAPTCHA_SETTLE_MS / 1_000,
     )
     page.wait_for_timeout(POST_SECOND_CAPTCHA_SETTLE_MS)
-    background_submit.click(timeout=10_000)
+    try:
+        background_submit.click(timeout=10_000)
+    except Exception:
+        if appointment_form_visible(page) or ok_button.is_visible():
+            logger.info(
+                "Background Submit reached its destination while the click "
+                "was still settling."
+            )
+            return
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        raise
     logger.info("Clicked background Submit")
 
     deadline = time.monotonic() + 5

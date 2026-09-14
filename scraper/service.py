@@ -662,13 +662,31 @@ def run_second_captcha_step(
             MAX_SECOND_CAPTCHA_ATTEMPTS,
         )
 
-        verified = _run_second_captcha_attempt(
-            page,
-            gpu=gpu,
-            output_dir=output_dir,
-            reader=reader,
-            attempt_number=attempt_number,
-        )
+        try:
+            verified = _run_second_captcha_attempt(
+                page,
+                gpu=gpu,
+                output_dir=output_dir,
+                reader=reader,
+                attempt_number=attempt_number,
+            )
+        except (PlaywrightTimeoutError, AssertionError, RuntimeError) as error:
+            if site_error_page_visible(page):
+                raise
+            if attempt_number == MAX_SECOND_CAPTCHA_ATTEMPTS:
+                raise RuntimeError(
+                    "Second CAPTCHA could not be prepared after "
+                    f"{MAX_SECOND_CAPTCHA_ATTEMPTS} same-session attempts."
+                ) from error
+            logger.warning(
+                "Second CAPTCHA UI was incomplete; reloading the appointment "
+                "verification page and retrying in the same session. Error=%s",
+                error,
+            )
+            page.reload(wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_timeout(SECOND_CAPTCHA_RETRY_SETTLE_MS)
+            click_verify_selection(page)
+            continue
         if verified:
             return
 

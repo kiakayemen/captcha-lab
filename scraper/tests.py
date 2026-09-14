@@ -8,6 +8,7 @@ from flows.captcha_flow import (
     click_background_submit,
     click_ok_dialog,
     click_selected_captcha_tiles,
+    login_captcha_succeeded,
     SITE_ERROR_PATTERN,
 )
 from scraper.service import (
@@ -193,6 +194,43 @@ class CaptchaPacingTests(TestCase):
 
 
 class HttpDiagnosticsTests(TestCase):
+    def test_login_captcha_url_check_is_case_insensitive(self):
+        page = MagicMock()
+        page.url = "https://example.test/Global/NewCaptcha/LoginCaptcha?data=x"
+
+        self.assertFalse(login_captcha_succeeded(page))
+
+    def test_login_success_requires_visible_appointment_navigation(self):
+        page = MagicMock()
+        page.url = "https://example.test/Global/account/login"
+        page.locator.return_value.first.is_visible.return_value = False
+
+        self.assertFalse(login_captcha_succeeded(page))
+
+    @patch("flows.captcha_flow.appointment_form_visible", return_value=False)
+    @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
+    @patch("flows.captcha_flow.expect")
+    def test_background_submit_accepts_modal_that_appears_during_click(
+        self,
+        _expect,
+        _server_error,
+        _form_visible,
+    ):
+        page = MagicMock()
+        background_submit = MagicMock()
+        ok_button = MagicMock()
+        page.locator.side_effect = [background_submit, ok_button]
+        background_submit.last = background_submit
+        background_submit.is_visible.return_value = True
+        background_submit.is_enabled.return_value = True
+        background_submit.click.side_effect = RuntimeError("intercepted")
+        ok_button.first = ok_button
+        ok_button.is_visible.side_effect = (False, True)
+
+        click_background_submit(page)
+
+        background_submit.click.assert_called_once()
+
     @patch.dict("os.environ", {"HOSTNAME": "worker-abc"})
     def test_403_diagnostics_include_requested_evidence_without_cookies(self):
         response = MagicMock()
@@ -379,6 +417,34 @@ class FailureChainTests(TestCase):
         page.wait_for_timeout.assert_called_once_with(
             SECOND_CAPTCHA_RETRY_SETTLE_MS
         )
+
+    @patch("scraper.service.click_verify_selection")
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch(
+        "scraper.service._run_second_captcha_attempt",
+        side_effect=(AssertionError("missing labels"), True),
+    )
+    def test_incomplete_second_captcha_reloads_without_new_login(
+        self,
+        solve_attempt,
+        _server_error,
+        reopen_captcha,
+    ):
+        page = MagicMock()
+
+        run_second_captcha_step(
+            page,
+            gpu=False,
+            output_dir=MagicMock(),
+            reader=MagicMock(),
+        )
+
+        self.assertEqual(solve_attempt.call_count, 2)
+        page.reload.assert_called_once_with(
+            wait_until="domcontentloaded",
+            timeout=60_000,
+        )
+        reopen_captcha.assert_called_once_with(page)
 
     @patch(
         "scraper.service._run_second_captcha_attempt",
