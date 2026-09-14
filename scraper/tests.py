@@ -15,6 +15,7 @@ from scraper.service import (
     run_second_captcha_step,
     subtype_retry_delay_seconds,
 )
+from scraper.http_diagnostics import response_diagnostics
 
 from scraper.proxy import (
     PlaywrightProxyRotator,
@@ -168,6 +169,42 @@ class CaptchaPacingTests(TestCase):
         )
 
         self.assertIsNotNone(SITE_ERROR_PATTERN.search(message))
+
+
+class HttpDiagnosticsTests(TestCase):
+    @patch.dict("os.environ", {"HOSTNAME": "worker-abc"})
+    def test_403_diagnostics_include_requested_evidence_without_cookies(self):
+        response = MagicMock()
+        response.status = 403
+        response.body.return_value = b"blocked response"
+        response.all_headers.return_value = {
+            "cf-ray": "request-123",
+            "content-type": "text/html",
+            "set-cookie": "secret-cookie",
+        }
+        context = MagicMock()
+        context.cookies.return_value = [
+            {"name": "session", "domain": "example.test", "value": "secret"}
+        ]
+
+        data = response_diagnostics(
+            response=response,
+            context=context,
+            account="person@example.test",
+            egress_ip_hash="egress-hash",
+            egress_lookup_error=None,
+            seconds_since_previous_login=31.2349,
+        )
+
+        self.assertEqual(data["http_status"], 403)
+        self.assertEqual(data["egress_ip_hash"], "egress-hash")
+        self.assertEqual(data["worker_container_id"], "worker-abc")
+        self.assertEqual(data["server_request_id"], "request-123")
+        self.assertEqual(data["seconds_since_previous_login_request"], 31.235)
+        self.assertEqual(data["body_length"], 16)
+        self.assertNotIn("set-cookie", data["response_headers"])
+        self.assertNotIn("person@example.test", str(data))
+        self.assertNotIn("secret", str(data))
 
     @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
     def test_background_submit_skips_when_form_is_already_visible(self, _form_visible):

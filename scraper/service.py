@@ -66,6 +66,10 @@ from scraper.models import (
     ScraperResult,
     ScraperStatus,
 )
+from scraper.http_diagnostics import (
+    resolve_egress_ip_hash,
+    response_diagnostics,
+)
 from scraper.proxy import PlaywrightProxyRotator
 
 
@@ -850,6 +854,7 @@ def _run_single_subtype_attempt(
     attempt_number: int,
     reader,
     proxy_config: dict[str, str] | None,
+    login_request_state: dict[str, float | None],
 ) -> ScraperResult:
     """
     One completely fresh browser attempt for exactly one visa subtype.
@@ -930,6 +935,8 @@ def _run_single_subtype_attempt(
                 )
             )
 
+            egress_ip_hash, egress_lookup_error = resolve_egress_ip_hash(context)
+
             page = context.new_page()
 
             logger.info(
@@ -937,6 +944,11 @@ def _run_single_subtype_attempt(
                 LOGIN_URL,
             )
 
+            login_requested_at = time.monotonic()
+            previous_login_requested_at = login_request_state.get(
+                "previous_request_monotonic"
+            )
+            login_request_state["previous_request_monotonic"] = login_requested_at
             response = page.goto(
                 LOGIN_URL,
                 wait_until="domcontentloaded",
@@ -944,9 +956,29 @@ def _run_single_subtype_attempt(
             )
 
             if response is not None:
+                login_response_data = response_diagnostics(
+                    response=response,
+                    context=context,
+                    account=BLS_EMAIL,
+                    egress_ip_hash=egress_ip_hash,
+                    egress_lookup_error=egress_lookup_error,
+                    seconds_since_previous_login=(
+                        login_requested_at - previous_login_requested_at
+                        if previous_login_requested_at is not None
+                        else None
+                    ),
+                )
+                record_scraper_event(
+                    ScraperEvent.EventType.LOGIN_RESPONSE,
+                    status=str(response.status),
+                    reason_code=(
+                        "HTTP_403" if response.status == 403 else ""
+                    ),
+                    data=login_response_data,
+                )
                 logger.info(
-                    "Initial HTTP status=%s",
-                    response.status,
+                    "Initial HTTP response diagnostics=%s",
+                    json.dumps(login_response_data, sort_keys=True),
                 )
 
                 if response.status == 403:
@@ -1416,6 +1448,9 @@ def run_scraper(
     logger.info("Getting PARSeq-tiny reader for this worker. GPU=%s", config.gpu)
     reader = get_reader(gpu=config.gpu)
     proxy_rotator = PlaywrightProxyRotator()
+    login_request_state: dict[str, float | None] = {
+        "previous_request_monotonic": None,
+    }
 
     successful_results: list[
         ScraperResult
@@ -1459,6 +1494,7 @@ def run_scraper(
                     attempt_number=attempt_number,
                     reader=reader,
                     proxy_config=proxy_rotator.choose(),
+                    login_request_state=login_request_state,
                 )
             )
 

@@ -158,6 +158,7 @@ class ScraperEvent(models.Model):
         BROWSER_STARTED = "browser_started", "Browser started"
         BROWSER_FAILED = "browser_failed", "Browser failed"
         NAVIGATION_FAILED = "navigation_failed", "Navigation failed"
+        LOGIN_RESPONSE = "login_response", "Login response"
         APPOINTMENT_DETECTED = "appointment_detected", "Appointment detected"
         NOTIFICATION_SENT = "notification_sent", "Notification sent"
         NOTIFICATION_FAILED = "notification_failed", "Notification failed"
