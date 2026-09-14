@@ -84,6 +84,8 @@ SUBTYPE_RETRY_BACKOFF_SECONDS = (
     180,
 )
 LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS = 15
+MAX_SECOND_CAPTCHA_ATTEMPTS = 3
+SECOND_CAPTCHA_RETRY_SETTLE_MS = 3_000
 
 
 def subtype_retry_delay_seconds(attempt_number: int) -> int:
@@ -493,11 +495,48 @@ def run_second_captcha_step(
     output_dir: Path,
     reader,
 ) -> None:
-    """
-    Solve Verify Selection CAPTCHA once.
+    """Solve a regenerated Verify Selection CAPTCHA in the same session."""
+    for attempt_number in range(1, MAX_SECOND_CAPTCHA_ATTEMPTS + 1):
+        logger.info(
+            "Second CAPTCHA attempt %s/%s.",
+            attempt_number,
+            MAX_SECOND_CAPTCHA_ATTEMPTS,
+        )
 
-    Any failure aborts the current browser attempt.
-    """
+        verified = _run_second_captcha_attempt(
+            page,
+            gpu=gpu,
+            output_dir=output_dir,
+            reader=reader,
+            attempt_number=attempt_number,
+        )
+        if verified:
+            return
+
+        if attempt_number == MAX_SECOND_CAPTCHA_ATTEMPTS:
+            break
+
+        logger.warning(
+            "Second CAPTCHA was rejected and regenerated; "
+            "re-solving it in the current browser session."
+        )
+        page.wait_for_timeout(SECOND_CAPTCHA_RETRY_SETTLE_MS)
+
+    raise RuntimeError(
+        "Second CAPTCHA was rejected "
+        f"{MAX_SECOND_CAPTCHA_ATTEMPTS} times in the same browser session."
+    )
+
+
+def _run_second_captcha_attempt(
+    page,
+    *,
+    gpu: bool,
+    output_dir: Path,
+    reader,
+    attempt_number: int,
+) -> bool:
+    """Solve one rendered Verify Selection challenge."""
 
     frame = get_verify_selection_frame(
         page
@@ -515,10 +554,6 @@ def run_second_captcha_step(
             has_text="Verify Selection"
         )
         .first
-    )
-
-    logger.info(
-        "Second CAPTCHA: single-attempt mode."
     )
 
     logger.info(
@@ -670,7 +705,7 @@ def run_second_captcha_step(
     save_live_attempt_bundle(
         output_dir=output_dir,
         step_name="second_captcha",
-        attempt_number=1,
+        attempt_number=attempt_number,
         page_url=page.url,
         target=target,
         decision=decision,
@@ -693,8 +728,16 @@ def run_second_captcha_step(
         )
 
     except Exception as exc:
+        if popup.is_visible():
+            logger.warning(
+                "Second CAPTCHA attempt %s was rejected; "
+                "the verification popup is still open.",
+                attempt_number,
+            )
+            return False
         raise RuntimeError(
-            "Second CAPTCHA was not verified."
+            "Second CAPTCHA outcome was unclear because verification "
+            "did not appear and the popup closed."
         ) from exc
 
     logger.info(
@@ -722,6 +765,7 @@ def run_second_captcha_step(
         tiles,
         decision,
     )
+    return True
 
 
 def fill_password(

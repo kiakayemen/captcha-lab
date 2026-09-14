@@ -7,7 +7,11 @@ from flows.captcha_flow import (
     click_ok_dialog,
     click_selected_captcha_tiles,
 )
-from scraper.service import subtype_retry_delay_seconds
+from scraper.service import (
+    SECOND_CAPTCHA_RETRY_SETTLE_MS,
+    run_second_captcha_step,
+    subtype_retry_delay_seconds,
+)
 
 from scraper.proxy import (
     PlaywrightProxyRotator,
@@ -154,6 +158,60 @@ class ProxyConfigurationTests(TestCase):
 
 
 class CaptchaPacingTests(TestCase):
+    @patch(
+        "scraper.service._run_second_captcha_attempt",
+        side_effect=(False, True),
+    )
+    def test_rejected_second_captcha_is_retried_in_same_page(self, solve_attempt):
+        page = MagicMock()
+        output_dir = MagicMock()
+        reader = MagicMock()
+
+        run_second_captcha_step(
+            page,
+            gpu=False,
+            output_dir=output_dir,
+            reader=reader,
+        )
+
+        self.assertEqual(solve_attempt.call_count, 2)
+        self.assertIs(
+            solve_attempt.call_args_list[0].args[0],
+            page,
+        )
+        self.assertIs(
+            solve_attempt.call_args_list[1].args[0],
+            page,
+        )
+        self.assertEqual(
+            [
+                item.kwargs["attempt_number"]
+                for item in solve_attempt.call_args_list
+            ],
+            [1, 2],
+        )
+        page.wait_for_timeout.assert_called_once_with(
+            SECOND_CAPTCHA_RETRY_SETTLE_MS
+        )
+
+    @patch(
+        "scraper.service._run_second_captcha_attempt",
+        return_value=False,
+    )
+    def test_repeated_second_captcha_rejections_escalate(self, solve_attempt):
+        page = MagicMock()
+
+        with self.assertRaisesRegex(RuntimeError, "rejected 3 times"):
+            run_second_captcha_step(
+                page,
+                gpu=False,
+                output_dir=MagicMock(),
+                reader=MagicMock(),
+            )
+
+        self.assertEqual(solve_attempt.call_count, 3)
+        self.assertEqual(page.wait_for_timeout.call_count, 2)
+
     @patch("flows.captcha_flow.random.randint", side_effect=(400, 700))
     @patch("flows.captcha_flow.click_captcha_tile")
     @patch("flows.captcha_flow.get_captcha_tiles")
