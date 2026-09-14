@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,10 +90,14 @@ SECOND_CAPTCHA_RETRY_SETTLE_MS = 3_000
 
 
 def subtype_retry_delay_seconds(attempt_number: int) -> int:
-    """Return the cooldown before the next fresh browser attempt."""
+    """Return an increasing cooldown with bounded random jitter."""
     if attempt_number < 1 or attempt_number >= MAX_SUBTYPE_ATTEMPTS:
         return 0
-    return SUBTYPE_RETRY_BACKOFF_SECONDS[attempt_number - 1]
+    base_delay = SUBTYPE_RETRY_BACKOFF_SECONDS[attempt_number - 1]
+    return random.randint(
+        round(base_delay * 0.8),
+        round(base_delay * 1.2),
+    )
 
 
 def wait_for_login_captcha_outcome(page) -> str:

@@ -267,8 +267,18 @@ class CaptchaPacingTests(TestCase):
         self.assertFalse(click_ok_dialog(page))
         page.wait_for_timeout.assert_not_called()
 
-    def test_retry_cooldown_grows_between_fresh_attempts(self):
+    @patch("scraper.service.random.randint", side_effect=(31, 63, 125, 175))
+    def test_retry_cooldown_grows_with_jitter(self, randint):
         self.assertEqual(
             [subtype_retry_delay_seconds(attempt) for attempt in range(1, 6)],
-            [30, 60, 120, 180, 0],
+            [31, 63, 125, 175, 0],
+        )
+        self.assertEqual(
+            randint.call_args_list,
+            [
+                call(24, 36),
+                call(48, 72),
+                call(96, 144),
+                call(144, 216),
+            ],
         )
