@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from playwright.sync_api import (
     Error as PlaywrightError,
@@ -102,6 +103,13 @@ LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS = 15
 MAX_LOGIN_CAPTCHA_ATTEMPTS = 3
 MAX_SECOND_CAPTCHA_ATTEMPTS = 3
 SECOND_CAPTCHA_RETRY_SETTLE_MS = 3_000
+RECOVERABLE_UNCLEAR_LOGIN_PATHS = {
+    "/",
+    "/global",
+    "/global/",
+    "/global/home/index",
+    "/global/newcaptcha/logincaptchasubmit",
+}
 
 
 class ScraperStopRequested(RuntimeError):
@@ -445,6 +453,16 @@ def run_captcha_step(
         )
         if outcome == "succeeded":
             return
+        if outcome == "unclear":
+            if attempt_number == MAX_LOGIN_CAPTCHA_ATTEMPTS:
+                raise RuntimeError(
+                    "Login CAPTCHA remained unclear after "
+                    f"{MAX_LOGIN_CAPTCHA_ATTEMPTS} same-session attempts."
+                )
+            if not restart_unclear_login_captcha(page):
+                raise RuntimeError(
+                    "Login CAPTCHA outcome was unclear on an unknown page state."
+                )
         if attempt_number < MAX_LOGIN_CAPTCHA_ATTEMPTS:
             logger.warning(
                 "Login CAPTCHA was rejected or regenerated; re-solving it "
@@ -456,6 +474,32 @@ def run_captcha_step(
         "Login CAPTCHA was rejected "
         f"{MAX_LOGIN_CAPTCHA_ATTEMPTS} times in the same browser session."
     )
+
+
+def restart_unclear_login_captcha(page) -> bool:
+    """Restart login inside the existing browser for known unclear pages."""
+    path = urlparse(str(page.url)).path.lower()
+    if path not in RECOVERABLE_UNCLEAR_LOGIN_PATHS:
+        return False
+    if http_forbidden_page_visible(page):
+        raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
+    if site_error_page_visible(page):
+        raise RuntimeError(
+            "Target site returned its temporary processing-error page."
+        )
+
+    logger.warning(
+        "Login CAPTCHA ended on known unclear endpoint %s; restarting the "
+        "login challenge in the current browser session.",
+        path,
+    )
+    page.goto(
+        LOGIN_URL,
+        wait_until="domcontentloaded",
+        timeout=60_000,
+    )
+    run_login_step(page)
+    return True
 
 
 def _run_login_captcha_attempt(
@@ -720,9 +764,7 @@ def _run_login_captcha_attempt(
     if outcome == "instruction_present":
         return outcome
 
-    raise RuntimeError(
-        "Login CAPTCHA outcome was unclear."
-    )
+    return outcome
 
 
 def run_second_captcha_step(

@@ -27,6 +27,7 @@ from scraper.service import (
     run_scraper,
     subtype_retry_delay_seconds,
     wait_for_login_captcha_outcome,
+    restart_unclear_login_captcha,
 )
 from scraper.http_diagnostics import response_diagnostics
 from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
@@ -275,6 +276,26 @@ class HttpDiagnosticsTests(TestCase):
 
         with self.assertRaises(HTTP403Forbidden):
             wait_for_login_captcha_outcome(page)
+
+    @patch("scraper.service.run_login_step")
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch("scraper.service.http_forbidden_page_visible", return_value=False)
+    def test_known_unclear_login_endpoint_restarts_in_same_browser(
+        self,
+        _forbidden,
+        _server_error,
+        run_login,
+    ):
+        page = MagicMock()
+        page.url = (
+            "https://iran.blsspainglobal.com/"
+            "Global/NewCaptcha/LoginCaptchaSubmit"
+        )
+
+        self.assertTrue(restart_unclear_login_captcha(page))
+
+        page.goto.assert_called_once()
+        run_login.assert_called_once_with(page)
 
     @patch("flows.captcha_flow.raise_for_http_forbidden")
     @patch("flows.captcha_flow.expect")
@@ -547,6 +568,30 @@ class FailureChainTests(TestCase):
         page.wait_for_timeout.assert_called_once_with(
             SECOND_CAPTCHA_RETRY_SETTLE_MS
         )
+
+    @patch("scraper.service.restart_unclear_login_captcha", return_value=True)
+    @patch(
+        "scraper.service._run_login_captcha_attempt",
+        side_effect=("unclear", "succeeded"),
+    )
+    def test_unclear_login_captcha_is_restarted_in_same_page(
+        self,
+        solve_attempt,
+        restart_login,
+    ):
+        page = MagicMock()
+
+        run_captcha_step(
+            page,
+            gpu=False,
+            output_dir=MagicMock(),
+            reader=MagicMock(),
+        )
+
+        self.assertEqual(solve_attempt.call_count, 2)
+        self.assertIs(solve_attempt.call_args_list[0].args[0], page)
+        self.assertIs(solve_attempt.call_args_list[1].args[0], page)
+        restart_login.assert_called_once_with(page)
 
     @patch(
         "scraper.service._run_login_captcha_attempt",
