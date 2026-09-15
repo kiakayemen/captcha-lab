@@ -49,6 +49,12 @@ CAPTCHA_INTER_TILE_DELAY_MAX_MS = 750
 CAPTCHA_SELECTION_STATE_TIMEOUT_MS = 1_500
 CAPTCHA_POST_SELECTION_SETTLE_MS = 5_000
 POST_SECOND_CAPTCHA_SETTLE_MS = 3_000
+BLOCKING_OVERLAY_SELECTOR = (
+    "div.preloader:visible, "
+    "div.global-overlay:visible, "
+    "#global-overlay:visible, "
+    ".global-overlay-loader:visible"
+)
 
 
 def wait_for_preloader_to_clear(page: Page, timeout: int = 60_000) -> None:
@@ -80,6 +86,53 @@ def appointment_form_visible(page: Page) -> bool:
         )
     except Exception:
         return False
+
+
+def blocking_overlay_visible(page: Page) -> bool:
+    try:
+        overlays = page.locator(BLOCKING_OVERLAY_SELECTOR)
+        return any(
+            overlays.nth(index).is_visible() is True
+            for index in range(overlays.count())
+        )
+    except Exception:
+        return False
+
+
+def post_captcha_destination_visible(page: Page) -> bool:
+    try:
+        ok_visible = (
+            page.locator('button:has-text("Ok"):visible')
+            .first
+            .is_visible()
+            is True
+        )
+    except Exception:
+        ok_visible = False
+    return appointment_form_visible(page) or ok_visible
+
+
+def wait_for_post_captcha_page_ready(
+    page: Page,
+    *,
+    timeout_ms: int = 30_000,
+) -> str:
+    """Wait for overlays to clear while watching for valid destinations."""
+    deadline = time.monotonic() + timeout_ms / 1_000
+    while time.monotonic() < deadline:
+        raise_for_http_forbidden(page)
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        if post_captcha_destination_visible(page):
+            return "destination"
+        if not blocking_overlay_visible(page):
+            return "ready"
+        page.wait_for_timeout(250)
+    raise RuntimeError(
+        "A loading overlay remained visible for 30 seconds after CAPTCHA."
+    )
 
 
 def find_true_captcha_label(page: Page) -> tuple[Locator, str, str]:
@@ -612,9 +665,8 @@ def click_submit_selection(page: Page) -> None:
 
 def click_background_submit(page: Page) -> None:
     background_submit = page.locator(BACKGROUND_SUBMIT_BUTTON_SELECTOR).last
-    ok_button = page.locator('button:has-text("Ok"):visible').first
     raise_for_http_forbidden(page)
-    if appointment_form_visible(page) or ok_button.is_visible():
+    if post_captcha_destination_visible(page):
         logger.info(
             "Post-CAPTCHA destination is already visible; background Submit is complete."
         )
@@ -630,27 +682,34 @@ def click_background_submit(page: Page) -> None:
         POST_SECOND_CAPTCHA_SETTLE_MS / 1_000,
     )
     page.wait_for_timeout(POST_SECOND_CAPTCHA_SETTLE_MS)
+    if wait_for_post_captcha_page_ready(page) == "destination":
+        logger.info(
+            "Post-CAPTCHA destination appeared while waiting for the overlay."
+        )
+        return
     try:
         background_submit.click(timeout=10_000)
-    except Exception:
+    except Exception as first_error:
         raise_for_http_forbidden(page)
-        if appointment_form_visible(page) or ok_button.is_visible():
+        state = wait_for_post_captcha_page_ready(page)
+        if state == "destination":
             logger.info(
                 "Background Submit reached its destination while the click "
                 "was still settling."
             )
             return
-        if site_error_page_visible(page):
-            raise RuntimeError(
-                "Target site returned its temporary processing-error page."
-            )
-        raise
+        logger.warning(
+            "Background Submit click failed after the overlay cleared and no "
+            "destination appeared; retrying it once. Error=%r",
+            first_error,
+        )
+        background_submit.click(timeout=10_000)
     logger.info("Clicked background Submit")
 
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         raise_for_http_forbidden(page)
-        if appointment_form_visible(page) or ok_button.is_visible():
+        if post_captcha_destination_visible(page):
             return
         if site_error_page_visible(page):
             raise RuntimeError(
@@ -660,10 +719,16 @@ def click_background_submit(page: Page) -> None:
 
     if background_submit.is_visible() and background_submit.is_enabled():
         logger.warning(
-            "Background Submit produced no visible transition; "
-            "waiting 2s and clicking it once more."
+            "Background Submit produced no visible transition; waiting for "
+            "any overlay to clear before one final state check."
         )
-        page.wait_for_timeout(2_000)
+        state = wait_for_post_captcha_page_ready(page)
+        if state == "destination":
+            return
+        logger.warning(
+            "No valid destination appeared after the overlay cleared; "
+            "retrying background Submit once."
+        )
         background_submit.click(timeout=10_000)
         logger.info("Retried background Submit once")
 

@@ -9,6 +9,7 @@ from flows.captcha_flow import (
     click_ok_dialog,
     click_selected_captcha_tiles,
     click_verify_selection,
+    wait_for_post_captcha_page_ready,
     login_captcha_succeeded,
     SITE_ERROR_PATTERN,
 )
@@ -245,6 +246,54 @@ class CaptchaPacingTests(TestCase):
 
         self.assertFalse(selected)
 
+    @patch(
+        "flows.captcha_flow.blocking_overlay_visible",
+        side_effect=(True, True, False),
+    )
+    @patch(
+        "flows.captcha_flow.post_captcha_destination_visible",
+        return_value=False,
+    )
+    @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
+    @patch("flows.captcha_flow.raise_for_http_forbidden")
+    def test_post_captcha_waits_for_overlay_to_clear(
+        self,
+        _forbidden,
+        _server_error,
+        _destination,
+        overlay_visible,
+    ):
+        page = MagicMock()
+
+        self.assertEqual(wait_for_post_captcha_page_ready(page), "ready")
+
+        self.assertEqual(overlay_visible.call_count, 3)
+        self.assertEqual(page.wait_for_timeout.call_count, 2)
+
+    @patch(
+        "flows.captcha_flow.blocking_overlay_visible",
+        return_value=True,
+    )
+    @patch(
+        "flows.captcha_flow.post_captcha_destination_visible",
+        side_effect=(False, True),
+    )
+    @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
+    @patch("flows.captcha_flow.raise_for_http_forbidden")
+    def test_post_captcha_destination_wins_while_overlay_is_visible(
+        self,
+        _forbidden,
+        _server_error,
+        _destination,
+        _overlay,
+    ):
+        page = MagicMock()
+
+        self.assertEqual(
+            wait_for_post_captcha_page_ready(page),
+            "destination",
+        )
+
 
 class HttpDiagnosticsTests(TestCase):
     def test_visible_403_heading_is_detected(self):
@@ -327,25 +376,27 @@ class HttpDiagnosticsTests(TestCase):
 
         self.assertFalse(login_captcha_succeeded(page))
 
-    @patch("flows.captcha_flow.appointment_form_visible", return_value=False)
+    @patch(
+        "flows.captcha_flow.wait_for_post_captcha_page_ready",
+        side_effect=("ready", "destination"),
+    )
+    @patch("flows.captcha_flow.post_captcha_destination_visible", return_value=False)
     @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
     @patch("flows.captcha_flow.expect")
     def test_background_submit_accepts_modal_that_appears_during_click(
         self,
         _expect,
         _server_error,
-        _form_visible,
+        _destination,
+        _page_ready,
     ):
         page = MagicMock()
         background_submit = MagicMock()
-        ok_button = MagicMock()
-        page.locator.side_effect = [background_submit, ok_button]
+        page.locator.return_value = background_submit
         background_submit.last = background_submit
         background_submit.is_visible.return_value = True
         background_submit.is_enabled.return_value = True
         background_submit.click.side_effect = RuntimeError("intercepted")
-        ok_button.first = ok_button
-        ok_button.is_visible.side_effect = (False, True)
 
         click_background_submit(page)
 
