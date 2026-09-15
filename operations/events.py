@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterator
 
+from .database_writer import run_database_write
 from .models import ScraperEvent, ScraperRun
 
 
@@ -91,17 +92,19 @@ def record_scraper_event(
     if attempt_number is None and current_attempt is not None:
         attempt_number = current_attempt[1]
     try:
-        return ScraperEvent.objects.create(
-            run_id=run_id,
-            execution_id=execution_id,
-            event_type=event_type,
-            visa_sub_type=visa_sub_type,
-            attempt_number=attempt_number,
-            status=status,
-            reason_code=reason_code,
-            duration_ms=duration_ms,
-            message=message,
-            data=data or {},
+        return run_database_write(
+            lambda: ScraperEvent.objects.create(
+                run_id=run_id,
+                execution_id=execution_id,
+                event_type=event_type,
+                visa_sub_type=visa_sub_type,
+                attempt_number=attempt_number,
+                status=status,
+                reason_code=reason_code,
+                duration_ms=duration_ms,
+                message=message,
+                data=data or {},
+            )
         )
     except Exception:
         # Observability must never make the scraper fail.

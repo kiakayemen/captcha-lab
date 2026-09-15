@@ -1,12 +1,16 @@
+import asyncio
 import contextvars
 import logging
+import threading
 
-from django.test import TestCase
+from django.core.exceptions import SynchronousOnlyOperation
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from scraper.models import ScraperConfig
 
 from .events import bind_scraper_event_context, record_event_from_log, record_scraper_event
+from .database_writer import run_database_write
 from .models import ScraperEvent, ScraperRun, ScraperRunLog
 from .run_logging import ScraperRunDatabaseHandler
 from .services import (
@@ -129,3 +133,67 @@ class ScraperRunLoggingTests(TestCase):
 
         event = ScraperEvent.objects.get()
         self.assertEqual(event.run_id, self.run.pk)
+
+
+class AsyncSafeScraperObservabilityTests(TransactionTestCase):
+    def setUp(self):
+        self.run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            visa_sub_types=["Student Visa"],
+        )
+
+    def test_database_write_moves_out_of_async_context(self):
+        caller_thread = threading.get_ident()
+
+        def operation():
+            if threading.get_ident() == caller_thread:
+                raise SynchronousOnlyOperation("async context")
+            return threading.get_ident()
+
+        writer_thread = run_database_write(operation)
+
+        self.assertNotEqual(writer_thread, caller_thread)
+
+    def test_database_handler_persists_log_from_async_context(self):
+        handler = ScraperRunDatabaseHandler(str(self.run.pk))
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        async def emit_log():
+            handler.emit(
+                logging.LogRecord(
+                    name="captcha_lab",
+                    level=logging.INFO,
+                    pathname=__file__,
+                    lineno=1,
+                    msg="CAPTCHA telemetry: stage=verification",
+                    args=(),
+                    exc_info=None,
+                )
+            )
+
+        try:
+            asyncio.run(emit_log())
+        finally:
+            handler.close()
+
+        log = ScraperRunLog.objects.get()
+        self.assertEqual(
+            log.message,
+            "CAPTCHA telemetry: stage=verification",
+        )
+
+    def test_structured_event_persists_from_async_context(self):
+        async def create_event():
+            with bind_scraper_event_context(self.run):
+                return record_scraper_event(
+                    ScraperEvent.EventType.CAPTCHA_STAGE,
+                    status="succeeded",
+                    data={"stage": "verification"},
+                )
+
+        event = asyncio.run(create_event())
+
+        self.assertIsNotNone(event)
+        saved = ScraperEvent.objects.get()
+        self.assertEqual(saved.run_id, self.run.pk)
+        self.assertEqual(saved.data["stage"], "verification")

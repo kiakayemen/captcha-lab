@@ -8,6 +8,7 @@ from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
 
+from .database_writer import run_database_write
 from .models import (
     ScraperRun,
     ScraperRunLog,
@@ -32,46 +33,49 @@ class ScraperRunDatabaseHandler(
         self,
         record: logging.LogRecord,
     ) -> None:
+        message = self.format(record)
+
         try:
-            message = (
-                self.format(
-                    record
+            run_database_write(
+                lambda: self._save_log_and_heartbeat(
+                    level=record.levelname,
+                    message=message,
                 )
             )
-
-            ScraperRunLog.objects.create(
-                run_id=self.run_id,
-                level=record.levelname,
-                message=message,
-            )
-
-            record_event_from_log(message)
-
-            #
-            # Every meaningful scraper log acts as a heartbeat.
-            #
-            # If the worker/process disappears completely,
-            # this timestamp stops advancing.
-            #
-            ScraperRun.objects.filter(
-                pk=self.run_id,
-                status=(
-                    ScraperRun
-                    .Status
-                    .RUNNING
-                ),
-            ).update(
-                heartbeat_at=(
-                    timezone.now()
-                )
-            )
-
         except Exception:
             #
             # Logging must never be capable
             # of crashing the scraper.
             #
             pass
+
+        try:
+            # Keep lifecycle context changes on the scraper thread.  Any ORM
+            # write created by this parser uses the same safe writer path.
+            record_event_from_log(message)
+        except Exception:
+            pass
+
+    def _save_log_and_heartbeat(
+        self,
+        *,
+        level: str,
+        message: str,
+    ) -> None:
+        ScraperRunLog.objects.create(
+            run_id=self.run_id,
+            level=level,
+            message=message,
+        )
+
+        # Every meaningful scraper log acts as a heartbeat.  If the worker
+        # disappears completely, this timestamp stops advancing.
+        ScraperRun.objects.filter(
+            pk=self.run_id,
+            status=ScraperRun.Status.RUNNING,
+        ).update(
+            heartbeat_at=timezone.now()
+        )
 
 
 class ScraperRunFileHandler(
