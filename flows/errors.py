@@ -16,6 +16,12 @@ class HTTP403Forbidden(RuntimeError):
     pass
 
 
+class ServerUnavailable(RuntimeError):
+    """The target returned a server-side failure that must not be retried."""
+
+    pass
+
+
 def http_forbidden_page_visible(page: Page | None) -> bool:
     if page is None:
         return False

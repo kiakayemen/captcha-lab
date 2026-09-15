@@ -34,13 +34,14 @@ from .selectors import (
     SECOND_CAPTCHA_SUBMIT_SELECTOR,
     VERIFY_BUTTON_SELECTOR,
 )
-from .errors import raise_for_http_forbidden
+from .errors import ServerUnavailable, raise_for_http_forbidden
 
 
 logger = logging.getLogger("captcha_lab")
 PRELOADER_SELECTOR = "div.preloader"
 SITE_ERROR_PATTERN = re.compile(
-    r"An error occurr?ed while processing your request",
+    r"(?:An error occurr?ed while processing your request|"
+    r"(?:server|service)\s+(?:is\s+)?(?:temporarily\s+)?unavailable)",
     re.IGNORECASE,
 )
 CAPTCHA_PRE_CLICK_SETTLE_MS = 1_500
@@ -122,7 +123,7 @@ def wait_for_post_captcha_page_ready(
     while time.monotonic() < deadline:
         raise_for_http_forbidden(page)
         if site_error_page_visible(page):
-            raise RuntimeError(
+            raise ServerUnavailable(
                 "Target site returned its temporary processing-error page."
             )
         if post_captcha_destination_visible(page):
@@ -559,7 +560,7 @@ def click_nav_book_new_appointment(page: Page) -> None:
     while time.monotonic() < deadline:
         raise_for_http_forbidden(page)
         if site_error_page_visible(page):
-            raise RuntimeError(
+            raise ServerUnavailable(
                 "Target site returned its temporary processing-error page."
             )
         if nav_link.is_visible():
@@ -625,7 +626,7 @@ def click_ok_dialog(page: Page) -> bool:
             )
             return False
         if site_error_page_visible(page):
-            raise RuntimeError(
+            raise ServerUnavailable(
                 "Target site returned its temporary processing-error page."
             )
         if ok_button.is_visible() and ok_button.is_enabled():
@@ -672,7 +673,7 @@ def click_background_submit(page: Page) -> None:
         )
         return
     if site_error_page_visible(page):
-        raise RuntimeError(
+        raise ServerUnavailable(
             "Target site returned its temporary processing-error page."
         )
     expect(background_submit).to_be_visible(timeout=30_000)
@@ -712,7 +713,7 @@ def click_background_submit(page: Page) -> None:
         if post_captcha_destination_visible(page):
             return
         if site_error_page_visible(page):
-            raise RuntimeError(
+            raise ServerUnavailable(
                 "Target site returned its temporary processing-error page."
             )
         page.wait_for_timeout(250)

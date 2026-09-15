@@ -16,6 +16,7 @@ from flows.captcha_flow import (
 from flows.appointment_flow import _select_kendo_option
 from flows.errors import (
     HTTP403Forbidden,
+    ServerUnavailable,
     http_forbidden_page_visible,
     track_http_forbidden_responses,
 )
@@ -202,6 +203,12 @@ class CaptchaPacingTests(TestCase):
         )
 
         self.assertIsNotNone(SITE_ERROR_PATTERN.search(message))
+
+    def test_explicit_server_unavailable_is_classified_as_server_error(self):
+        self.assertIsNotNone(SITE_ERROR_PATTERN.search("Server is unavailable"))
+        self.assertIsNotNone(
+            SITE_ERROR_PATTERN.search("Service temporarily unavailable")
+        )
 
     @patch(
         "flows.appointment_flow._find_visible_dropdown_container",
@@ -580,6 +587,7 @@ class FailureChainTests(TestCase):
             solve_attempt.call_args_list[0].args[0],
             page,
         )
+
         self.assertIs(
             solve_attempt.call_args_list[1].args[0],
             page,
@@ -594,6 +602,21 @@ class FailureChainTests(TestCase):
         page.wait_for_timeout.assert_called_once_with(
             SECOND_CAPTCHA_RETRY_SETTLE_MS
         )
+
+    @patch(
+        "scraper.service._run_second_captcha_attempt",
+        side_effect=ServerUnavailable("server unavailable"),
+    )
+    def test_server_unavailable_does_not_retry_second_captcha(self, solve_attempt):
+        with self.assertRaises(ServerUnavailable):
+            run_second_captcha_step(
+                MagicMock(),
+                gpu=False,
+                output_dir=MagicMock(),
+                reader=MagicMock(),
+            )
+
+        solve_attempt.assert_called_once()
 
     @patch(
         "scraper.service._run_login_captcha_attempt",

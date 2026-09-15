@@ -11,7 +11,7 @@ from .selectors import (
     NO_APPOINTMENTS_HEADER_SELECTOR,
     NO_APPOINTMENTS_MODAL_SELECTOR,
 )
-from .errors import HTTP403Forbidden, raise_for_http_forbidden
+from .errors import HTTP403Forbidden, ServerUnavailable, raise_for_http_forbidden
 
 
 logger = logging.getLogger("captcha_lab")
@@ -100,7 +100,7 @@ def _find_visible_dropdown_container(
             exact=False,
         ).first
         if error_page.is_visible():
-            raise RuntimeError(
+            raise ServerUnavailable(
                 "Target site returned its temporary processing-error page."
             )
 
