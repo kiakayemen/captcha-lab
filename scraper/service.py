@@ -55,7 +55,6 @@ from flows.login_flow import (
 from flows.errors import (
     HTTP403Forbidden,
     HTTP_FORBIDDEN_MESSAGE,
-    ServerUnavailable,
     http_forbidden_page_visible,
     http_forbidden_response_state,
     track_http_forbidden_responses,
@@ -240,7 +239,7 @@ def wait_for_login_captcha_outcome(page) -> str:
         if http_forbidden_page_visible(page):
             raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
         if site_error_page_visible(page):
-            raise ServerUnavailable(
+            raise RuntimeError(
                 "Target site returned its temporary processing-error page."
             )
         if login_captcha_invalid(page):
@@ -485,7 +484,7 @@ def restart_unclear_login_captcha(page) -> bool:
     if http_forbidden_page_visible(page):
         raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
     if site_error_page_visible(page):
-        raise ServerUnavailable(
+        raise RuntimeError(
             "Target site returned its temporary processing-error page."
         )
 
@@ -793,7 +792,7 @@ def run_second_captcha_step(
                 reader=reader,
                 attempt_number=attempt_number,
             )
-        except (HTTP403Forbidden, ServerUnavailable):
+        except HTTP403Forbidden:
             raise
         except (PlaywrightTimeoutError, AssertionError, RuntimeError) as error:
             page_state = inspect_page_state(page)
@@ -1116,7 +1115,7 @@ def _run_second_captcha_attempt(
         if page_state.get("http_403"):
             raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE) from exc
         if page_state.get("server_error"):
-            raise ServerUnavailable(
+            raise RuntimeError(
                 "Target site returned its temporary processing-error page."
             ) from exc
         if any(
@@ -1684,8 +1683,7 @@ def _run_single_subtype_attempt(
 
             detected_status = (
                 ScraperStatus.SERVER_ERROR
-                if isinstance(error, ServerUnavailable)
-                or page_state.get("server_error")
+                if page_state.get("server_error")
                 else ScraperStatus.NO_APPOINTMENT
                 if page_state.get("no_appointment")
                 else ScraperStatus.FAILED
@@ -1785,8 +1783,7 @@ def _run_single_subtype_attempt(
 
             detected_status = (
                 ScraperStatus.SERVER_ERROR
-                if isinstance(error, ServerUnavailable)
-                or page_state.get("server_error")
+                if page_state.get("server_error")
                 else ScraperStatus.NO_APPOINTMENT
                 if page_state.get("no_appointment")
                 else ScraperStatus.FAILED
