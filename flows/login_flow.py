@@ -5,6 +5,7 @@ import logging
 from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from config import BLS_EMAIL
+from .errors import raise_for_http_forbidden
 from .selectors import EMAIL_INPUT_SELECTOR, LOGIN_FORM_SELECTOR, VERIFY_BUTTON_SELECTOR
 
 
@@ -12,10 +13,15 @@ logger = logging.getLogger("captcha_lab")
 
 
 def submit_email(page: Page, email: str = BLS_EMAIL) -> None:
+    raise_for_http_forbidden(page)
     logger.info("Waiting for the login form...")
 
     form = page.locator(LOGIN_FORM_SELECTOR)
-    expect(form).to_be_visible(timeout=60_000)
+    try:
+        expect(form).to_be_visible(timeout=60_000)
+    except Exception:
+        raise_for_http_forbidden(page)
+        raise
 
     logger.info("Waiting for the visible email field...")
     email_input = page.locator(EMAIL_INPUT_SELECTOR)
@@ -45,6 +51,7 @@ def submit_email(page: Page, email: str = BLS_EMAIL) -> None:
             wait_until="domcontentloaded",
         )
     except PlaywrightTimeoutError:
+        raise_for_http_forbidden(page)
         page.screenshot(path="login_submit_timeout.png", full_page=True)
         logger.exception(
             "The URL did not change after clicking Verify. "

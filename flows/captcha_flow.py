@@ -8,7 +8,13 @@ import time
 
 import cv2
 import numpy as np
-from playwright.sync_api import FrameLocator, Locator, Page, expect
+from playwright.sync_api import (
+    FrameLocator,
+    Locator,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    expect,
+)
 from extract_tiles import (
     bounding_rectangle,
     crop_box,
@@ -28,6 +34,7 @@ from .selectors import (
     SECOND_CAPTCHA_SUBMIT_SELECTOR,
     VERIFY_BUTTON_SELECTOR,
 )
+from .errors import raise_for_http_forbidden
 
 
 logger = logging.getLogger("captcha_lab")
@@ -49,6 +56,7 @@ def wait_for_preloader_to_clear(page: Page, timeout: int = 60_000) -> None:
     try:
         expect(preloader).to_be_hidden(timeout=timeout)
     except Exception as exc:
+        raise_for_http_forbidden(page)
         if preloader.is_visible():
             raise RuntimeError(
                 "Loading overlay remained visible and continued blocking the page."
@@ -460,11 +468,20 @@ def click_captcha_tile(page: Page, tile: Locator, tile_number: int) -> None:
 
 
 def click_verify_selection(page: Page) -> None:
+    raise_for_http_forbidden(page)
     verify_button = page.locator(VERIFY_BUTTON_SELECTOR)
     expect(verify_button).to_be_visible(timeout=30_000)
     expect(verify_button).to_be_enabled(timeout=30_000)
     verify_button.scroll_into_view_if_needed(timeout=10_000)
-    verify_button.click(timeout=10_000)
+    try:
+        verify_button.click(timeout=10_000)
+    except PlaywrightTimeoutError:
+        raise_for_http_forbidden(page)
+        logger.warning(
+            "Verify Selection click timed out while navigation was settling; "
+            "continuing with post-click state detection."
+        )
+        return
     logger.info("Clicked Verify Selection")
 
 
@@ -487,6 +504,7 @@ def click_nav_book_new_appointment(page: Page) -> None:
     nav_link = page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
+        raise_for_http_forbidden(page)
         if site_error_page_visible(page):
             raise RuntimeError(
                 "Target site returned its temporary processing-error page."
@@ -499,7 +517,15 @@ def click_nav_book_new_appointment(page: Page) -> None:
             "Book New Appointment link did not become visible within 60 seconds."
         )
     expect(nav_link).to_be_enabled(timeout=60_000)
-    nav_link.click(timeout=30_000)
+    try:
+        nav_link.click(timeout=30_000)
+    except PlaywrightTimeoutError:
+        raise_for_http_forbidden(page)
+        logger.warning(
+            "Book New Appointment click timed out while navigation was "
+            "settling; continuing with destination-state detection."
+        )
+        return
     logger.info("Clicked navbar Book New Appointment")
 
 
@@ -539,6 +565,7 @@ def click_ok_dialog(page: Page) -> bool:
     deadline = time.monotonic() + 30
 
     while time.monotonic() < deadline:
+        raise_for_http_forbidden(page)
         if appointment_form_visible(page):
             logger.info(
                 "Appointment form is already visible; no disclaimer dialog is required."
@@ -562,6 +589,7 @@ def click_ok_dialog(page: Page) -> bool:
     try:
         ok_button.click(timeout=10_000)
     except Exception:
+        raise_for_http_forbidden(page)
         logger.warning("Normal OK click failed; falling back to DOM click.")
         ok_button.evaluate("(element) => element.click()")
     modal = page.locator('div[role="dialog"]:visible').first
@@ -585,6 +613,7 @@ def click_submit_selection(page: Page) -> None:
 def click_background_submit(page: Page) -> None:
     background_submit = page.locator(BACKGROUND_SUBMIT_BUTTON_SELECTOR).last
     ok_button = page.locator('button:has-text("Ok"):visible').first
+    raise_for_http_forbidden(page)
     if appointment_form_visible(page) or ok_button.is_visible():
         logger.info(
             "Post-CAPTCHA destination is already visible; background Submit is complete."
@@ -604,6 +633,7 @@ def click_background_submit(page: Page) -> None:
     try:
         background_submit.click(timeout=10_000)
     except Exception:
+        raise_for_http_forbidden(page)
         if appointment_form_visible(page) or ok_button.is_visible():
             logger.info(
                 "Background Submit reached its destination while the click "
@@ -619,6 +649,7 @@ def click_background_submit(page: Page) -> None:
 
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
+        raise_for_http_forbidden(page)
         if appointment_form_visible(page) or ok_button.is_visible():
             return
         if site_error_page_visible(page):

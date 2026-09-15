@@ -11,6 +11,7 @@ from .selectors import (
     NO_APPOINTMENTS_HEADER_SELECTOR,
     NO_APPOINTMENTS_MODAL_SELECTOR,
 )
+from .errors import HTTP403Forbidden, raise_for_http_forbidden
 
 
 logger = logging.getLogger("captcha_lab")
@@ -63,6 +64,7 @@ def _find_visible_dropdown_container(
     last_count = 0
 
     while time.monotonic() < deadline:
+        raise_for_http_forbidden(page)
         containers = page.locator("div.mb-3:visible")
         matches = []
 
@@ -229,6 +231,8 @@ def _select_kendo_option(
         expect(widget).to_be_visible(
             timeout=interaction_timeout
         )
+    except HTTP403Forbidden:
+        raise
     except Exception as error:
         if not optional:
             raise
@@ -334,7 +338,10 @@ def _select_kendo_option(
                 timeout=interaction_timeout,
             )
             return True
+        except HTTP403Forbidden:
+            raise
         except Exception as error:
+            raise_for_http_forbidden(page)
             last_error = error
             _log(
                 f'attempt {attempt}/{max_attempts} failed for "{label_text}": '

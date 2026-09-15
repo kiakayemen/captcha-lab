@@ -51,7 +51,15 @@ from flows.login_flow import (
     fill_visible_password,
     submit_email,
 )
+from flows.errors import (
+    HTTP403Forbidden,
+    HTTP_FORBIDDEN_MESSAGE,
+    http_forbidden_page_visible,
+    http_forbidden_response_state,
+    track_http_forbidden_responses,
+)
 from flows.selectors import (
+    BACKGROUND_SUBMIT_BUTTON_SELECTOR,
     CAPTCHA_INSTRUCTION_PATTERN,
 )
 from notifications import (
@@ -131,6 +139,7 @@ def inspect_page_state(page) -> dict[str, bool]:
     if page is None:
         return {}
     checks = {
+        "http_403": lambda: http_forbidden_page_visible(page),
         "server_error": lambda: site_error_page_visible(page),
         "no_appointment": lambda: no_appointments_dialog_visible(page),
         "appointment_form": lambda: page.locator(
@@ -140,14 +149,58 @@ def inspect_page_state(page) -> dict[str, bool]:
         "disclaimer_ok": lambda: page.locator(
             'button:has-text("Ok"):visible'
         ).first.is_visible(),
+        "background_submit": lambda: page.locator(
+            BACKGROUND_SUBMIT_BUTTON_SELECTOR
+        ).last.is_visible(),
     }
     state: dict[str, bool] = {}
     for name, check in checks.items():
         try:
-            state[name] = bool(check())
+            state[name] = check() is True
         except Exception:
             state[name] = False
     return state
+
+
+def record_detected_http_403(
+    *,
+    page,
+    context,
+    egress_ip_hash: str | None,
+    egress_lookup_error: str | None,
+    login_requested_at: float | None,
+) -> None:
+    state = http_forbidden_response_state(page)
+    if not state or state.get("diagnostics_recorded"):
+        return
+    response = state.get("response")
+    if response is None or context is None:
+        return
+    data = response_diagnostics(
+        response=response,
+        context=context,
+        account=BLS_EMAIL,
+        egress_ip_hash=egress_ip_hash,
+        egress_lookup_error=egress_lookup_error,
+        seconds_since_previous_login=(
+            time.monotonic() - login_requested_at
+            if login_requested_at is not None
+            else None
+        ),
+    )
+    data["response_url"] = state.get("url")
+    data["resource_type"] = state.get("resource_type")
+    record_scraper_event(
+        ScraperEvent.EventType.LOGIN_RESPONSE,
+        status="403",
+        reason_code="HTTP_403_WORKFLOW",
+        data=data,
+    )
+    logger.error(
+        "Workflow HTTP 403 response diagnostics=%s",
+        json.dumps(data, sort_keys=True),
+    )
+    state["diagnostics_recorded"] = True
 
 
 def failure_record(
@@ -175,6 +228,12 @@ def wait_for_login_captcha_outcome(page) -> str:
     deadline = time.monotonic() + LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS
 
     while time.monotonic() < deadline:
+        if http_forbidden_page_visible(page):
+            raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
         if login_captcha_invalid(page):
             return "rejected"
         if login_captcha_succeeded(page):
@@ -691,9 +750,29 @@ def run_second_captcha_step(
                 reader=reader,
                 attempt_number=attempt_number,
             )
+        except HTTP403Forbidden:
+            raise
         except (PlaywrightTimeoutError, AssertionError, RuntimeError) as error:
-            if site_error_page_visible(page):
+            page_state = inspect_page_state(page)
+            if page_state.get("http_403"):
+                raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE) from error
+            if page_state.get("server_error"):
                 raise
+            if any(
+                page_state.get(name)
+                for name in (
+                    "verified",
+                    "background_submit",
+                    "disclaimer_ok",
+                    "appointment_form",
+                )
+            ):
+                logger.info(
+                    "Second CAPTCHA click reached a valid downstream state; "
+                    "continuing without a browser retry. State=%s",
+                    page_state,
+                )
+                return
             if attempt_number == MAX_SECOND_CAPTCHA_ATTEMPTS:
                 raise RuntimeError(
                     "Second CAPTCHA could not be prepared after "
@@ -922,9 +1001,17 @@ def _run_second_captcha_attempt(
 
     submission_started_at = datetime.now(timezone.utc)
     submission_started = time.perf_counter()
-    click_submit_selection(
-        frame
-    )
+    try:
+        click_submit_selection(
+            frame
+        )
+    except PlaywrightTimeoutError:
+        if http_forbidden_page_visible(page):
+            raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
+        logger.warning(
+            "Second CAPTCHA submit click timed out while its result was "
+            "settling; inspecting verification state before retrying."
+        )
     record_captcha_stage(
         captcha="second",
         stage="submission",
@@ -982,6 +1069,37 @@ def _run_second_captcha_attempt(
                 attempt_number,
             )
             return False
+        page_state = inspect_page_state(page)
+        if page_state.get("http_403"):
+            raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE) from exc
+        if page_state.get("server_error"):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            ) from exc
+        if any(
+            page_state.get(name)
+            for name in (
+                "background_submit",
+                "disclaimer_ok",
+                "appointment_form",
+            )
+        ):
+            record_captcha_stage(
+                captcha="second",
+                stage="verification",
+                attempt_number=attempt_number,
+                started_at=verification_started_at,
+                duration_ms=round(
+                    (time.perf_counter() - verification_started) * 1000
+                ),
+                status="advanced",
+            )
+            logger.info(
+                "Second CAPTCHA advanced directly to a valid downstream "
+                "state. State=%s",
+                page_state,
+            )
+            return True
         record_captcha_stage(
             captcha="second",
             stage="verification",
@@ -1124,6 +1242,9 @@ def _run_single_subtype_attempt(
         browser = None
         context = None
         page = None
+        egress_ip_hash = None
+        egress_lookup_error = None
+        login_requested_at = None
 
         try:
             check_stop_requested(should_stop)
@@ -1172,6 +1293,7 @@ def _run_single_subtype_attempt(
             egress_ip_hash, egress_lookup_error = resolve_egress_ip_hash(context)
 
             page = context.new_page()
+            track_http_forbidden_responses(page)
 
             logger.info(
                 "Opening login page: %s",
@@ -1463,6 +1585,14 @@ def _run_single_subtype_attempt(
 
         except PlaywrightTimeoutError as error:
             page_state = inspect_page_state(page)
+            if page_state.get("http_403"):
+                record_detected_http_403(
+                    page=page,
+                    context=context,
+                    egress_ip_hash=egress_ip_hash,
+                    egress_lookup_error=egress_lookup_error,
+                    login_requested_at=login_requested_at,
+                )
             screenshot_path = (
                 config.output_dir
                 / visa_sub_type
@@ -1516,6 +1646,16 @@ def _run_single_subtype_attempt(
                 if page_state.get("no_appointment")
                 else ScraperStatus.FAILED
             )
+            error_type = (
+                "HTTP403Forbidden"
+                if page_state.get("http_403")
+                else type(error).__name__
+            )
+            error_message = (
+                HTTP_FORBIDDEN_MESSAGE
+                if page_state.get("http_403")
+                else str(error)
+            )
             return ScraperResult(
                 status=(
                     detected_status
@@ -1530,12 +1670,8 @@ def _run_single_subtype_attempt(
                     else None
                 ),
                 visa_sub_type=visa_sub_type,
-                error_type=type(
-                    error
-                ).__name__,
-                error_message=str(
-                    error
-                ),
+                error_type=error_type,
+                error_message=error_message,
                 failure_screenshot=(
                     screenshot_path
                 ),
@@ -1549,6 +1685,14 @@ def _run_single_subtype_attempt(
             AssertionError,
         ) as error:
             page_state = inspect_page_state(page)
+            if page_state.get("http_403"):
+                record_detected_http_403(
+                    page=page,
+                    context=context,
+                    egress_ip_hash=egress_ip_hash,
+                    egress_lookup_error=egress_lookup_error,
+                    login_requested_at=login_requested_at,
+                )
             screenshot_path = (
                 config.output_dir
                 / visa_sub_type
@@ -1602,6 +1746,16 @@ def _run_single_subtype_attempt(
                 if page_state.get("no_appointment")
                 else ScraperStatus.FAILED
             )
+            error_type = (
+                "HTTP403Forbidden"
+                if page_state.get("http_403")
+                else type(error).__name__
+            )
+            error_message = (
+                HTTP_FORBIDDEN_MESSAGE
+                if page_state.get("http_403")
+                else str(error)
+            )
             return ScraperResult(
                 status=(
                     detected_status
@@ -1616,12 +1770,8 @@ def _run_single_subtype_attempt(
                     else None
                 ),
                 visa_sub_type=visa_sub_type,
-                error_type=type(
-                    error
-                ).__name__,
-                error_message=str(
-                    error
-                ),
+                error_type=error_type,
+                error_message=error_message,
                 failure_screenshot=(
                     screenshot_path
                 ),

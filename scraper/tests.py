@@ -8,10 +8,16 @@ from flows.captcha_flow import (
     click_background_submit,
     click_ok_dialog,
     click_selected_captcha_tiles,
+    click_verify_selection,
     login_captcha_succeeded,
     SITE_ERROR_PATTERN,
 )
 from flows.appointment_flow import _select_kendo_option
+from flows.errors import (
+    HTTP403Forbidden,
+    http_forbidden_page_visible,
+    track_http_forbidden_responses,
+)
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
     inspect_page_state,
@@ -20,6 +26,7 @@ from scraper.service import (
     record_captcha_stage,
     run_scraper,
     subtype_retry_delay_seconds,
+    wait_for_login_captcha_outcome,
 )
 from scraper.http_diagnostics import response_diagnostics
 from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
@@ -239,6 +246,53 @@ class CaptchaPacingTests(TestCase):
 
 
 class HttpDiagnosticsTests(TestCase):
+    def test_visible_403_heading_is_detected(self):
+        page = MagicMock()
+        page.get_by_role.return_value.first.is_visible.return_value = True
+
+        self.assertTrue(http_forbidden_page_visible(page))
+
+    def test_workflow_403_response_is_remembered(self):
+        page = MagicMock()
+        track_http_forbidden_responses(page)
+        response_handler = page.on.call_args.args[1]
+        response = MagicMock()
+        response.status = 403
+        response.url = "https://example.test/visatypeverification"
+        response.request.resource_type = "document"
+
+        response_handler(response)
+
+        self.assertTrue(http_forbidden_page_visible(page))
+        self.assertEqual(
+            page._captcha_lab_http_403_response["url"],
+            response.url,
+        )
+
+    def test_login_captcha_outcome_terminates_on_403(self):
+        page = MagicMock()
+        page.get_by_role.return_value.first.is_visible.return_value = True
+
+        with self.assertRaises(HTTP403Forbidden):
+            wait_for_login_captcha_outcome(page)
+
+    @patch("flows.captcha_flow.raise_for_http_forbidden")
+    @patch("flows.captcha_flow.expect")
+    def test_verify_click_navigation_timeout_continues_to_state_detection(
+        self,
+        _expect,
+        _raise_forbidden,
+    ):
+        page = MagicMock()
+        verify_button = page.locator.return_value
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        verify_button.click.side_effect = PlaywrightTimeoutError("navigation")
+
+        click_verify_selection(page)
+
+        verify_button.click.assert_called_once_with(timeout=10_000)
+
     def test_login_captcha_url_check_is_case_insensitive(self):
         page = MagicMock()
         page.url = "https://example.test/Global/NewCaptcha/LoginCaptcha?data=x"
@@ -420,8 +474,14 @@ class FailureChainTests(TestCase):
         page.locator.return_value.last.click.assert_not_called()
 
     @patch("scraper.service.site_error_page_visible", return_value=True)
+    @patch("scraper.service.http_forbidden_page_visible", return_value=False)
     @patch("scraper.service.no_appointments_dialog_visible", return_value=False)
-    def test_page_state_checks_server_error_before_retry(self, _no_slots, _error):
+    def test_page_state_checks_server_error_before_retry(
+        self,
+        _no_slots,
+        _forbidden,
+        _error,
+    ):
         state = inspect_page_state(MagicMock())
 
         self.assertTrue(state["server_error"])
@@ -533,6 +593,49 @@ class FailureChainTests(TestCase):
             timeout=60_000,
         )
         reopen_captcha.assert_called_once_with(page)
+
+    @patch(
+        "scraper.service.inspect_page_state",
+        return_value={"appointment_form": True},
+    )
+    @patch(
+        "scraper.service._run_second_captcha_attempt",
+        side_effect=AssertionError("verification label disappeared"),
+    )
+    def test_second_captcha_timeout_accepts_valid_downstream_state(
+        self,
+        solve_attempt,
+        _page_state,
+    ):
+        page = MagicMock()
+
+        run_second_captcha_step(
+            page,
+            gpu=False,
+            output_dir=MagicMock(),
+            reader=MagicMock(),
+        )
+
+        solve_attempt.assert_called_once()
+        page.reload.assert_not_called()
+
+    @patch(
+        "scraper.service._run_second_captcha_attempt",
+        side_effect=HTTP403Forbidden("blocked"),
+    )
+    def test_second_captcha_403_never_reloads_or_retries(self, solve_attempt):
+        page = MagicMock()
+
+        with self.assertRaises(HTTP403Forbidden):
+            run_second_captcha_step(
+                page,
+                gpu=False,
+                output_dir=MagicMock(),
+                reader=MagicMock(),
+            )
+
+        solve_attempt.assert_called_once()
+        page.reload.assert_not_called()
 
     @patch(
         "scraper.service._run_second_captcha_attempt",
