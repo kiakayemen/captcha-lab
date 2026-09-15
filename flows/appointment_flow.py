@@ -51,12 +51,15 @@ def _describe_container(container: Locator, label_text: str) -> None:
 def _find_visible_dropdown_container(
     page: Page,
     label_text: str,
-) -> Locator:
+    *,
+    timeout_seconds: float = 30,
+    required: bool = True,
+) -> Locator | None:
     pattern = re.compile(
         rf"^\s*{re.escape(label_text)}\s*\*?\s*$",
         re.IGNORECASE,
     )
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + timeout_seconds
     last_count = 0
 
     while time.monotonic() < deadline:
@@ -104,9 +107,11 @@ def _find_visible_dropdown_container(
     _log(
         f'expected one visible "{label_text}" dropdown, found {last_count}'
     )
+    if not required and last_count == 0:
+        return None
     raise RuntimeError(
         f'Expected one visible "{label_text}" dropdown, '
-        f"found {last_count} after waiting 30 seconds"
+        f"found {last_count} after waiting {timeout_seconds:g} seconds"
     )
 
 
@@ -118,6 +123,10 @@ def _get_visible_dropdown_id(
         page,
         label_text,
     )
+    if container is None:
+        raise RuntimeError(
+            f'Could not find required dropdown "{label_text}"'
+        )
     input_id = container.locator(
         'input[data-role="dropdownlist"]'
     ).get_attribute("id")
@@ -189,33 +198,55 @@ def _select_kendo_option(
     page: Page,
     label_text: str,
     option_text: str,
-) -> None:
+    *,
+    optional: bool = False,
+) -> bool:
     container = _find_visible_dropdown_container(
         page,
         label_text,
+        timeout_seconds=2 if optional else 30,
+        required=not optional,
     )
-    hidden_input = container.locator(
-        'input[data-role="dropdownlist"]'
-    )
-
-    input_id = hidden_input.get_attribute("id")
-
-    if not input_id:
-        raise RuntimeError(
-            f'Visible "{label_text}" dropdown has no ID'
+    if container is None:
+        _log(f'optional dropdown "{label_text}" is absent; leaving it unset')
+        return False
+    interaction_timeout = 3_000 if optional else 10_000
+    try:
+        hidden_input = container.locator(
+            'input[data-role="dropdownlist"]'
         )
 
-    widget = container.locator(
-        "span.k-widget.k-dropdown:visible"
-    )
-    expect(widget).to_be_visible(timeout=30_000)
+        input_id = hidden_input.get_attribute("id")
+
+        if not input_id:
+            raise RuntimeError(
+                f'Visible "{label_text}" dropdown has no ID'
+            )
+
+        widget = container.locator(
+            "span.k-widget.k-dropdown:visible"
+        )
+        expect(widget).to_be_visible(
+            timeout=interaction_timeout
+        )
+    except Exception as error:
+        if not optional:
+            raise
+        logger.warning(
+            '[appointment] Optional dropdown "%s" is unusable; '
+            "continuing without it. Error=%r",
+            label_text,
+            error,
+        )
+        return False
+
     popup = page.locator(f"#{input_id}-list")
     option_pattern = re.compile(
         rf"^\s*{re.escape(option_text)}\s*$",
         re.IGNORECASE,
     )
 
-    max_attempts = 5
+    max_attempts = 1 if optional else 5
     last_error: Exception | None = None
 
     for attempt in range(1, max_attempts + 1):
@@ -224,19 +255,19 @@ def _select_kendo_option(
             f"(id={input_id}, option={option_text!r})"
         )
         try:
-            widget.scroll_into_view_if_needed(timeout=10_000)
+            widget.scroll_into_view_if_needed(timeout=interaction_timeout)
             _log(f'clicking "{label_text}" dropdown handle')
-            widget.click(timeout=10_000)
+            widget.click(timeout=interaction_timeout)
             page.wait_for_timeout(250)
             if not popup.is_visible():
                 _log(
                     f"popup #{input_id}-list still hidden after click, "
                     f'retrying click for "{label_text}"'
                 )
-                widget.click(timeout=10_000)
+                widget.click(timeout=interaction_timeout)
                 page.wait_for_timeout(250)
             _log(f"waiting for popup #{input_id}-list to become visible")
-            expect(popup).to_be_visible(timeout=10_000)
+            expect(popup).to_be_visible(timeout=interaction_timeout)
             page.wait_for_timeout(750)
             _log(f"popup #{input_id}-list visible; waiting briefly before reading options")
 
@@ -255,17 +286,17 @@ def _select_kendo_option(
                 raise RuntimeError(
                     f'Option {option_text!r} not visible yet in "{label_text}"'
                 )
-            option.wait_for(state="visible", timeout=10_000)
+            option.wait_for(state="visible", timeout=interaction_timeout)
             _log(f'clicking option {option_text!r} for "{label_text}"')
-            option.click(timeout=10_000)
+            option.click(timeout=interaction_timeout)
 
-            expect(popup).to_be_hidden(timeout=10_000)
+            expect(popup).to_be_hidden(timeout=interaction_timeout)
 
             selected_text = widget.locator("span.k-input")
 
             expect(selected_text).to_have_text(
                 option_pattern,
-                timeout=10_000,
+                timeout=interaction_timeout,
             )
             _log(f'"{label_text}" selected text confirmed as {option_text!r}')
             page.wait_for_function(
@@ -300,9 +331,9 @@ def _select_kendo_option(
                     "id": input_id,
                     "expected": option_text,
                 },
-                timeout=10_000,
+                timeout=interaction_timeout,
             )
-            return
+            return True
         except Exception as error:
             last_error = error
             _log(
@@ -311,6 +342,16 @@ def _select_kendo_option(
             )
             if attempt < max_attempts:
                 page.wait_for_timeout(500)
+
+    if optional:
+        logger.warning(
+            '[appointment] Optional dropdown "%s" could not be set to %r; '
+            "continuing without it. Error=%r",
+            label_text,
+            option_text,
+            last_error,
+        )
+        return False
 
     raise RuntimeError(
         f'Failed to select "{option_text}" for "{label_text}" after '
@@ -322,12 +363,15 @@ def _fill_label_driven_dropdown(
     page: Page,
     label_text: str,
     option_text: str,
-) -> None:
+    *,
+    optional: bool = False,
+) -> bool:
     _log(f'finding label "{label_text}"')
-    _select_kendo_option(
+    return _select_kendo_option(
         page,
         label_text,
         option_text,
+        optional=optional,
     )
 
 
@@ -349,6 +393,7 @@ def fill_appointment_form(
         page,
         "Appointment Category",
         APPOINTMENT_CATEGORY,
+        optional=True,
     )
 
     _wait_for_kendo_data(

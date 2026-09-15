@@ -134,7 +134,7 @@ def inspect_page_state(page) -> dict[str, bool]:
         "server_error": lambda: site_error_page_visible(page),
         "no_appointment": lambda: no_appointments_dialog_visible(page),
         "appointment_form": lambda: page.locator(
-            'label.form-label:has-text("Appointment Category")'
+            'label.form-label:has-text("Jurisdiction")'
         ).first.is_visible(),
         "verified": lambda: page.get_by_text("Verified!", exact=True).first.is_visible(),
         "disclaimer_ok": lambda: page.locator(

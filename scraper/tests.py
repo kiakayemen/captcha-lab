@@ -11,6 +11,7 @@ from flows.captcha_flow import (
     login_captcha_succeeded,
     SITE_ERROR_PATTERN,
 )
+from flows.appointment_flow import _select_kendo_option
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
     inspect_page_state,
@@ -192,6 +193,49 @@ class CaptchaPacingTests(TestCase):
         )
 
         self.assertIsNotNone(SITE_ERROR_PATTERN.search(message))
+
+    @patch(
+        "flows.appointment_flow._find_visible_dropdown_container",
+        return_value=None,
+    )
+    def test_missing_optional_appointment_category_is_skipped(self, find_container):
+        page = MagicMock()
+
+        selected = _select_kendo_option(
+            page,
+            "Appointment Category",
+            "Normal",
+            optional=True,
+        )
+
+        self.assertFalse(selected)
+        find_container.assert_called_once_with(
+            page,
+            "Appointment Category",
+            timeout_seconds=2,
+            required=False,
+        )
+
+    @patch("flows.appointment_flow.expect", side_effect=AssertionError("unusable"))
+    @patch("flows.appointment_flow._find_visible_dropdown_container")
+    def test_unusable_optional_appointment_category_is_skipped(
+        self,
+        find_container,
+        _expect,
+    ):
+        page = MagicMock()
+        container = MagicMock()
+        container.locator.return_value.get_attribute.return_value = "category-id"
+        find_container.return_value = container
+
+        selected = _select_kendo_option(
+            page,
+            "Appointment Category",
+            "Normal",
+            optional=True,
+        )
+
+        self.assertFalse(selected)
 
 
 class HttpDiagnosticsTests(TestCase):

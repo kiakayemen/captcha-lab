@@ -66,7 +66,7 @@ def site_error_page_visible(page: Page) -> bool:
 def appointment_form_visible(page: Page) -> bool:
     try:
         return (
-            page.locator('label.form-label:has-text("Appointment Category")')
+            page.locator('label.form-label:has-text("Jurisdiction")')
             .first
             .is_visible()
         )
