@@ -17,6 +17,7 @@ from .services import (
     ScraperRunAlreadyStarted,
     active_scraper_runs,
     execute_scraper_run,
+    recover_stale_scraper_runs,
     request_scraper_stop,
 )
 
@@ -124,6 +125,18 @@ class ScraperRunLoggingTests(TestCase):
         self.assertEqual(log.run_id, self.run.pk)
         self.assertEqual(log.message, "Chromium browser launched.")
 
+    def test_database_handler_heartbeats_after_stop_request(self):
+        old_heartbeat = timezone.now() - timezone.timedelta(minutes=10)
+        self.run.status = ScraperRun.Status.STOP_REQUESTED
+        self.run.heartbeat_at = old_heartbeat
+        self.run.save(update_fields=["status", "heartbeat_at"])
+
+        handler = ScraperRunDatabaseHandler(str(self.run.pk))
+        handler._save_log_and_heartbeat(level="INFO", message="Stopping.")
+
+        self.run.refresh_from_db()
+        self.assertGreater(self.run.heartbeat_at, old_heartbeat)
+
     def test_structured_event_keeps_context_across_contextvar_switch(self):
         with bind_scraper_event_context(self.run):
             contextvars.Context().run(
@@ -134,6 +147,39 @@ class ScraperRunLoggingTests(TestCase):
         event = ScraperEvent.objects.get()
         self.assertEqual(event.run_id, self.run.pk)
 
+
+class StaleStopRecoveryTests(TestCase):
+    def test_stale_stop_request_is_closed_and_no_longer_active(self):
+        old_time = timezone.now() - timezone.timedelta(minutes=6)
+        run = ScraperRun.objects.create(
+            status=ScraperRun.Status.STOP_REQUESTED,
+            trigger=ScraperRun.Trigger.MANUAL,
+            started_at=old_time,
+            heartbeat_at=old_time,
+            stop_requested_at=old_time,
+        )
+
+        self.assertEqual(recover_stale_scraper_runs(), 1)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, ScraperRun.Status.STOPPED)
+        self.assertIsNotNone(run.finished_at)
+        self.assertIsNotNone(run.stopped_at)
+        self.assertFalse(active_scraper_runs().filter(pk=run.pk).exists())
+
+    def test_live_stop_request_remains_active(self):
+        run = ScraperRun.objects.create(
+            status=ScraperRun.Status.STOP_REQUESTED,
+            trigger=ScraperRun.Trigger.MANUAL,
+            started_at=timezone.now() - timezone.timedelta(minutes=6),
+            heartbeat_at=timezone.now(),
+            stop_requested_at=timezone.now() - timezone.timedelta(minutes=6),
+        )
+
+        self.assertEqual(recover_stale_scraper_runs(), 0)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, ScraperRun.Status.STOP_REQUESTED)
 
 class AsyncSafeScraperObservabilityTests(TransactionTestCase):
     def setUp(self):

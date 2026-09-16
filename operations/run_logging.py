@@ -72,7 +72,10 @@ class ScraperRunDatabaseHandler(
         # disappears completely, this timestamp stops advancing.
         ScraperRun.objects.filter(
             pk=self.run_id,
-            status=ScraperRun.Status.RUNNING,
+            status__in=(
+                ScraperRun.Status.RUNNING,
+                ScraperRun.Status.STOP_REQUESTED,
+            ),
         ).update(
             heartbeat_at=timezone.now()
         )

@@ -29,6 +29,10 @@ RUNNING_STALE_AFTER = timedelta(
     minutes=60
 )
 
+STOP_REQUESTED_STALE_AFTER = timedelta(
+    minutes=5
+)
+
 
 class ScraperRunAlreadyStarted(RuntimeError):
     """Raised when duplicate task delivery targets one execution row."""
@@ -557,7 +561,7 @@ def execute_scraper_run(
 
 def recover_stale_scraper_runs() -> int:
     """
-    Mark abandoned PENDING/RUNNING jobs as FAILED.
+    Recover abandoned PENDING, RUNNING, and STOP_REQUESTED jobs.
 
     This handles cases such as:
     - Celery worker dies;
@@ -709,6 +713,44 @@ def recover_stale_scraper_runs() -> int:
             "scraper run. "
             "Run ID=%s | "
             "Last heartbeat=%s",
+            run.pk,
+            last_alive_at,
+        )
+
+    # A live worker keeps heartbeating while it cooperatively stops. If the
+    # heartbeat remains silent, the worker can no longer acknowledge the stop
+    # and the row must not block every future run forever.
+    stop_cutoff = now - STOP_REQUESTED_STALE_AFTER
+    stop_requested_runs = ScraperRun.objects.filter(
+        status=ScraperRun.Status.STOP_REQUESTED,
+    )
+
+    for run in stop_requested_runs:
+        last_alive_at = (
+            run.heartbeat_at
+            or run.stop_requested_at
+            or run.started_at
+        )
+        if last_alive_at is None or last_alive_at >= stop_cutoff:
+            continue
+
+        run.status = ScraperRun.Status.STOPPED
+        run.finished_at = now
+        run.stopped_at = now
+        if run.started_at:
+            run.duration_seconds = (now - run.started_at).total_seconds()
+        run.save(
+            update_fields=[
+                "status",
+                "finished_at",
+                "stopped_at",
+                "duration_seconds",
+            ]
+        )
+        recovered += 1
+        logger.warning(
+            "Recovered stale STOP_REQUESTED scraper run. "
+            "Run ID=%s | Last heartbeat=%s",
             run.pk,
             last_alive_at,
         )
