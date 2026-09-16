@@ -58,18 +58,18 @@ def worker_id() -> str:
     )
 
 
-def resolve_egress_ip_hash(context) -> tuple[str | None, str | None]:
-    """Resolve egress through the browser context so its proxy is honored."""
+def resolve_egress_ip(context) -> tuple[str | None, str | None, str | None]:
+    """Resolve the exact public egress IP through the browser proxy."""
     try:
         response = context.request.get(EGRESS_IP_URL, timeout=10_000)
         if not response.ok:
-            return None, f"http_{response.status}"
+            return None, None, f"http_{response.status}"
         address = str(response.json().get("ip", "")).strip()
         if not address:
-            return None, "missing_ip"
-        return diagnostic_hash(address), None
+            return None, None, "missing_ip"
+        return address, diagnostic_hash(address), None
     except Exception as error:
-        return None, type(error).__name__
+        return None, None, type(error).__name__
 
 
 def response_diagnostics(
@@ -77,8 +77,10 @@ def response_diagnostics(
     response,
     context,
     account: str,
+    egress_ip: str | None,
     egress_ip_hash: str | None,
     egress_lookup_error: str | None,
+    proxy_endpoint: str | None,
     seconds_since_previous_login: float | None,
 ) -> dict[str, Any]:
     try:
@@ -120,8 +122,10 @@ def response_diagnostics(
         "body_sha256_16": body_fingerprint,
         "body_length": body_length,
         "server_request_id": request_id,
+        "egress_ip": egress_ip,
         "egress_ip_hash": egress_ip_hash,
         "egress_lookup_error": egress_lookup_error,
+        "proxy_endpoint": proxy_endpoint,
         "worker_container_id": worker_id(),
         "account_hash": diagnostic_hash(account.strip().lower()),
         "session_hash": session_hash,

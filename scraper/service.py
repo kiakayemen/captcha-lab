@@ -77,7 +77,7 @@ from scraper.models import (
     ScraperStatus,
 )
 from scraper.http_diagnostics import (
-    resolve_egress_ip_hash,
+    resolve_egress_ip,
     response_diagnostics,
 )
 from scraper.proxy import PlaywrightProxyRotator, ProxyConfigurationError
@@ -174,8 +174,10 @@ def record_detected_http_403(
     *,
     page,
     context,
+    egress_ip: str | None,
     egress_ip_hash: str | None,
     egress_lookup_error: str | None,
+    proxy_endpoint: str | None,
     login_requested_at: float | None,
 ) -> None:
     state = http_forbidden_response_state(page)
@@ -188,14 +190,24 @@ def record_detected_http_403(
         response=response,
         context=context,
         account=BLS_EMAIL,
+        egress_ip=egress_ip,
         egress_ip_hash=egress_ip_hash,
         egress_lookup_error=egress_lookup_error,
+        proxy_endpoint=proxy_endpoint,
         seconds_since_previous_login=(
             time.monotonic() - login_requested_at
             if login_requested_at is not None
             else None
         ),
     )
+    (
+        failure_egress_ip,
+        failure_egress_ip_hash,
+        failure_egress_lookup_error,
+    ) = resolve_egress_ip(context)
+    data["egress_ip_at_failure"] = failure_egress_ip
+    data["egress_ip_hash_at_failure"] = failure_egress_ip_hash
+    data["egress_lookup_error_at_failure"] = failure_egress_lookup_error
     data["response_url"] = state.get("url")
     data["resource_type"] = state.get("resource_type")
     record_scraper_event(
@@ -1284,8 +1296,12 @@ def _run_single_subtype_attempt(
         browser = None
         context = None
         page = None
+        egress_ip = None
         egress_ip_hash = None
         egress_lookup_error = None
+        proxy_endpoint = (
+            proxy_config.get("server") if proxy_config is not None else None
+        )
         login_requested_at = None
 
         try:
@@ -1332,7 +1348,7 @@ def _run_single_subtype_attempt(
                 )
             )
 
-            egress_ip_hash, egress_lookup_error = resolve_egress_ip_hash(context)
+            egress_ip, egress_ip_hash, egress_lookup_error = resolve_egress_ip(context)
 
             page = context.new_page()
             track_http_forbidden_responses(page)
@@ -1359,8 +1375,10 @@ def _run_single_subtype_attempt(
                     response=response,
                     context=context,
                     account=BLS_EMAIL,
+                    egress_ip=egress_ip,
                     egress_ip_hash=egress_ip_hash,
                     egress_lookup_error=egress_lookup_error,
+                    proxy_endpoint=proxy_endpoint,
                     seconds_since_previous_login=(
                         login_requested_at - previous_login_requested_at
                         if previous_login_requested_at is not None
@@ -1631,8 +1649,10 @@ def _run_single_subtype_attempt(
                 record_detected_http_403(
                     page=page,
                     context=context,
+                    egress_ip=egress_ip,
                     egress_ip_hash=egress_ip_hash,
                     egress_lookup_error=egress_lookup_error,
+                    proxy_endpoint=proxy_endpoint,
                     login_requested_at=login_requested_at,
                 )
             screenshot_path = (
@@ -1731,8 +1751,10 @@ def _run_single_subtype_attempt(
                 record_detected_http_403(
                     page=page,
                     context=context,
+                    egress_ip=egress_ip,
                     egress_ip_hash=egress_ip_hash,
                     egress_lookup_error=egress_lookup_error,
+                    proxy_endpoint=proxy_endpoint,
                     login_requested_at=login_requested_at,
                 )
             screenshot_path = (

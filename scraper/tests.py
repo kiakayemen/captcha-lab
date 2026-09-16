@@ -421,13 +421,17 @@ class HttpDiagnosticsTests(TestCase):
             response=response,
             context=context,
             account="person@example.test",
+            egress_ip="203.0.113.42",
             egress_ip_hash="egress-hash",
             egress_lookup_error=None,
+            proxy_endpoint="http://proxy-1.internal:8888",
             seconds_since_previous_login=31.2349,
         )
 
         self.assertEqual(data["http_status"], 403)
+        self.assertEqual(data["egress_ip"], "203.0.113.42")
         self.assertEqual(data["egress_ip_hash"], "egress-hash")
+        self.assertEqual(data["proxy_endpoint"], "http://proxy-1.internal:8888")
         self.assertEqual(data["worker_container_id"], "worker-abc")
         self.assertEqual(data["server_request_id"], "request-123")
         self.assertEqual(data["seconds_since_previous_login_request"], 31.235)
