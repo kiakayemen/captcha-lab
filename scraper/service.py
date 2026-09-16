@@ -2015,24 +2015,6 @@ def run_scraper(
             )
             attempt_failures.append(current_failure)
 
-            if result.status is ScraperStatus.SERVER_ERROR:
-                logger.error(
-                    "Target server error is terminal; stopping without another attempt."
-                )
-                return ScraperResult(
-                    status=ScraperStatus.SERVER_ERROR,
-                    started_at=overall_started_at,
-                    finished_at=datetime.now(timezone.utc),
-                    page_url=result.page_url,
-                    visa_sub_type=visa_sub_type,
-                    error_type=result.error_type,
-                    error_message=result.error_message,
-                    failure_screenshot=result.failure_screenshot,
-                    first_failure=attempt_failures[0],
-                    attempt_failures=tuple(attempt_failures),
-                    terminal_failure=current_failure,
-                )
-
             if result.error_type == "HTTP403Forbidden":
                 logger.error(
                     "HTTP 403 is terminal; stopping without another attempt."

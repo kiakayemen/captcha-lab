@@ -498,6 +498,41 @@ class FailureChainTests(TestCase):
     @patch("scraper.service.interruptible_cooldown")
     @patch("scraper.service.get_reader")
     @patch("scraper.service._run_single_subtype_attempt")
+    def test_temporary_server_error_retries_with_fresh_browser(
+        self,
+        run_attempt,
+        _reader,
+        _cooldown,
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.side_effect = (
+            ScraperResult(
+                status=ScraperStatus.SERVER_ERROR,
+                started_at=now,
+                finished_at=now,
+                error_type="RuntimeError",
+                error_message="Temporary processing-error page.",
+            ),
+            ScraperResult(
+                status=ScraperStatus.NO_APPOINTMENT,
+                started_at=now,
+                finished_at=now,
+            ),
+        )
+
+        result = run_scraper(
+            ScraperConfig(visa_sub_types=("Student Visa",))
+        )
+
+        self.assertEqual(result.status, ScraperStatus.NO_APPOINTMENT)
+        self.assertEqual(run_attempt.call_count, 2)
+        self.assertEqual(len(result.attempt_failures), 1)
+        self.assertEqual(result.first_failure["status"], "server_error")
+        self.assertIsNone(result.terminal_failure)
+
+    @patch("scraper.service.interruptible_cooldown")
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
     def test_recovered_run_preserves_all_attempt_failures(
         self,
         run_attempt,
