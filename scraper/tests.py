@@ -10,10 +10,12 @@ from flows.captcha_flow import (
     click_selected_captcha_tiles,
     click_verify_selection,
     wait_for_post_captcha_page_ready,
+    appointment_form_ready,
+    post_captcha_destination_visible,
     login_captcha_succeeded,
     SITE_ERROR_PATTERN,
 )
-from flows.appointment_flow import _select_kendo_option
+from flows.appointment_flow import _select_kendo_option, no_appointments_dialog_visible
 from flows.errors import (
     HTTP403Forbidden,
     http_forbidden_page_visible,
@@ -21,10 +23,13 @@ from flows.errors import (
 )
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
+    SecondCaptchaUnconfirmed,
+    classify_second_captcha_state,
     inspect_page_state,
     run_captcha_step,
     run_second_captcha_step,
     record_captcha_stage,
+    wait_for_form_result,
     run_scraper,
     subtype_retry_delay_seconds,
     wait_for_login_captcha_outcome,
@@ -272,15 +277,15 @@ class CaptchaPacingTests(TestCase):
 
     @patch(
         "flows.captcha_flow.blocking_overlay_visible",
-        return_value=True,
+        side_effect=(True, False),
     )
     @patch(
         "flows.captcha_flow.post_captcha_destination_visible",
-        side_effect=(False, True),
+        return_value=True,
     )
     @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
     @patch("flows.captcha_flow.raise_for_http_forbidden")
-    def test_post_captcha_destination_wins_while_overlay_is_visible(
+    def test_post_captcha_destination_waits_for_overlay_to_clear(
         self,
         _forbidden,
         _server_error,
@@ -293,6 +298,7 @@ class CaptchaPacingTests(TestCase):
             wait_for_post_captcha_page_ready(page),
             "destination",
         )
+        self.assertEqual(page.wait_for_timeout.call_count, 1)
 
 
 class HttpDiagnosticsTests(TestCase):
@@ -318,6 +324,22 @@ class HttpDiagnosticsTests(TestCase):
             page._captcha_lab_http_403_response["url"],
             response.url,
         )
+
+    def test_first_403_is_preserved_when_later_requests_also_fail(self):
+        page = MagicMock()
+        track_http_forbidden_responses(page)
+        response_handler = page.on.call_args.args[1]
+        first = MagicMock(status=403, url="https://example.test/Verify")
+        first.request.resource_type = "xhr"
+        second = MagicMock(status=403, url="https://example.test/GenerateCaptcha")
+        second.request.resource_type = "xhr"
+
+        response_handler(first)
+        response_handler(second)
+
+        state = page._captcha_lab_http_403_response
+        self.assertIs(state["response"], first)
+        self.assertEqual(state["subsequent_403s"][0]["url"], second.url)
 
     def test_login_captcha_outcome_terminates_on_403(self):
         page = MagicMock()
@@ -772,6 +794,55 @@ class FailureChainTests(TestCase):
         solve_attempt.assert_called_once()
         page.reload.assert_not_called()
 
+    @patch("scraper.service.http_forbidden_page_visible", return_value=True)
+    def test_second_captcha_403_precedes_popup_based_classification(
+        self, _forbidden
+    ):
+        with self.assertRaises(HTTP403Forbidden):
+            classify_second_captcha_state(
+                MagicMock(), MagicMock(), MagicMock(), MagicMock()
+            )
+
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch("scraper.service.http_forbidden_page_visible", return_value=False)
+    def test_open_popup_without_site_rejection_is_only_pending(
+        self, _forbidden, _server_error
+    ):
+        verified = MagicMock()
+        verified.is_visible.return_value = False
+        invalid = MagicMock()
+        invalid.is_visible.return_value = False
+        popup = MagicMock()
+        popup.is_visible.return_value = True
+
+        self.assertEqual(
+            classify_second_captcha_state(MagicMock(), verified, invalid, popup),
+            "pending",
+        )
+        invalid.is_visible.return_value = True
+        self.assertEqual(
+            classify_second_captcha_state(MagicMock(), verified, invalid, popup),
+            "explicitly_rejected",
+        )
+
+    @patch("scraper.service.inspect_page_state", return_value={})
+    @patch(
+        "scraper.service._run_second_captcha_attempt",
+        side_effect=SecondCaptchaUnconfirmed("no confirmation"),
+    )
+    def test_unconfirmed_second_captcha_does_not_request_another_puzzle(
+        self, solve_attempt, _page_state
+    ):
+        page = MagicMock()
+
+        with self.assertRaises(SecondCaptchaUnconfirmed):
+            run_second_captcha_step(
+                page, gpu=False, output_dir=MagicMock(), reader=MagicMock()
+            )
+
+        solve_attempt.assert_called_once()
+        page.reload.assert_not_called()
+
     @patch(
         "scraper.service._run_second_captcha_attempt",
         return_value=False,
@@ -838,12 +909,75 @@ class FailureChainTests(TestCase):
         click_tile.assert_not_called()
         page.wait_for_timeout.assert_not_called()
 
-    @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
-    def test_missing_ok_is_accepted_when_form_already_visible(self, _form_visible):
+    @patch("flows.captcha_flow.appointment_form_ready", return_value=True)
+    @patch("flows.captcha_flow.disclaimer_dialog_visible", return_value=False)
+    @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
+    def test_missing_ok_is_accepted_when_form_already_visible(
+        self, _error, _dialog_visible, _form_ready
+    ):
         page = MagicMock()
 
         self.assertFalse(click_ok_dialog(page))
         page.wait_for_timeout.assert_not_called()
+
+    @patch("flows.captcha_flow.appointment_form_ready", return_value=True)
+    @patch("flows.captcha_flow.disclaimer_dialog_visible", return_value=True)
+    @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
+    @patch("flows.captcha_flow.expect")
+    def test_visible_form_does_not_skip_disclaimer(
+        self, _expect, _error, _dialog_visible, _form_ready
+    ):
+        page = MagicMock()
+
+        self.assertTrue(click_ok_dialog(page))
+        page.locator.assert_any_call("#disclaimarModal")
+
+    @patch("flows.captcha_flow.blocking_overlay_visible", return_value=False)
+    @patch("flows.captcha_flow.disclaimer_dialog_visible", return_value=True)
+    @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
+    def test_form_behind_disclaimer_is_not_ready(
+        self, _form_visible, _dialog_visible, _overlay
+    ):
+        self.assertFalse(appointment_form_ready(MagicMock()))
+        self.assertTrue(post_captcha_destination_visible(MagicMock()))
+
+    @patch("scraper.service.no_appointments_dialog_visible", return_value=False)
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    def test_missing_form_result_is_only_possible_appointment(
+        self, _error, _no_appointments
+    ):
+        self.assertIs(
+            wait_for_form_result(MagicMock(), timeout_seconds=0),
+            ScraperStatus.POSSIBLE_APPOINTMENT,
+        )
+
+    @patch("scraper.service.no_appointments_dialog_visible", return_value=True)
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    def test_explicit_no_appointments_result_wins_at_deadline(
+        self, _error, _no_appointments
+    ):
+        self.assertIs(
+            wait_for_form_result(MagicMock(), timeout_seconds=0),
+            ScraperStatus.NO_APPOINTMENT,
+        )
+
+    def test_other_modal_text_is_not_no_appointments(self):
+        page = MagicMock()
+        page.locator.return_value.first.is_visible.return_value = True
+        page.locator.return_value.first.count.return_value = 1
+        page.locator.return_value.first.inner_text.return_value = "Please try again later"
+
+        self.assertFalse(no_appointments_dialog_visible(page))
+
+    def test_explicit_no_appointments_text_is_recognized(self):
+        page = MagicMock()
+        page.locator.return_value.first.is_visible.return_value = True
+        page.locator.return_value.first.count.return_value = 1
+        page.locator.return_value.first.inner_text.return_value = (
+            "No Appointments Available"
+        )
+
+        self.assertTrue(no_appointments_dialog_visible(page))
 
     @patch("scraper.service.random.randint", side_effect=(31, 63, 125, 175))
     def test_retry_cooldown_grows_with_jitter(self, randint):

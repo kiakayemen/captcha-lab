@@ -447,7 +447,13 @@ def no_appointments_dialog_visible(page: Page) -> bool:
 
         header_text = header.inner_text().strip() if header.count() else ""
         body_text = body.inner_text().strip() if body.count() else ""
-        return "No Appointments Available" in header_text or bool(body_text)
+        return bool(
+            re.search(
+                r"\bno\s+appointments?\s+available\b",
+                f"{header_text} {body_text}",
+                re.IGNORECASE,
+            )
+        )
     except Exception:
         logger.exception("[appointment] Failed while checking no-appointments dialog.")
         return False

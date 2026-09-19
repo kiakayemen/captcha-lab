@@ -81,6 +81,19 @@ class ScraperEventTests(TestCase):
         self.assertEqual(admin.student_visa_result(self.run), "No appointment")
         self.assertEqual(admin.non_working_residence_result(self.run), "Failed")
 
+    def test_admin_distinguishes_possible_appointment(self):
+        self.run.status = ScraperRun.Status.POSSIBLE_APPOINTMENT
+        self.run.save(update_fields=["status"])
+        ScraperEvent.objects.create(
+            run=self.run,
+            event_type=ScraperEvent.EventType.SUBTYPE_FINISHED,
+            visa_sub_type="Student Visa",
+            status=ScraperRun.Status.POSSIBLE_APPOINTMENT,
+        )
+
+        admin = ScraperRunAdmin(ScraperRun, None)
+        self.assertEqual(admin.student_visa_result(self.run), "Possible appointment")
+
     def test_duplicate_execution_is_rejected(self):
         self.run.status = ScraperRun.Status.RUNNING
         self.run.started_at = timezone.now()

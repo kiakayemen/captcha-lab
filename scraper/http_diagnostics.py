@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 from django.conf import settings
@@ -118,11 +119,17 @@ def response_diagnostics(
 
     return {
         "http_status": response.status,
+        "response_observed_at": datetime.now(timezone.utc).isoformat(),
+        "response_request_url": getattr(response, "url", None),
+        "response_request_method": getattr(
+            getattr(response, "request", None), "method", None
+        ),
         "response_headers": safe_headers,
         "body_sha256_16": body_fingerprint,
         "body_length": body_length,
         "server_request_id": request_id,
         "egress_ip": egress_ip,
+        "egress_ip_observation": "independent_ipify_probe",
         "egress_ip_hash": egress_ip_hash,
         "egress_lookup_error": egress_lookup_error,
         "proxy_endpoint": proxy_endpoint,

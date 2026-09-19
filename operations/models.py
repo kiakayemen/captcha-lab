@@ -18,6 +18,10 @@ class ScraperRun(models.Model):
             "appointment_found",
             "Appointment Found",
         )
+        POSSIBLE_APPOINTMENT = (
+            "possible_appointment",
+            "Possible Appointment",
+        )
         NO_APPOINTMENT = (
             "no_appointment",
             "No Appointment",

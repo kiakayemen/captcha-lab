@@ -382,6 +382,8 @@ def execute_scraper_run(
             status_map = {
                 ScraperStatus.APPOINTMENT_FOUND:
                     ScraperRun.Status.APPOINTMENT_FOUND,
+                ScraperStatus.POSSIBLE_APPOINTMENT:
+                    ScraperRun.Status.POSSIBLE_APPOINTMENT,
                 ScraperStatus.NO_APPOINTMENT:
                     ScraperRun.Status.NO_APPOINTMENT,
                 ScraperStatus.SERVER_ERROR:
@@ -458,8 +460,10 @@ def execute_scraper_run(
             )
 
             if (
-                db_run.status
-                == ScraperRun.Status.APPOINTMENT_FOUND
+                db_run.status in (
+                    ScraperRun.Status.APPOINTMENT_FOUND,
+                    ScraperRun.Status.POSSIBLE_APPOINTMENT,
+                )
                 and result.visa_sub_type
             ):
                 record_scraper_event(
@@ -471,12 +475,18 @@ def execute_scraper_run(
                     ),
                     data={
                         "page_url": result.page_url or "",
+                        "certainty": (
+                            "confirmed"
+                            if db_run.status == ScraperRun.Status.APPOINTMENT_FOUND
+                            else "possible"
+                        ),
                     },
                 )
 
                 logger.info(
-                    "Appointment availability detected "
+                    "Appointment availability status=%s "
                     "for visa subtype=%s",
+                    db_run.status,
                     result.visa_sub_type,
                 )
 

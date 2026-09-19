@@ -317,6 +317,8 @@ class ScraperRunAdmin(
 
         if result == ScraperRun.Status.APPOINTMENT_FOUND:
             return "Appointment found"
+        if result == ScraperRun.Status.POSSIBLE_APPOINTMENT:
+            return "Possible appointment"
         if result == ScraperRun.Status.NO_APPOINTMENT:
             return "No appointment"
         if result:
@@ -325,12 +327,17 @@ class ScraperRunAdmin(
         # Older runs may predate structured subtype events.
         if run.status in (
             ScraperRun.Status.APPOINTMENT_FOUND,
+            ScraperRun.Status.POSSIBLE_APPOINTMENT,
             ScraperRun.Status.NO_APPOINTMENT,
         ):
             if run.status == ScraperRun.Status.NO_APPOINTMENT:
                 return "No appointment"
             if subtype in (run.appointment_visa_sub_type or "").split(", "):
-                return "Appointment found"
+                return (
+                    "Appointment found"
+                    if run.status == ScraperRun.Status.APPOINTMENT_FOUND
+                    else "Possible appointment"
+                )
             return "No appointment"
 
         failure_subtype = (run.terminal_failure or {}).get("visa_sub_type")
@@ -543,6 +550,7 @@ class ScraperRunAdmin(
                     run.status
                     in {
                         ScraperRun.Status.APPOINTMENT_FOUND,
+                        ScraperRun.Status.POSSIBLE_APPOINTMENT,
                         ScraperRun.Status.NO_APPOINTMENT,
                         ScraperRun.Status.SERVER_ERROR,
                         ScraperRun.Status.STOPPED,

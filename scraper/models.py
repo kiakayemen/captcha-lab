@@ -9,6 +9,7 @@ from typing import Any
 
 class ScraperStatus(str, Enum):
     APPOINTMENT_FOUND = "appointment_found"
+    POSSIBLE_APPOINTMENT = "possible_appointment"
     NO_APPOINTMENT = "no_appointment"
     SERVER_ERROR = "server_error"
     STOPPED = "stopped"
@@ -46,6 +47,7 @@ class ScraperResult:
     def succeeded(self) -> bool:
         return self.status in {
             ScraperStatus.APPOINTMENT_FOUND,
+            ScraperStatus.POSSIBLE_APPOINTMENT,
             ScraperStatus.NO_APPOINTMENT,
         }
 

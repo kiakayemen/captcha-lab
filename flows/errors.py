@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from playwright.sync_api import Page
 
@@ -58,10 +59,21 @@ def track_http_forbidden_responses(page: Page) -> None:
                 "xhr",
                 "fetch",
             }:
+                observed_at = datetime.now(timezone.utc).isoformat()
+                existing = getattr(page, "_captcha_lab_http_403_response", None)
+                if isinstance(existing, dict):
+                    existing.setdefault("subsequent_403s", []).append({
+                        "url": response.url,
+                        "resource_type": resource_type,
+                        "observed_at": observed_at,
+                    })
+                    return
                 page._captcha_lab_http_403_response = {
                     "url": response.url,
                     "resource_type": resource_type,
                     "response": response,
+                    "observed_at": observed_at,
+                    "subsequent_403s": [],
                     "diagnostics_recorded": False,
                 }
         except Exception:

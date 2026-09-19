@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from flows.appointment_flow import (
     no_appointments_dialog_visible,
 )
 from flows.captcha_flow import (
+    appointment_form_ready,
     captcha_instruction_present,
     click_background_submit,
     click_nav_book_new_appointment,
@@ -39,6 +41,7 @@ from flows.captcha_flow import (
     click_selected_captcha_tiles,
     click_submit_selection,
     click_verify_selection,
+    disclaimer_dialog_visible,
     find_true_captcha_label,
     find_true_captcha_label_in_scope,
     get_verify_selection_frame,
@@ -57,6 +60,7 @@ from flows.errors import (
     HTTP_FORBIDDEN_MESSAGE,
     http_forbidden_page_visible,
     http_forbidden_response_state,
+    raise_for_http_forbidden,
     track_http_forbidden_responses,
 )
 from flows.selectors import (
@@ -103,6 +107,7 @@ LOGIN_CAPTCHA_OUTCOME_TIMEOUT_SECONDS = 15
 MAX_LOGIN_CAPTCHA_ATTEMPTS = 3
 MAX_SECOND_CAPTCHA_ATTEMPTS = 3
 SECOND_CAPTCHA_RETRY_SETTLE_MS = 3_000
+SECOND_CAPTCHA_VERIFICATION_TIMEOUT_SECONDS = 25
 RECOVERABLE_UNCLEAR_LOGIN_PATHS = {
     "/",
     "/global",
@@ -114,6 +119,10 @@ RECOVERABLE_UNCLEAR_LOGIN_PATHS = {
 
 class ScraperStopRequested(RuntimeError):
     pass
+
+
+class SecondCaptchaUnconfirmed(RuntimeError):
+    """Submission did not produce a conclusive response or a fresh challenge."""
 
 
 def check_stop_requested(should_stop: Callable[[], bool] | None) -> None:
@@ -150,13 +159,12 @@ def inspect_page_state(page) -> dict[str, bool]:
         "http_403": lambda: http_forbidden_page_visible(page),
         "server_error": lambda: site_error_page_visible(page),
         "no_appointment": lambda: no_appointments_dialog_visible(page),
-        "appointment_form": lambda: page.locator(
-            'label.form-label:has-text("Jurisdiction")'
-        ).first.is_visible(),
+        "appointment_form": lambda: appointment_form_ready(page),
         "verified": lambda: page.get_by_text("Verified!", exact=True).first.is_visible(),
-        "disclaimer_ok": lambda: page.locator(
-            'button:has-text("Ok"):visible'
-        ).first.is_visible(),
+        "second_captcha_popup": lambda: page.locator(
+            "div.k-widget.k-window"
+        ).filter(has_text="Verify Selection").first.is_visible(),
+        "disclaimer_ok": lambda: disclaimer_dialog_visible(page),
         "background_submit": lambda: page.locator(
             BACKGROUND_SUBMIT_BUTTON_SELECTOR
         ).last.is_visible(),
@@ -168,6 +176,43 @@ def inspect_page_state(page) -> dict[str, bool]:
         except Exception:
             state[name] = False
     return state
+
+
+def wait_for_form_result(
+    page,
+    *,
+    timeout_seconds: int = 30,
+    should_stop: Callable[[], bool] | None = None,
+) -> ScraperStatus:
+    """Keep an inconclusive form response distinct from confirmed availability."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        check_stop_requested(should_stop)
+        raise_for_http_forbidden(page)
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        if "/account/login" in str(page.url).lower():
+            raise RuntimeError(
+                "Form submission returned to login before an appointment result."
+            )
+        if no_appointments_dialog_visible(page):
+            return ScraperStatus.NO_APPOINTMENT
+        page.wait_for_timeout(250)
+    check_stop_requested(should_stop)
+    raise_for_http_forbidden(page)
+    if site_error_page_visible(page):
+        raise RuntimeError(
+            "Target site returned its temporary processing-error page."
+        )
+    if "/account/login" in str(page.url).lower():
+        raise RuntimeError(
+            "Form submission returned to login before an appointment result."
+        )
+    if no_appointments_dialog_visible(page):
+        return ScraperStatus.NO_APPOINTMENT
+    return ScraperStatus.POSSIBLE_APPOINTMENT
 
 
 def record_detected_http_403(
@@ -206,9 +251,12 @@ def record_detected_http_403(
         failure_egress_lookup_error,
     ) = resolve_egress_ip(context)
     data["egress_ip_at_failure"] = failure_egress_ip
+    data["egress_ip_at_failure_observation"] = "independent_ipify_probe"
     data["egress_ip_hash_at_failure"] = failure_egress_ip_hash
     data["egress_lookup_error_at_failure"] = failure_egress_lookup_error
     data["response_url"] = state.get("url")
+    data["response_observed_at"] = state.get("observed_at")
+    data["subsequent_403s"] = state.get("subsequent_403s", [])
     data["resource_type"] = state.get("resource_type")
     record_scraper_event(
         ScraperEvent.EventType.LOGIN_RESPONSE,
@@ -806,17 +854,29 @@ def run_second_captcha_step(
             )
         except HTTP403Forbidden:
             raise
+        except SecondCaptchaUnconfirmed:
+            page_state = inspect_page_state(page)
+            if page_state.get("http_403"):
+                raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
+            if not page_state.get("second_captcha_popup") and any(page_state.get(name) for name in (
+                "verified", "disclaimer_ok", "appointment_form"
+            )):
+                logger.info(
+                    "Second CAPTCHA advanced after its verification deadline. "
+                    "State=%s", page_state,
+                )
+                return
+            raise
         except (PlaywrightTimeoutError, AssertionError, RuntimeError) as error:
             page_state = inspect_page_state(page)
             if page_state.get("http_403"):
                 raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE) from error
             if page_state.get("server_error"):
                 raise
-            if any(
+            if not page_state.get("second_captcha_popup") and any(
                 page_state.get(name)
                 for name in (
                     "verified",
-                    "background_submit",
                     "disclaimer_ok",
                     "appointment_form",
                 )
@@ -857,6 +917,27 @@ def run_second_captcha_step(
         "Second CAPTCHA was rejected "
         f"{MAX_SECOND_CAPTCHA_ATTEMPTS} times in the same browser session."
     )
+
+
+def classify_second_captcha_state(page, verified_label, invalid_label, popup) -> str:
+    """Prioritize HTTP failure and explicit site feedback over popup visibility."""
+    if http_forbidden_page_visible(page):
+        raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
+    if site_error_page_visible(page):
+        raise RuntimeError(
+            "Target site returned its temporary processing-error page."
+        )
+    if verified_label.is_visible():
+        return "verified"
+    if invalid_label.is_visible():
+        return "explicitly_rejected"
+    if not popup.is_visible():
+        page_state = inspect_page_state(page)
+        if any(page_state.get(name) for name in (
+            "disclaimer_ok", "appointment_form"
+        )):
+            return "advanced"
+    return "pending"
 
 
 def _run_second_captcha_attempt(
@@ -1090,54 +1171,36 @@ def _run_second_captcha_attempt(
         tiles=tiles,
     )
 
-    verified_label = (
-        frame.locator(
-            "text=Verified!"
-        )
-    )
+    verified_label = frame.get_by_text("Verified!", exact=True).first
+    invalid_label = frame.get_by_text(
+        re.compile(r"invalid captcha selection|incorrect selection", re.IGNORECASE)
+    ).first
 
     verification_started_at = datetime.now(timezone.utc)
     verification_started = time.perf_counter()
-    try:
-        expect(
-            verified_label
-        ).to_be_visible(
-            timeout=15_000
+    deadline = time.monotonic() + SECOND_CAPTCHA_VERIFICATION_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        outcome = classify_second_captcha_state(
+            page, verified_label, invalid_label, popup
         )
-
-    except Exception as exc:
-        if popup.is_visible():
+        if outcome == "verified":
+            break
+        if outcome == "explicitly_rejected":
             record_captcha_stage(
                 captcha="second",
                 stage="verification",
                 attempt_number=attempt_number,
                 started_at=verification_started_at,
-                duration_ms=round(
-                    (time.perf_counter() - verification_started) * 1000
-                ),
-                status="rejected",
+                duration_ms=round((time.perf_counter() - verification_started) * 1000),
+                status="explicitly_rejected",
             )
             logger.warning(
-                "Second CAPTCHA attempt %s was rejected; "
-                "the verification popup is still open.",
+                "Second CAPTCHA attempt %s received an explicit invalid-selection response.",
                 attempt_number,
             )
             return False
-        page_state = inspect_page_state(page)
-        if page_state.get("http_403"):
-            raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE) from exc
-        if page_state.get("server_error"):
-            raise RuntimeError(
-                "Target site returned its temporary processing-error page."
-            ) from exc
-        if any(
-            page_state.get(name)
-            for name in (
-                "background_submit",
-                "disclaimer_ok",
-                "appointment_form",
-            )
-        ):
+        if outcome == "advanced":
+            page_state = inspect_page_state(page)
             record_captcha_stage(
                 captcha="second",
                 stage="verification",
@@ -1154,20 +1217,22 @@ def _run_second_captcha_attempt(
                 page_state,
             )
             return True
+        page.wait_for_timeout(250)
+    else:
         record_captcha_stage(
             captcha="second",
             stage="verification",
             attempt_number=attempt_number,
             started_at=verification_started_at,
-            duration_ms=round(
-                (time.perf_counter() - verification_started) * 1000
-            ),
-            status="unclear",
+            duration_ms=round((time.perf_counter() - verification_started) * 1000),
+            status="unconfirmed",
         )
-        raise RuntimeError(
-            "Second CAPTCHA outcome was unclear because verification "
-            "did not appear and the popup closed."
-        ) from exc
+        raise SecondCaptchaUnconfirmed(
+            "Second CAPTCHA was not confirmed after "
+            f"{SECOND_CAPTCHA_VERIFICATION_TIMEOUT_SECONDS}s; "
+            f"popup_visible={popup.is_visible()}. "
+            "No new puzzle will be requested without an explicit rejection."
+        )
 
     record_captcha_stage(
         captcha="second",
@@ -1182,15 +1247,14 @@ def _run_second_captcha_attempt(
         'Second CAPTCHA returned "Verified!".'
     )
 
-    page.wait_for_timeout(
-        2_000
-    )
-
-    if popup.is_visible():
-        raise RuntimeError(
-            "Second CAPTCHA popup remained open "
-            "after verification."
-        )
+    try:
+        expect(popup).to_be_hidden(timeout=10_000)
+    except Exception as error:
+        if http_forbidden_page_visible(page):
+            raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE) from error
+        raise SecondCaptchaUnconfirmed(
+            "Second CAPTCHA showed Verified but its popup remained open."
+        ) from error
 
     logger.info(
         "Second CAPTCHA verification succeeded."
@@ -1552,16 +1616,14 @@ def _run_single_subtype_attempt(
                 timeout=10_000
             )
 
-            page.wait_for_timeout(
-                3_000
-            )
+            # A delayed no-appointments response must not become a false
+            # confirmed-appointment result merely because it was absent at 3s.
+            form_result = wait_for_form_result(page, should_stop=should_stop)
 
             #
             # Form check successfully completed.
             #
-            if no_appointments_dialog_visible(
-                page
-            ):
+            if form_result is ScraperStatus.NO_APPOINTMENT:
                 logger.info(
                     "Successful form check: "
                     "NO APPOINTMENT. "
@@ -1588,22 +1650,33 @@ def _run_single_subtype_attempt(
                 )
 
             #
-            # Existing behavior:
-            # absence of the No Appointments modal means possible
-            # appointment availability.
+            # No explicit availability signal is known on this page. Preserve
+            # an urgent alert, but do not claim that availability is confirmed.
             #
             logger.warning(
-                "Successful form check: possible "
-                "APPOINTMENT AVAILABLE. "
+                "Form check had no explicit result after 30s: "
+                "POSSIBLE APPOINTMENT. "
                 "Visa subtype=%s | URL=%s",
                 visa_sub_type,
                 page.url,
             )
+            evidence_path = (
+                config.output_dir
+                / visa_sub_type
+                / f"browser_attempt_{attempt_number:02d}"
+                / "possible_appointment.png"
+            )
+            try:
+                evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(evidence_path), full_page=True)
+                logger.info("Saved possible-appointment page evidence: %s", evidence_path)
+            except Exception:
+                logger.exception("Could not save possible-appointment screenshot.")
 
             result = ScraperResult(
                 status=(
                     ScraperStatus
-                    .APPOINTMENT_FOUND
+                    .POSSIBLE_APPOINTMENT
                 ),
                 started_at=started_at,
                 finished_at=datetime.now(
@@ -1616,14 +1689,16 @@ def _run_single_subtype_attempt(
             # Notify immediately when this form check finds an appointment.
             # The overall run may continue checking other subtypes, but the
             # alert must not wait for final run bookkeeping.
-            if result.appointment_found:
+            if result.status is ScraperStatus.POSSIBLE_APPOINTMENT:
                 notify_admin(
                     (
-                        "Appointment availability detected. "
-                        "Manual booking is required."
+                        "Possible appointment availability: the form did not "
+                        "show a no-appointments result within 30 seconds. "
+                        "Please verify manually."
                     ),
                     page_url=result.page_url or page.url,
                     visa_sub_type=result.visa_sub_type,
+                    confirmed=False,
                 )
 
             return result
@@ -2157,9 +2232,9 @@ def run_scraper(
             subtype_result
         )
 
-        if (
-            subtype_result.status
-            is ScraperStatus.APPOINTMENT_FOUND
+        if subtype_result.status in (
+            ScraperStatus.APPOINTMENT_FOUND,
+            ScraperStatus.POSSIBLE_APPOINTMENT,
         ):
             appointment_results.append(
                 subtype_result
@@ -2201,18 +2276,20 @@ def run_scraper(
             )
         )
 
+        overall_appointment_status = (
+            ScraperStatus.APPOINTMENT_FOUND
+            if any(result.status is ScraperStatus.APPOINTMENT_FOUND
+                   for result in appointment_results)
+            else ScraperStatus.POSSIBLE_APPOINTMENT
+        )
         logger.warning(
-            "Overall result: "
-            "APPOINTMENT_FOUND. "
-            "Subtypes=%s",
+            "Overall result: %s. Subtypes=%s",
+            overall_appointment_status.value,
             appointment_subtypes,
         )
 
         return ScraperResult(
-            status=(
-                ScraperStatus
-                .APPOINTMENT_FOUND
-            ),
+            status=overall_appointment_status,
             started_at=(
                 overall_started_at
             ),

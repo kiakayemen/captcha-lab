@@ -55,6 +55,7 @@ BLOCKING_OVERLAY_SELECTOR = (
     "#global-overlay:visible, "
     ".global-overlay-loader:visible"
 )
+DISCLAIMER_MODAL_SELECTOR = "#disclaimarModal:visible"
 
 
 def wait_for_preloader_to_clear(page: Page, timeout: int = 60_000) -> None:
@@ -83,9 +84,25 @@ def appointment_form_visible(page: Page) -> bool:
             page.locator('label.form-label:has-text("Jurisdiction")')
             .first
             .is_visible()
+            is True
         )
     except Exception:
         return False
+
+
+def disclaimer_dialog_visible(page: Page) -> bool:
+    try:
+        return page.locator(DISCLAIMER_MODAL_SELECTOR).first.is_visible() is True
+    except Exception:
+        return False
+
+
+def appointment_form_ready(page: Page) -> bool:
+    return (
+        appointment_form_visible(page)
+        and not disclaimer_dialog_visible(page)
+        and not blocking_overlay_visible(page)
+    )
 
 
 def blocking_overlay_visible(page: Page) -> bool:
@@ -100,16 +117,9 @@ def blocking_overlay_visible(page: Page) -> bool:
 
 
 def post_captcha_destination_visible(page: Page) -> bool:
-    try:
-        ok_visible = (
-            page.locator('button:has-text("Ok"):visible')
-            .first
-            .is_visible()
-            is True
-        )
-    except Exception:
-        ok_visible = False
-    return appointment_form_visible(page) or ok_visible
+    if blocking_overlay_visible(page):
+        return False
+    return disclaimer_dialog_visible(page) or appointment_form_ready(page)
 
 
 def wait_for_post_captcha_page_ready(
@@ -125,9 +135,9 @@ def wait_for_post_captcha_page_ready(
             raise RuntimeError(
                 "Target site returned its temporary processing-error page."
             )
-        if post_captcha_destination_visible(page):
-            return "destination"
         if not blocking_overlay_visible(page):
+            if post_captcha_destination_visible(page):
+                return "destination"
             return "ready"
         page.wait_for_timeout(250)
     raise RuntimeError(
@@ -614,27 +624,29 @@ def click_book_now(page: Page) -> None:
 
 
 def click_ok_dialog(page: Page) -> bool:
-    ok_button = page.locator('button:has-text("Ok"):visible').first
+    modal = page.locator("#disclaimarModal").first
+    ok_button = modal.locator('button:has-text("Ok"):visible').first
     deadline = time.monotonic() + 30
 
     while time.monotonic() < deadline:
         raise_for_http_forbidden(page)
-        if appointment_form_visible(page):
-            logger.info(
-                "Appointment form is already visible; no disclaimer dialog is required."
-            )
-            return False
         if site_error_page_visible(page):
             raise RuntimeError(
                 "Target site returned its temporary processing-error page."
             )
-        if ok_button.is_visible() and ok_button.is_enabled():
-            break
+        if disclaimer_dialog_visible(page):
+            if ok_button.is_visible() and ok_button.is_enabled():
+                break
+        elif appointment_form_ready(page):
+            logger.info(
+                "Appointment form is already visible; no disclaimer dialog is required."
+            )
+            return False
         page.wait_for_timeout(250)
     else:
         raise RuntimeError(
-            "Neither the disclaimer OK button nor the appointment form "
-            "appeared within 30 seconds."
+            "Neither a usable disclaimer OK button nor an unobstructed "
+            "appointment form appeared within 30 seconds."
         )
 
     ok_button.scroll_into_view_if_needed(timeout=10_000)
@@ -645,12 +657,26 @@ def click_ok_dialog(page: Page) -> bool:
         raise_for_http_forbidden(page)
         logger.warning("Normal OK click failed; falling back to DOM click.")
         ok_button.evaluate("(element) => element.click()")
-    modal = page.locator('div[role="dialog"]:visible').first
     try:
         expect(modal).to_be_hidden(timeout=30_000)
-    except Exception:
-        logger.warning("Dialog did not report hidden cleanly; waiting an extra second.")
-        page.wait_for_timeout(1_000)
+    except Exception as error:
+        raise_for_http_forbidden(page)
+        raise RuntimeError("Disclaimer dialog remained open after OK.") from error
+    if not appointment_form_ready(page):
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            raise_for_http_forbidden(page)
+            if site_error_page_visible(page):
+                raise RuntimeError(
+                    "Target site returned its temporary processing-error page."
+                )
+            if appointment_form_ready(page):
+                break
+            page.wait_for_timeout(250)
+        else:
+            raise RuntimeError(
+                "Appointment form did not become usable after disclaimer OK."
+            )
     logger.info("Clicked OK dialog button")
     return True
 

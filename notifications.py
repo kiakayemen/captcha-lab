@@ -900,9 +900,10 @@ def notify_admin(
     *,
     page_url: str,
     visa_sub_type: str | None = None,
+    confirmed: bool = True,
 ) -> None:
     """
-    Public appointment-found API used by the scraper.
+    Public appointment alert API used by the scraper.
 
     IMPORTANT:
     This function never intentionally raises into the scraper.
@@ -911,7 +912,7 @@ def notify_admin(
     try:
         event = _build_event(
             event_type=(
-                "appointment_available"
+                "appointment_available" if confirmed else "possible_appointment"
             ),
             message=message,
             page_url=page_url,
@@ -926,14 +927,15 @@ def notify_admin(
         )
 
         logger.critical(
-            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! "
-            "APPOINTMENT AVAILABLE "
-            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! %s "
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            "APPOINTMENT AVAILABLE" if confirmed else "POSSIBLE APPOINTMENT",
         )
 
         logger.critical(
-            "Appointment detected. "
+            "%s. "
             "Visa subtype=%s | URL=%s | Event=%s",
+            "Appointment detected" if confirmed else "Possible appointment detected",
             visa_sub_type,
             page_url,
             event.event_id,
@@ -984,8 +986,7 @@ def notify_admin(
         #
         # Last line of defence.
         #
-        # A bug in notification infrastructure must never turn a
-        # real appointment result into ScraperStatus.FAILED.
+        # A notification bug must not turn an appointment check into failure.
         #
         logger.exception(
             "CRITICAL: notification subsystem encountered "
