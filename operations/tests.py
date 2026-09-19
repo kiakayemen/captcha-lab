@@ -12,6 +12,7 @@ from scraper.models import ScraperConfig
 from .events import bind_scraper_event_context, record_event_from_log, record_scraper_event
 from .database_writer import run_database_write
 from .models import ScraperEvent, ScraperRun, ScraperRunLog
+from .admin import ScraperRunAdmin
 from .run_logging import ScraperRunDatabaseHandler
 from .services import (
     ScraperRunAlreadyStarted,
@@ -58,6 +59,21 @@ class ScraperEventTests(TestCase):
             "SECOND_CAPTCHA_NOT_VERIFIED",
         )
         self.assertEqual(events[1].execution_id, events[0].execution_id)
+
+    def test_admin_shows_independent_subtype_outcomes(self):
+        self.run.visa_sub_types = ["Student Visa", "Non-Working Residence Visa"]
+        self.run.status = ScraperRun.Status.FAILED
+        self.run.terminal_failure = {"visa_sub_type": "Non-Working Residence Visa"}
+        self.run.save()
+        ScraperEvent.objects.create(
+            run=self.run,
+            event_type=ScraperEvent.EventType.SUBTYPE_FINISHED,
+            visa_sub_type="Student Visa",
+            status=ScraperRun.Status.NO_APPOINTMENT,
+        )
+        admin = ScraperRunAdmin(ScraperRun, None)
+        self.assertEqual(admin.student_visa_result(self.run), "No appointment")
+        self.assertEqual(admin.non_working_residence_result(self.run), "Failed")
 
     def test_duplicate_execution_is_rejected(self):
         self.run.status = ScraperRun.Status.RUNNING

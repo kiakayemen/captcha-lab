@@ -22,6 +22,7 @@ from django.urls import (
 )
 from django.utils import timezone
 from django.utils.html import format_html
+from django.db.models import Prefetch
 
 from .models import (
     ScraperEvent,
@@ -152,7 +153,8 @@ class ScraperRunAdmin(
         "created_at",
         "status",
         "trigger",
-        "appointment_visa_sub_type",
+        "student_visa_result",
+        "non_working_residence_result",
         "duration_seconds",
         "log_count",
         "download_logs",
@@ -248,6 +250,84 @@ class ScraperRunAdmin(
     ordering = (
         "-created_at",
     )
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related(
+            Prefetch(
+                "events",
+                queryset=ScraperEvent.objects.filter(
+                    event_type__in=(
+                        ScraperEvent.EventType.SUBTYPE_STARTED,
+                        ScraperEvent.EventType.SUBTYPE_FINISHED,
+                    )
+                ).order_by("created_at", "id"),
+                to_attr="subtype_outcome_events",
+            )
+        )
+
+    @staticmethod
+    def _subtype_result(run: ScraperRun, subtype: str) -> str:
+        if subtype not in run.visa_sub_types:
+            return "Not configured"
+
+        events = getattr(run, "subtype_outcome_events", None)
+        if events is None:
+            events = run.events.filter(
+                event_type__in=(
+                    ScraperEvent.EventType.SUBTYPE_STARTED,
+                    ScraperEvent.EventType.SUBTYPE_FINISHED,
+                )
+            ).order_by("created_at", "id")
+
+        started = False
+        result = None
+        for event in events:
+            if event.visa_sub_type != subtype:
+                continue
+            if event.event_type == ScraperEvent.EventType.SUBTYPE_STARTED:
+                started = True
+            elif event.event_type == ScraperEvent.EventType.SUBTYPE_FINISHED:
+                result = event.status
+
+        if result == ScraperRun.Status.APPOINTMENT_FOUND:
+            return "Appointment found"
+        if result == ScraperRun.Status.NO_APPOINTMENT:
+            return "No appointment"
+        if result:
+            return result.replace("_", " ").capitalize()
+
+        # Older runs may predate structured subtype events.
+        if run.status in (
+            ScraperRun.Status.APPOINTMENT_FOUND,
+            ScraperRun.Status.NO_APPOINTMENT,
+        ):
+            if run.status == ScraperRun.Status.NO_APPOINTMENT:
+                return "No appointment"
+            if subtype in (run.appointment_visa_sub_type or "").split(", "):
+                return "Appointment found"
+            return "No appointment"
+
+        failure_subtype = (run.terminal_failure or {}).get("visa_sub_type")
+        if not failure_subtype and run.status in (
+            ScraperRun.Status.FAILED,
+            ScraperRun.Status.SERVER_ERROR,
+        ):
+            failure_subtype = run.appointment_visa_sub_type
+        if failure_subtype == subtype:
+            return "Server error" if run.status == ScraperRun.Status.SERVER_ERROR else "Failed"
+        if started:
+            if run.status in (ScraperRun.Status.RUNNING, ScraperRun.Status.STOP_REQUESTED):
+                return "Running" if run.status == ScraperRun.Status.RUNNING else "Stopping"
+            return "Stopped" if run.status == ScraperRun.Status.STOPPED else "Failed"
+        return "Pending" if run.status == ScraperRun.Status.PENDING else "Not checked"
+
+    @admin.display(description="Student visa")
+    def student_visa_result(self, obj: ScraperRun) -> str:
+        return self._subtype_result(obj, "Student Visa")
+
+    @admin.display(description="Non-working residence visa")
+    def non_working_residence_result(self, obj: ScraperRun) -> str:
+        return self._subtype_result(obj, "Non-Working Residence Visa")
 
     @admin.display(
         description="Logs"
