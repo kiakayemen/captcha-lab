@@ -1,8 +1,27 @@
 {% extends "admin/change_list.html" %}
+{% load static %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'operations/vendor/pardis-jalali-datepicker/1.0.2/pardis-jalali-datepicker.css' %}">
+    <style>
+        #log-date-export .pardis-popover-anchor { width: 155px; }
+        #log-date-export .pardis-calendar-popover { left: auto; right: 0; }
+        #log-date-export .pardis-calendar-popover.open { transform: scale(1) translateY(0); }
+        #log-date-export input { box-sizing: border-box; width: 100%; }
+    </style>
+    <script defer src="{% static 'operations/vendor/pardis-jalali-datepicker/1.0.2/pardis-jalali-datepicker.js' %}"></script>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            new PardisDatepicker("#log-start-date");
+            new PardisDatepicker("#log-end-date");
+        });
+    </script>
+{% endblock %}
 
 {% block object-tools-items %}
     <li>
-        <form method="get" action="{% url 'admin:operations_scraperrun_download_all_logs' %}" style="display:flex;align-items:center;gap:6px;">
+        <form id="log-date-export" data-pardis-theme="classic" method="get" action="{% url 'admin:operations_scraperrun_download_all_logs' %}" style="display:flex;align-items:center;gap:6px;">
             <label for="log-start-date">Jalali logs from</label>
             <input id="log-start-date" type="text" name="start_date" inputmode="numeric" placeholder="1405/06/28" aria-label="Jalali log start date" title="Jalali date: YYYY/MM/DD">
             <label for="log-end-date">to</label>

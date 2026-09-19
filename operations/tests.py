@@ -9,6 +9,7 @@ from django.core.exceptions import SynchronousOnlyOperation
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.test import RequestFactory
 from django.contrib.auth import get_user_model
+from django.contrib.staticfiles import finders
 from django.utils import timezone
 
 from scraper.models import ScraperConfig
@@ -190,6 +191,12 @@ class ScraperRunLoggingTests(TestCase):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 200)
             self.assertContains(response, "en-US-u-ca-persian")
+
+        response = self.client.get("/admin/operations/scraperrun/")
+        self.assertContains(response, "new PardisDatepicker")
+        self.assertIsNotNone(finders.find(
+            "operations/vendor/pardis-jalali-datepicker/1.0.2/pardis-jalali-datepicker.js"
+        ))
 
     def test_database_handler_heartbeats_after_stop_request(self):
         old_heartbeat = timezone.now() - timezone.timedelta(minutes=10)
