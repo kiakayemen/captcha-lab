@@ -120,7 +120,7 @@ TEMPLATES = [
             "django.template.backends."
             "django.DjangoTemplates"
         ),
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "control_panel" / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [

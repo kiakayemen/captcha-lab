@@ -6,8 +6,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from django.core.exceptions import SynchronousOnlyOperation
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.test import RequestFactory
+from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from scraper.models import ScraperConfig
@@ -168,6 +169,21 @@ class ScraperRunLoggingTests(TestCase):
     def test_log_export_rejects_reversed_dates(self):
         form = LogDateRangeForm({"start_date": "2026-09-17", "end_date": "2026-09-16"})
         self.assertFalse(form.is_valid())
+
+    @override_settings(MIDDLEWARE=[
+        "django.contrib.sessions.middleware.SessionMiddleware",
+        "django.contrib.auth.middleware.AuthenticationMiddleware",
+        "django.contrib.messages.middleware.MessageMiddleware",
+    ])
+    def test_jalali_display_script_is_present_on_admin_pages(self):
+        user = get_user_model().objects.create_superuser(
+            username="admin-date-test", email="admin@example.com", password="test-password"
+        )
+        self.client.force_login(user)
+        for url in ("/admin/", "/admin/operations/scraperrun/"):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "en-US-u-ca-persian")
 
     def test_database_handler_heartbeats_after_stop_request(self):
         old_heartbeat = timezone.now() - timezone.timedelta(minutes=10)

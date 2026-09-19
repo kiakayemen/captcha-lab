@@ -1,0 +1,61 @@
+{% extends "admin/base_site.html" %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <script>
+    document.addEventListener("DOMContentLoaded", () => {
+        const months = [
+            "Farvardin", "Ordibehesht", "Khordad", "Tir", "Mordad", "Shahrivar",
+            "Mehr", "Aban", "Azar", "Dey", "Bahman", "Esfand"
+        ];
+        const gregorianMonths = {
+            jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+            jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
+        };
+        const calendar = new Intl.DateTimeFormat("en-US-u-ca-persian", {
+            year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC"
+        });
+        const namedDate = /\b(Jan\.?|Feb\.?|Mar\.?|Apr\.?|May|Jun\.?|Jul\.?|Aug\.?|Sep(?:t)?\.?|Oct\.?|Nov\.?|Dec\.?)\s+(\d{1,2}),?\s+(\d{4})\b/g;
+        const isoDate = /\b(20\d{2})-(\d{2})-(\d{2})\b/g;
+
+        function jalali(year, month, day) {
+            const date = new Date(Date.UTC(year, month - 1, day, 12));
+            if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) {
+                return null;
+            }
+            const parts = Object.fromEntries(calendar.formatToParts(date).map(part => [part.type, part.value]));
+            return `${months[Number(parts.month) - 1]} ${Number(parts.day)}, ${parts.year}`;
+        }
+
+        function convert(text) {
+            return text.replace(namedDate, (original, month, day, year) => {
+                const number = gregorianMonths[month.slice(0, 3).toLowerCase()];
+                return jalali(Number(year), number, Number(day)) || original;
+            }).replace(isoDate, (original, year, month, day) =>
+                jalali(Number(year), Number(month), Number(day)) || original
+            );
+        }
+
+        function update(root) {
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            const nodes = [];
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                const parent = node.parentElement;
+                if (parent && !parent.closest("pre, code, script, style, textarea, .messagelist")) {
+                    nodes.push(node);
+                }
+            }
+            for (const node of nodes) {
+                const changed = convert(node.nodeValue);
+                if (changed !== node.nodeValue) node.nodeValue = changed;
+            }
+        }
+
+        for (const selector of ["#content", "#content-related"]) {
+            const root = document.querySelector(selector);
+            if (root) update(root);
+        }
+    });
+    </script>
+{% endblock %}
