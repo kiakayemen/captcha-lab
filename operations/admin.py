@@ -33,6 +33,7 @@ from .models import (
     ScraperRunLog,
     ScraperSchedule,
 )
+from .jalali import parse_jalali_date
 from .services import (
     active_scraper_runs,
     build_default_scraper_config,
@@ -44,9 +45,19 @@ from .services import (
 from .tasks import run_scraper_task
 
 
+class JalaliDateField(forms.Field):
+    def to_python(self, value):
+        if value in self.empty_values:
+            return None
+        try:
+            return parse_jalali_date(str(value))
+        except ValueError as error:
+            raise forms.ValidationError(str(error)) from error
+
+
 class LogDateRangeForm(forms.Form):
-    start_date = forms.DateField(required=False, input_formats=["%Y-%m-%d"])
-    end_date = forms.DateField(required=False, input_formats=["%Y-%m-%d"])
+    start_date = JalaliDateField(required=False)
+    end_date = JalaliDateField(required=False)
 
     def clean(self):
         cleaned = super().clean()
@@ -575,7 +586,7 @@ class ScraperRunAdmin(
     ) -> HttpResponse:
         form = LogDateRangeForm(request.GET)
         if not form.is_valid():
-            return HttpResponseBadRequest("Invalid log date range. Use YYYY-MM-DD and start before end.")
+            return HttpResponseBadRequest("Invalid Jalali log date range. Use YYYY/MM/DD and start before end.")
         logs = ScraperRunLog.objects.select_related("run").order_by(
             "run__created_at",
             "id",
@@ -591,7 +602,7 @@ class ScraperRunAdmin(
         run = get_object_or_404(ScraperRun, pk=run_id)
         form = LogDateRangeForm(request.GET)
         if not form.is_valid():
-            return HttpResponseBadRequest("Invalid log date range. Use YYYY-MM-DD and start before end.")
+            return HttpResponseBadRequest("Invalid Jalali log date range. Use YYYY/MM/DD and start before end.")
         logs = run.logs.select_related("run").order_by("id")
         logs = self._filter_logs_by_date(logs, form)
         return self._logs_csv_response(

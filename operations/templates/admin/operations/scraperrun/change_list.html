@@ -3,10 +3,10 @@
 {% block object-tools-items %}
     <li>
         <form method="get" action="{% url 'admin:operations_scraperrun_download_all_logs' %}" style="display:flex;align-items:center;gap:6px;">
-            <label for="log-start-date">Logs from</label>
-            <input id="log-start-date" type="date" name="start_date" aria-label="Log start date">
+            <label for="log-start-date">Jalali logs from</label>
+            <input id="log-start-date" type="text" name="start_date" inputmode="numeric" placeholder="1405/06/28" aria-label="Jalali log start date" title="Jalali date: YYYY/MM/DD">
             <label for="log-end-date">to</label>
-            <input id="log-end-date" type="date" name="end_date" aria-label="Log end date">
+            <input id="log-end-date" type="text" name="end_date" inputmode="numeric" placeholder="1405/06/28" aria-label="Jalali log end date" title="Jalali date: YYYY/MM/DD">
             <button type="submit" class="button">Download CSV</button>
         </form>
     </li>

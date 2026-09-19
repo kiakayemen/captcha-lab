@@ -17,6 +17,7 @@ from .events import bind_scraper_event_context, record_event_from_log, record_sc
 from .database_writer import run_database_write
 from .models import ScraperEvent, ScraperRun, ScraperRunLog
 from .admin import LogDateRangeForm, ScraperRunAdmin
+from .jalali import parse_jalali_date
 from .run_logging import ScraperRunDatabaseHandler
 from .services import (
     ScraperRunAlreadyStarted,
@@ -157,7 +158,7 @@ class ScraperRunLoggingTests(TestCase):
             ScraperRunLog.objects.filter(pk=log.pk).update(created_at=instant)
         admin = ScraperRunAdmin(ScraperRun, None)
         request = RequestFactory().get("/download-logs/", {
-            "start_date": "2026-09-16", "end_date": "2026-09-16",
+            "start_date": "1405/06/25", "end_date": "1405/06/25",
         })
         with timezone.override("Asia/Tehran"):
             response = admin.download_all_logs_view(request)
@@ -167,8 +168,13 @@ class ScraperRunLoggingTests(TestCase):
         self.assertNotIn("after", content)
 
     def test_log_export_rejects_reversed_dates(self):
-        form = LogDateRangeForm({"start_date": "2026-09-17", "end_date": "2026-09-16"})
+        form = LogDateRangeForm({"start_date": "1405/06/26", "end_date": "1405/06/25"})
         self.assertFalse(form.is_valid())
+
+    def test_jalali_log_dates_accept_persian_digits_and_validate_month_length(self):
+        self.assertEqual(parse_jalali_date("۱۴۰۵/۰۶/۲۸"), datetime(2026, 9, 19).date())
+        self.assertEqual(parse_jalali_date("1405/01/01"), datetime(2026, 3, 21).date())
+        self.assertFalse(LogDateRangeForm({"start_date": "1405/07/31"}).is_valid())
 
     @override_settings(MIDDLEWARE=[
         "django.contrib.sessions.middleware.SessionMiddleware",
