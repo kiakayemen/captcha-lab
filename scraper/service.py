@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import random
@@ -34,6 +35,7 @@ from flows.appointment_flow import (
 )
 from flows.captcha_flow import (
     appointment_form_ready,
+    blocking_overlay_visible,
     captcha_instruction_present,
     click_background_submit,
     click_nav_book_new_appointment,
@@ -66,6 +68,7 @@ from flows.errors import (
 from flows.selectors import (
     BACKGROUND_SUBMIT_BUTTON_SELECTOR,
     CAPTCHA_INSTRUCTION_PATTERN,
+    CAPTCHA_TILE_SELECTOR,
 )
 from notifications import (
     log_no_appointment,
@@ -108,6 +111,8 @@ MAX_LOGIN_CAPTCHA_ATTEMPTS = 3
 MAX_SECOND_CAPTCHA_ATTEMPTS = 3
 SECOND_CAPTCHA_RETRY_SETTLE_MS = 3_000
 SECOND_CAPTCHA_VERIFICATION_TIMEOUT_SECONDS = 25
+SECOND_CAPTCHA_LOADING_GRACE_SECONDS = 15
+SECOND_CAPTCHA_REGENERATION_TIMEOUT_SECONDS = 10
 RECOVERABLE_UNCLEAR_LOGIN_PATHS = {
     "/",
     "/global",
@@ -741,6 +746,7 @@ def _run_login_captcha_attempt(
         decision
     )
 
+    submitted_challenge_signature = second_captcha_challenge_signature(frame)
     selection_started_at = datetime.now(timezone.utc)
     selection_started = time.perf_counter()
     click_selected_captcha_tiles(
@@ -931,6 +937,8 @@ def classify_second_captcha_state(page, verified_label, invalid_label, popup) ->
         return "verified"
     if invalid_label.is_visible():
         return "explicitly_rejected"
+    if blocking_overlay_visible(page):
+        return "loading"
     if not popup.is_visible():
         page_state = inspect_page_state(page)
         if any(page_state.get(name) for name in (
@@ -938,6 +946,50 @@ def classify_second_captcha_state(page, verified_label, invalid_label, popup) ->
         )):
             return "advanced"
     return "pending"
+
+
+def second_captcha_challenge_signature(frame) -> str | None:
+    """Fingerprint the rendered grid without storing the CAPTCHA images."""
+    try:
+        sources = frame.locator(CAPTCHA_TILE_SELECTOR).evaluate_all(
+            "images => images.map(image => image.currentSrc || image.src || '')"
+        )
+        if len(sources) != 9 or not all(sources):
+            return None
+        return hashlib.sha256(
+            json.dumps(sources, separators=(",", ":")).encode()
+        ).hexdigest()[:16]
+    except Exception:
+        return None
+
+
+def wait_for_regenerated_second_captcha(
+    page, frame, old_signature: str | None, invalid_label=None
+) -> bool:
+    """Retry in-session only when a different complete grid is visible."""
+    if old_signature is None:
+        raise SecondCaptchaUnconfirmed(
+            "Explicit CAPTCHA rejection was shown, but the original grid "
+            "could not be fingerprinted."
+        )
+    deadline = time.monotonic() + SECOND_CAPTCHA_REGENERATION_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if http_forbidden_page_visible(page):
+            raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        signature = second_captcha_challenge_signature(frame)
+        invalid_cleared = invalid_label is None or invalid_label.is_visible() is False
+        if signature is not None and signature != old_signature and invalid_cleared:
+            logger.info("A new complete second-CAPTCHA grid is visible; retrying in-session.")
+            return True
+        page.wait_for_timeout(250)
+    raise SecondCaptchaUnconfirmed(
+        "Explicit CAPTCHA rejection was shown, but no new complete grid "
+        "appeared within 10 seconds."
+    )
 
 
 def _run_second_captcha_attempt(
@@ -1179,6 +1231,7 @@ def _run_second_captcha_attempt(
     verification_started_at = datetime.now(timezone.utc)
     verification_started = time.perf_counter()
     deadline = time.monotonic() + SECOND_CAPTCHA_VERIFICATION_TIMEOUT_SECONDS
+    loading_grace_used = False
     while time.monotonic() < deadline:
         outcome = classify_second_captcha_state(
             page, verified_label, invalid_label, popup
@@ -1197,6 +1250,9 @@ def _run_second_captcha_attempt(
             logger.warning(
                 "Second CAPTCHA attempt %s received an explicit invalid-selection response.",
                 attempt_number,
+            )
+            wait_for_regenerated_second_captcha(
+                page, frame, submitted_challenge_signature, invalid_label
             )
             return False
         if outcome == "advanced":
@@ -1217,6 +1273,14 @@ def _run_second_captcha_attempt(
                 page_state,
             )
             return True
+        if outcome == "loading" and not loading_grace_used:
+            if deadline - time.monotonic() <= 1:
+                deadline += SECOND_CAPTCHA_LOADING_GRACE_SECONDS
+                loading_grace_used = True
+                logger.info(
+                    "Second CAPTCHA still has a loading overlay; allowing %ss more.",
+                    SECOND_CAPTCHA_LOADING_GRACE_SECONDS,
+                )
         page.wait_for_timeout(250)
     else:
         record_captcha_stage(
@@ -1225,7 +1289,7 @@ def _run_second_captcha_attempt(
             attempt_number=attempt_number,
             started_at=verification_started_at,
             duration_ms=round((time.perf_counter() - verification_started) * 1000),
-            status="unconfirmed",
+            status="loading_timeout" if outcome == "loading" else "unconfirmed",
         )
         raise SecondCaptchaUnconfirmed(
             "Second CAPTCHA was not confirmed after "

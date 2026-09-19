@@ -25,6 +25,8 @@ from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
     SecondCaptchaUnconfirmed,
     classify_second_captcha_state,
+    second_captcha_challenge_signature,
+    wait_for_regenerated_second_captcha,
     inspect_page_state,
     run_captcha_step,
     run_second_captcha_step,
@@ -824,6 +826,34 @@ class FailureChainTests(TestCase):
             classify_second_captcha_state(MagicMock(), verified, invalid, popup),
             "explicitly_rejected",
         )
+
+    def test_second_captcha_signature_changes_with_rendered_images(self):
+        frame = MagicMock()
+        images = [f"data:image/png;base64,{number}" for number in range(9)]
+        frame.locator.return_value.evaluate_all.return_value = images
+        first = second_captcha_challenge_signature(frame)
+        frame.locator.return_value.evaluate_all.return_value = images[:-1] + ["new"]
+
+        self.assertIsNotNone(first)
+        self.assertNotEqual(first, second_captcha_challenge_signature(frame))
+
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch("scraper.service.http_forbidden_page_visible", return_value=False)
+    @patch(
+        "scraper.service.second_captcha_challenge_signature",
+        side_effect=("old", "new"),
+    )
+    def test_explicit_rejection_waits_for_different_grid(
+        self, _signature, _forbidden, _server_error
+    ):
+        page = MagicMock()
+        self.assertTrue(wait_for_regenerated_second_captcha(page, MagicMock(), "old"))
+        page.wait_for_timeout.assert_called_once_with(250)
+
+    @patch("scraper.service.SECOND_CAPTCHA_REGENERATION_TIMEOUT_SECONDS", 0)
+    def test_explicit_rejection_without_new_grid_is_inconclusive(self):
+        with self.assertRaises(SecondCaptchaUnconfirmed):
+            wait_for_regenerated_second_captcha(MagicMock(), MagicMock(), "old")
 
     @patch("scraper.service.inspect_page_state", return_value={})
     @patch(

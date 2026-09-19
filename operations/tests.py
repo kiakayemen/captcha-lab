@@ -2,10 +2,12 @@ import asyncio
 import contextvars
 import logging
 import threading
+from io import StringIO
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from django.core.exceptions import SynchronousOnlyOperation
+from django.core.management import call_command
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.test import RequestFactory
 from django.contrib.auth import get_user_model
@@ -93,6 +95,32 @@ class ScraperEventTests(TestCase):
 
         admin = ScraperRunAdmin(ScraperRun, None)
         self.assertEqual(admin.student_visa_result(self.run), "Possible appointment")
+
+    def test_proxy_403_report_groups_by_route_and_endpoint(self):
+        for url in (
+            "https://example.test/Global/NewCaptcha/GenerateCaptcha?one=1",
+            "https://example.test/Global/NewCaptcha/GenerateCaptcha?two=2",
+        ):
+            ScraperEvent.objects.create(
+                run=self.run,
+                event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+                status="403",
+                data={"proxy_endpoint": "http://proxy-a:8888", "response_url": url},
+            )
+        output = StringIO()
+
+        call_command("proxy_403_report", "--hours", "24", "--json", stdout=output)
+
+        import json
+        self.assertEqual(
+            json.loads(output.getvalue())["rows"],
+            [{
+                "proxy_endpoint": "http://proxy-a:8888",
+                "request_path": "/global/newcaptcha/generatecaptcha",
+                "responses": 2,
+                "runs": 1,
+            }],
+        )
 
     def test_duplicate_execution_is_rejected(self):
         self.run.status = ScraperRun.Status.RUNNING
