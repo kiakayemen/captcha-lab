@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime, time, timedelta
 
 from django.contrib import (
     admin,
     messages,
 )
+from django import forms
 from django.http import (
     HttpRequest,
     HttpResponse,
+    HttpResponseBadRequest,
     JsonResponse,
 )
 from django.shortcuts import (
@@ -39,6 +42,18 @@ from .services import (
     serialize_scraper_config,
 )
 from .tasks import run_scraper_task
+
+
+class LogDateRangeForm(forms.Form):
+    start_date = forms.DateField(required=False, input_formats=["%Y-%m-%d"])
+    end_date = forms.DateField(required=False, input_formats=["%Y-%m-%d"])
+
+    def clean(self):
+        cleaned = super().clean()
+        start, end = cleaned.get("start_date"), cleaned.get("end_date")
+        if start and end and start > end:
+            raise forms.ValidationError("Start date must be on or before end date.")
+        return cleaned
 
 
 @admin.register(ScraperEvent)
@@ -558,10 +573,14 @@ class ScraperRunAdmin(
         self,
         request: HttpRequest,
     ) -> HttpResponse:
+        form = LogDateRangeForm(request.GET)
+        if not form.is_valid():
+            return HttpResponseBadRequest("Invalid log date range. Use YYYY-MM-DD and start before end.")
         logs = ScraperRunLog.objects.select_related("run").order_by(
             "run__created_at",
             "id",
         )
+        logs = self._filter_logs_by_date(logs, form)
         return self._logs_csv_response(logs, "scraper_run_logs.csv")
 
     def download_run_logs_view(
@@ -570,11 +589,26 @@ class ScraperRunAdmin(
         run_id,
     ) -> HttpResponse:
         run = get_object_or_404(ScraperRun, pk=run_id)
+        form = LogDateRangeForm(request.GET)
+        if not form.is_valid():
+            return HttpResponseBadRequest("Invalid log date range. Use YYYY-MM-DD and start before end.")
         logs = run.logs.select_related("run").order_by("id")
+        logs = self._filter_logs_by_date(logs, form)
         return self._logs_csv_response(
             logs,
             f"scraper_run_{run.pk}_logs.csv",
         )
+
+    @staticmethod
+    def _filter_logs_by_date(logs, form: LogDateRangeForm):
+        start = form.cleaned_data.get("start_date")
+        end = form.cleaned_data.get("end_date")
+        if start:
+            logs = logs.filter(created_at__gte=timezone.make_aware(datetime.combine(start, time.min)))
+        if end:
+            next_day = end + timedelta(days=1)
+            logs = logs.filter(created_at__lt=timezone.make_aware(datetime.combine(next_day, time.min)))
+        return logs
 
     @staticmethod
     def _logs_csv_response(logs, filename: str) -> HttpResponse:

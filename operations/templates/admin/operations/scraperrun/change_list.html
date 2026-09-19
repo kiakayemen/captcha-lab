@@ -2,9 +2,13 @@
 
 {% block object-tools-items %}
     <li>
-        <a href="{% url 'admin:operations_scraperrun_download_all_logs' %}">
-            Download all logs (CSV)
-        </a>
+        <form method="get" action="{% url 'admin:operations_scraperrun_download_all_logs' %}" style="display:flex;align-items:center;gap:6px;">
+            <label for="log-start-date">Logs from</label>
+            <input id="log-start-date" type="date" name="start_date" aria-label="Log start date">
+            <label for="log-end-date">to</label>
+            <input id="log-end-date" type="date" name="end_date" aria-label="Log end date">
+            <button type="submit" class="button">Download CSV</button>
+        </form>
     </li>
     <li>
         <form

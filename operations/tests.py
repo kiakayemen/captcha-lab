@@ -2,9 +2,12 @@ import asyncio
 import contextvars
 import logging
 import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from django.core.exceptions import SynchronousOnlyOperation
 from django.test import TestCase, TransactionTestCase
+from django.test import RequestFactory
 from django.utils import timezone
 
 from scraper.models import ScraperConfig
@@ -12,7 +15,7 @@ from scraper.models import ScraperConfig
 from .events import bind_scraper_event_context, record_event_from_log, record_scraper_event
 from .database_writer import run_database_write
 from .models import ScraperEvent, ScraperRun, ScraperRunLog
-from .admin import ScraperRunAdmin
+from .admin import LogDateRangeForm, ScraperRunAdmin
 from .run_logging import ScraperRunDatabaseHandler
 from .services import (
     ScraperRunAlreadyStarted,
@@ -140,6 +143,31 @@ class ScraperRunLoggingTests(TestCase):
         log = ScraperRunLog.objects.get()
         self.assertEqual(log.run_id, self.run.pk)
         self.assertEqual(log.message, "Chromium browser launched.")
+
+    def test_log_export_date_range_uses_local_calendar_days(self):
+        before = ScraperRunLog.objects.create(run=self.run, message="before")
+        inside = ScraperRunLog.objects.create(run=self.run, message="inside")
+        after = ScraperRunLog.objects.create(run=self.run, message="after")
+        for log, instant in (
+            (before, datetime(2026, 9, 15, 20, 29, tzinfo=ZoneInfo("UTC"))),
+            (inside, datetime(2026, 9, 15, 20, 31, tzinfo=ZoneInfo("UTC"))),
+            (after, datetime(2026, 9, 16, 20, 31, tzinfo=ZoneInfo("UTC"))),
+        ):
+            ScraperRunLog.objects.filter(pk=log.pk).update(created_at=instant)
+        admin = ScraperRunAdmin(ScraperRun, None)
+        request = RequestFactory().get("/download-logs/", {
+            "start_date": "2026-09-16", "end_date": "2026-09-16",
+        })
+        with timezone.override("Asia/Tehran"):
+            response = admin.download_all_logs_view(request)
+        content = response.content.decode()
+        self.assertNotIn("before", content)
+        self.assertIn("inside", content)
+        self.assertNotIn("after", content)
+
+    def test_log_export_rejects_reversed_dates(self):
+        form = LogDateRangeForm({"start_date": "2026-09-17", "end_date": "2026-09-16"})
+        self.assertFalse(form.is_valid())
 
     def test_database_handler_heartbeats_after_stop_request(self):
         old_heartbeat = timezone.now() - timezone.timedelta(minutes=10)
