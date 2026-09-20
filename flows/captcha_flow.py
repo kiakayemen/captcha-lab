@@ -98,11 +98,48 @@ def disclaimer_dialog_visible(page: Page) -> bool:
 
 
 def appointment_form_ready(page: Page) -> bool:
-    return (
-        appointment_form_visible(page)
-        and not disclaimer_dialog_visible(page)
-        and not blocking_overlay_visible(page)
-    )
+    if not appointment_form_visible(page) or disclaimer_dialog_visible(page):
+        return False
+    try:
+        jurisdiction = page.locator(
+            'div.mb-3:has(label.form-label:has-text("Jurisdiction")) '
+            'span.k-widget.k-dropdown:visible'
+        ).first
+        # Playwright checks real actionability without selecting anything.
+        # A merely visible label behind an overlay is not a usable form.
+        jurisdiction.click(trial=True, timeout=1_000)
+        return True
+    except Exception:
+        return False
+
+
+def post_disclaimer_state(page: Page) -> dict[str, object]:
+    """Record bounded, non-sensitive evidence when form readiness fails."""
+    from urllib.parse import urlsplit
+
+    try:
+        labels = page.locator("label.form-label:visible").all_inner_texts()
+    except Exception:
+        labels = []
+    try:
+        overlay_count = page.locator(BLOCKING_OVERLAY_SELECTOR).count()
+    except Exception:
+        overlay_count = None
+    try:
+        widget_visible = page.locator(
+            'div.mb-3:has(label.form-label:has-text("Jurisdiction")) '
+            'span.k-widget.k-dropdown:visible'
+        ).first.is_visible()
+    except Exception:
+        widget_visible = False
+    return {
+        "path": urlsplit(str(page.url)).path,
+        "visible_form_labels": [str(label).strip()[:80] for label in labels[:12]],
+        "jurisdiction_label_visible": appointment_form_visible(page),
+        "jurisdiction_widget_visible": widget_visible,
+        "disclaimer_visible": disclaimer_dialog_visible(page),
+        "blocking_overlay_count": overlay_count,
+    }
 
 
 def blocking_overlay_visible(page: Page) -> bool:
@@ -117,9 +154,9 @@ def blocking_overlay_visible(page: Page) -> bool:
 
 
 def post_captcha_destination_visible(page: Page) -> bool:
-    if blocking_overlay_visible(page):
-        return False
-    return disclaimer_dialog_visible(page) or appointment_form_ready(page)
+    if appointment_form_ready(page):
+        return True
+    return disclaimer_dialog_visible(page) and not blocking_overlay_visible(page)
 
 
 def background_submit_ready(page: Page) -> bool:
@@ -703,6 +740,10 @@ def click_ok_dialog(page: Page) -> bool:
                 break
             page.wait_for_timeout(250)
         else:
+            logger.error(
+                "Post-disclaimer form state=%s",
+                post_disclaimer_state(page),
+            )
             raise RuntimeError(
                 "Appointment form did not become usable after disclaimer OK."
             )

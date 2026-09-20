@@ -14,6 +14,7 @@ from flows.captcha_flow import (
     wait_for_post_captcha_destination,
     background_submit_ready,
     appointment_form_ready,
+    post_disclaimer_state,
     post_captcha_destination_visible,
     login_captcha_succeeded,
     SITE_ERROR_PATTERN,
@@ -1082,6 +1083,47 @@ class FailureChainTests(TestCase):
     ):
         self.assertFalse(appointment_form_ready(MagicMock()))
         self.assertTrue(post_captcha_destination_visible(MagicMock()))
+
+    @patch("flows.captcha_flow.blocking_overlay_visible", return_value=True)
+    @patch("flows.captcha_flow.disclaimer_dialog_visible", return_value=False)
+    @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
+    def test_actionable_form_is_ready_despite_unrelated_visible_overlay(
+        self, _form_visible, _disclaimer, _overlay
+    ):
+        page = MagicMock()
+
+        self.assertTrue(appointment_form_ready(page))
+        page.locator.return_value.first.click.assert_called_once_with(
+            trial=True, timeout=1_000
+        )
+
+    @patch("flows.captcha_flow.disclaimer_dialog_visible", return_value=False)
+    @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
+    def test_form_label_is_not_ready_when_dropdown_click_is_intercepted(
+        self, _form_visible, _disclaimer
+    ):
+        page = MagicMock()
+        page.locator.return_value.first.click.side_effect = RuntimeError("intercepted")
+
+        self.assertFalse(appointment_form_ready(page))
+
+    def test_post_disclaimer_snapshot_omits_query_and_passwords(self):
+        page = MagicMock()
+        page.url = "https://example.test/Global/bls/visatype?data=secret"
+        page.locator.return_value.all_inner_texts.return_value = [
+            "Jurisdiction", "Location", "Visa Type"
+        ]
+        page.locator.return_value.first.is_visible.return_value = False
+        page.locator.return_value.count.return_value = 0
+
+        state = post_disclaimer_state(page)
+
+        self.assertEqual(state["path"], "/Global/bls/visatype")
+        self.assertEqual(
+            state["visible_form_labels"],
+            ["Jurisdiction", "Location", "Visa Type"],
+        )
+        self.assertNotIn("secret", str(state))
 
     @patch("scraper.service.no_appointments_dialog_visible", return_value=False)
     @patch("scraper.service.site_error_page_visible", return_value=False)
