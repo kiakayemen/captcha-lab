@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import random
-import base64
-import http.client
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -21,10 +19,10 @@ class ProxyConfigurationError(RuntimeError):
 
 def configured_proxy_urls() -> tuple[str, ...]:
     """Return the proxy endpoints configured for browser attempts."""
-    raw_value = ",".join((
-        os.getenv("SCRAPER_PROXY_URLS", ""),
-        os.getenv("SCRAPER_ADDITIONAL_PROXY_URLS", ""),
-    ))
+    raw_value = os.getenv(
+        "SCRAPER_PROXY_URLS",
+        "",
+    )
 
     values = (
         value.strip()
@@ -93,28 +91,6 @@ def playwright_proxy_config(
         )
 
     return result
-
-
-def probe_proxy_tunnel(proxy_url: str, target_host: str, *, timeout: int = 15) -> None:
-    """Verify that an authenticated proxy accepts an HTTPS CONNECT tunnel."""
-    parsed = urlsplit(proxy_url)
-    playwright_proxy_config(proxy_url)
-    connection_type = (
-        http.client.HTTPSConnection
-        if parsed.scheme == "https"
-        else http.client.HTTPConnection
-    )
-    connection = connection_type(parsed.hostname, parsed.port, timeout=timeout)
-    headers = {}
-    if parsed.username is not None:
-        credentials = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}"
-        encoded = base64.b64encode(credentials.encode()).decode()
-        headers["Proxy-Authorization"] = f"Basic {encoded}"
-    try:
-        connection.set_tunnel(target_host, 443, headers=headers)
-        connection.connect()
-    finally:
-        connection.close()
 
 
 @dataclass

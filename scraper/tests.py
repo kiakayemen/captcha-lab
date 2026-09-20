@@ -57,7 +57,6 @@ from scraper.proxy import (
     choose_playwright_proxy,
     configured_proxy_urls,
     playwright_proxy_config,
-    probe_proxy_tunnel,
 )
 
 
@@ -187,23 +186,6 @@ class ProxyConfigurationTests(TestCase):
         with self.assertRaises(ProxyConfigurationError):
             PlaywrightProxyRotator().validate_required_pool()
 
-    @patch.dict(
-        "os.environ",
-        {
-            "SCRAPER_PROXY_URLS": "http://existing-1:8888,http://existing-2:8888",
-            "SCRAPER_ADDITIONAL_PROXY_URLS": (
-                "http://captcha:encoded-password@94.184.43.30:8888"
-            ),
-        },
-        clear=True,
-    )
-    def test_additional_proxy_joins_existing_rotation_without_replacing_it(self):
-        urls = configured_proxy_urls()
-
-        self.assertEqual(len(urls), 3)
-        self.assertEqual(urls[-1], "http://captcha:encoded-password@94.184.43.30:8888")
-        PlaywrightProxyRotator(proxy_urls=urls).validate_required_pool()
-
     def test_playwright_proxy_config_separates_credentials(self):
         self.assertEqual(
             playwright_proxy_config(
@@ -215,22 +197,6 @@ class ProxyConfigurationTests(TestCase):
                 "password": "proxy-pass",
             },
         )
-
-    @patch("scraper.proxy.http.client.HTTPConnection")
-    def test_proxy_tunnel_probe_sends_credentials_only_to_proxy(self, connection):
-        probe_proxy_tunnel(
-            "http://captcha:secret%21@94.184.43.30:8888",
-            "api.ipify.org",
-        )
-
-        connection.assert_called_once_with("94.184.43.30", 8888, timeout=15)
-        args, kwargs = connection.return_value.set_tunnel.call_args
-        self.assertEqual(args, ("api.ipify.org", 443))
-        self.assertEqual(kwargs["headers"], {
-            "Proxy-Authorization": "Basic Y2FwdGNoYTpzZWNyZXQh"
-        })
-        connection.return_value.connect.assert_called_once()
-        connection.return_value.close.assert_called_once()
 
     @patch.dict(
         "os.environ",

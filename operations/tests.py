@@ -4,7 +4,6 @@ import logging
 import threading
 from io import StringIO
 from datetime import datetime
-from unittest.mock import call, patch
 from zoneinfo import ZoneInfo
 
 from django.core.exceptions import SynchronousOnlyOperation
@@ -38,27 +37,6 @@ class ScraperEventTests(TestCase):
             trigger=ScraperRun.Trigger.SCHEDULED,
             visa_sub_types=["Student Visa"],
         )
-
-    @patch("operations.management.commands.check_proxy_tunnel.probe_proxy_tunnel")
-    @patch(
-        "operations.management.commands.check_proxy_tunnel.getpass.getpass",
-        return_value="p@ss",
-    )
-    def test_single_proxy_check_prompts_and_tests_both_hosts(
-        self, _password, probe
-    ):
-        output = StringIO()
-
-        call_command(
-            "check_proxy_tunnel", "--server", "94.184.43.30:8888",
-            "--username", "captcha", stdout=output,
-        )
-
-        self.assertEqual(probe.call_args_list, [
-            call("http://captcha:p%40ss@94.184.43.30:8888", "api.ipify.org"),
-            call("http://captcha:p%40ss@94.184.43.30:8888", "iran.blsspainglobal.com"),
-        ])
-        self.assertNotIn("p@ss", output.getvalue())
 
     def test_existing_lifecycle_logs_become_structured_events(self):
         with bind_scraper_event_context(self.run):
