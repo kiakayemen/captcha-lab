@@ -218,6 +218,7 @@ def serialize_scraper_config(
         "visa_sub_types": list(
             config.visa_sub_types
         ),
+        "allow_single_proxy": config.allow_single_proxy,
     }
 
 
@@ -240,6 +241,7 @@ def deserialize_scraper_config(
         visa_sub_types=tuple(
             config_data["visa_sub_types"]
         ),
+        allow_single_proxy=bool(config_data.get("allow_single_proxy", False)),
     )
 
 

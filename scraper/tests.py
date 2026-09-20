@@ -283,6 +283,14 @@ class ProxyConfigurationTests(TestCase):
             )
         ).validate_required_pool()
 
+        PlaywrightProxyRotator(
+            proxy_urls=("http://one:8888",)
+        ).validate_required_pool(allow_single_proxy=True)
+        with self.assertRaises(ProxyConfigurationError):
+            PlaywrightProxyRotator(proxy_urls=()).validate_required_pool(
+                allow_single_proxy=True
+            )
+
     @patch.dict(
         "os.environ",
         {

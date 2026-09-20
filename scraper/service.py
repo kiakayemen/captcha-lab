@@ -2074,7 +2074,9 @@ def run_scraper(
 
     proxy_rotator = PlaywrightProxyRotator()
     try:
-        proxy_rotator.validate_required_pool()
+        proxy_rotator.validate_required_pool(
+            allow_single_proxy=config.allow_single_proxy,
+        )
     except ProxyConfigurationError as error:
         logger.error("Proxy configuration rejected: %s", error)
         return ScraperResult(

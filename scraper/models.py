@@ -25,6 +25,7 @@ class ScraperConfig:
         "Student Visa",
         "Non-Working Residence Visa",
     )
+    allow_single_proxy: bool = False
 
 
 @dataclass(frozen=True)

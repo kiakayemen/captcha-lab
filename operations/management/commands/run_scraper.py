@@ -19,6 +19,12 @@ class Command(BaseCommand):
         )
 
         parser.add_argument(
+            "--allow-single-proxy",
+            action="store_true",
+            help="Allow one proxy for a manual diagnostic run only.",
+        )
+
+        parser.add_argument(
             "--gpu",
             action="store_true",
             help="Use CUDA when available (MPS is selected automatically).",
@@ -52,6 +58,7 @@ class Command(BaseCommand):
             visa_sub_types=tuple(
                 options["visa_sub_types"]
             ),
+            allow_single_proxy=options["allow_single_proxy"],
         )
 
         self.stdout.write(
