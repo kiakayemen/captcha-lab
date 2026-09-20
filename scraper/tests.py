@@ -17,7 +17,11 @@ from flows.captcha_flow import (
     login_captcha_succeeded,
     SITE_ERROR_PATTERN,
 )
-from flows.appointment_flow import _select_kendo_option, no_appointments_dialog_visible
+from flows.appointment_flow import (
+    _select_kendo_option,
+    appointment_available_dialog_visible,
+    no_appointments_dialog_visible,
+)
 from flows.errors import (
     HTTP403Forbidden,
     http_forbidden_page_visible,
@@ -39,6 +43,7 @@ from scraper.service import (
     wait_for_login_captcha_outcome,
     restart_unclear_login_captcha,
     _run_login_captcha_attempt,
+    AppointmentResultUnconfirmed,
 )
 from scraper.http_diagnostics import response_diagnostics
 from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
@@ -1027,13 +1032,12 @@ class FailureChainTests(TestCase):
 
     @patch("scraper.service.no_appointments_dialog_visible", return_value=False)
     @patch("scraper.service.site_error_page_visible", return_value=False)
-    def test_missing_form_result_is_only_possible_appointment(
+    def test_missing_form_result_is_unconfirmed_not_an_appointment(
         self, _error, _no_appointments
     ):
-        self.assertIs(
-            wait_for_form_result(MagicMock(), timeout_seconds=0),
-            ScraperStatus.POSSIBLE_APPOINTMENT,
-        )
+        with patch("scraper.service.appointment_available_dialog_visible", return_value=False):
+            with self.assertRaises(AppointmentResultUnconfirmed):
+                wait_for_form_result(MagicMock(), timeout_seconds=0)
 
     @patch("scraper.service.no_appointments_dialog_visible", return_value=True)
     @patch("scraper.service.site_error_page_visible", return_value=False)
@@ -1062,6 +1066,33 @@ class FailureChainTests(TestCase):
         )
 
         self.assertTrue(no_appointments_dialog_visible(page))
+
+    def test_explicit_available_appointment_text_is_recognized(self):
+        page = MagicMock()
+        page.locator.return_value.first.is_visible.return_value = True
+        page.locator.return_value.first.count.return_value = 1
+        page.locator.return_value.first.inner_text.return_value = "Appointments Available"
+
+        self.assertTrue(appointment_available_dialog_visible(page))
+
+    def test_no_available_appointments_is_not_positive(self):
+        page = MagicMock()
+        page.locator.return_value.first.is_visible.return_value = True
+        page.locator.return_value.first.count.return_value = 1
+        page.locator.return_value.first.inner_text.return_value = "No available appointments"
+
+        self.assertFalse(appointment_available_dialog_visible(page))
+
+    @patch("scraper.service.appointment_available_dialog_visible", return_value=True)
+    @patch("scraper.service.no_appointments_dialog_visible", return_value=False)
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    def test_explicit_available_result_is_confirmed(
+        self, _error, _no_appointments, _available
+    ):
+        self.assertIs(
+            wait_for_form_result(MagicMock(), timeout_seconds=0),
+            ScraperStatus.APPOINTMENT_FOUND,
+        )
 
     @patch("scraper.service.random.randint", side_effect=(31, 63, 125, 175))
     def test_retry_cooldown_grows_with_jitter(self, randint):

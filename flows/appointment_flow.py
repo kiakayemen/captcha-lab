@@ -457,3 +457,32 @@ def no_appointments_dialog_visible(page: Page) -> bool:
     except Exception:
         logger.exception("[appointment] Failed while checking no-appointments dialog.")
         return False
+
+
+def appointment_available_dialog_visible(page: Page) -> bool:
+    """Only explicit availability text in the result modal is a positive result."""
+    try:
+        modal = page.locator(NO_APPOINTMENTS_MODAL_SELECTOR).first
+        if not modal.is_visible():
+            return False
+        header = page.locator(NO_APPOINTMENTS_HEADER_SELECTOR).first
+        body = page.locator(NO_APPOINTMENTS_BODY_SELECTOR).first
+        text = " ".join(
+            part.inner_text().strip() for part in (header, body) if part.count()
+        )
+        if re.search(
+            r"\b(?:no|not)\s+(?:appointments?\s+available|"
+            r"available\s+appointments?|available\s+(?:time\s+)?slots?)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return False
+        return bool(re.search(
+            r"\b(?:appointments?\s+available|available\s+appointments?|"
+            r"available\s+(?:time\s+)?slots?)\b",
+            text,
+            re.IGNORECASE,
+        ))
+    except Exception:
+        logger.exception("[appointment] Failed while checking availability dialog.")
+        return False

@@ -30,6 +30,7 @@ from config import (
     LOGIN_URL,
 )
 from flows.appointment_flow import (
+    appointment_available_dialog_visible,
     fill_appointment_form,
     no_appointments_dialog_visible,
 )
@@ -130,6 +131,10 @@ class SecondCaptchaUnconfirmed(RuntimeError):
     """Submission did not produce a conclusive response or a fresh challenge."""
 
 
+class AppointmentResultUnconfirmed(RuntimeError):
+    """The form returned neither an explicit available nor unavailable result."""
+
+
 def check_stop_requested(should_stop: Callable[[], bool] | None) -> None:
     if should_stop is not None and should_stop():
         raise ScraperStopRequested("Scraper stop was requested by an operator.")
@@ -204,6 +209,8 @@ def wait_for_form_result(
             )
         if no_appointments_dialog_visible(page):
             return ScraperStatus.NO_APPOINTMENT
+        if appointment_available_dialog_visible(page):
+            return ScraperStatus.APPOINTMENT_FOUND
         page.wait_for_timeout(250)
     check_stop_requested(should_stop)
     raise_for_http_forbidden(page)
@@ -217,7 +224,12 @@ def wait_for_form_result(
         )
     if no_appointments_dialog_visible(page):
         return ScraperStatus.NO_APPOINTMENT
-    return ScraperStatus.POSSIBLE_APPOINTMENT
+    if appointment_available_dialog_visible(page):
+        return ScraperStatus.APPOINTMENT_FOUND
+    raise AppointmentResultUnconfirmed(
+        "Appointment form returned neither an explicit available nor "
+        "unavailable result within 30 seconds."
+    )
 
 
 def record_detected_http_403(
@@ -1714,12 +1726,9 @@ def _run_single_subtype_attempt(
                 )
 
             #
-            # No explicit availability signal is known on this page. Preserve
-            # an urgent alert, but do not claim that availability is confirmed.
-            #
+            # Only an explicit availability response reaches this branch.
             logger.warning(
-                "Form check had no explicit result after 30s: "
-                "POSSIBLE APPOINTMENT. "
+                "Form check showed an explicit appointment-available result. "
                 "Visa subtype=%s | URL=%s",
                 visa_sub_type,
                 page.url,
@@ -1728,19 +1737,19 @@ def _run_single_subtype_attempt(
                 config.output_dir
                 / visa_sub_type
                 / f"browser_attempt_{attempt_number:02d}"
-                / "possible_appointment.png"
+                / "appointment_found.png"
             )
             try:
                 evidence_path.parent.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(evidence_path), full_page=True)
-                logger.info("Saved possible-appointment page evidence: %s", evidence_path)
+                logger.info("Saved appointment page evidence: %s", evidence_path)
             except Exception:
                 logger.exception("Could not save possible-appointment screenshot.")
 
             result = ScraperResult(
                 status=(
                     ScraperStatus
-                    .POSSIBLE_APPOINTMENT
+                    .APPOINTMENT_FOUND
                 ),
                 started_at=started_at,
                 finished_at=datetime.now(
@@ -1753,16 +1762,12 @@ def _run_single_subtype_attempt(
             # Notify immediately when this form check finds an appointment.
             # The overall run may continue checking other subtypes, but the
             # alert must not wait for final run bookkeeping.
-            if result.status is ScraperStatus.POSSIBLE_APPOINTMENT:
+            if result.status is ScraperStatus.APPOINTMENT_FOUND:
                 notify_admin(
-                    (
-                        "Possible appointment availability: the form did not "
-                        "show a no-appointments result within 30 seconds. "
-                        "Please verify manually."
-                    ),
+                    "Appointment availability was explicitly shown by the site.",
                     page_url=result.page_url or page.url,
                     visa_sub_type=result.visa_sub_type,
-                    confirmed=False,
+                    confirmed=True,
                 )
 
             return result
