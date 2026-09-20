@@ -157,6 +157,23 @@ def wait_for_post_captcha_page_ready(
     )
 
 
+def wait_for_post_captcha_destination(page: Page, *, timeout_ms: int = 30_000) -> None:
+    """After a click, a still-visible Submit is not a successful transition."""
+    deadline = time.monotonic() + timeout_ms / 1_000
+    while time.monotonic() < deadline:
+        raise_for_http_forbidden(page)
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        if post_captcha_destination_visible(page):
+            return
+        page.wait_for_timeout(250)
+    raise RuntimeError(
+        "Background Submit did not reach an unobstructed disclaimer or form."
+    )
+
+
 def find_true_captcha_label(page: Page) -> tuple[Locator, str, str]:
     return find_true_captcha_label_in_scope(page)
 
@@ -769,11 +786,9 @@ def click_background_submit(page: Page) -> None:
         )
         background_submit.click(timeout=10_000)
         logger.info("Retried background Submit once")
-        if wait_for_post_captcha_page_ready(page) == "destination":
-            return
-    raise RuntimeError(
-        "Background Submit did not reach an unobstructed disclaimer or form."
-    )
+        wait_for_post_captcha_destination(page)
+        return
+    wait_for_post_captcha_destination(page)
 
 
 def get_verify_selection_frame(page: Page) -> FrameLocator:

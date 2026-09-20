@@ -11,6 +11,7 @@ from flows.captcha_flow import (
     click_selected_captcha_tiles,
     click_verify_selection,
     wait_for_post_captcha_page_ready,
+    wait_for_post_captcha_destination,
     background_submit_ready,
     appointment_form_ready,
     post_captcha_destination_visible,
@@ -360,6 +361,19 @@ class CaptchaPacingTests(TestCase):
         self.assertFalse(background_submit_ready(page))
         with self.assertRaisesRegex(RuntimeError, "Neither a usable background Submit"):
             wait_for_post_captcha_page_ready(page, timeout_ms=0)
+
+    @patch("flows.captcha_flow.post_captcha_destination_visible", side_effect=(False, True))
+    @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
+    @patch("flows.captcha_flow.raise_for_http_forbidden")
+    def test_submit_waits_for_destination_even_while_button_remains_visible(
+        self, _forbidden, _error, _destination
+    ):
+        page = MagicMock()
+        page.locator.return_value.last.is_visible.return_value = True
+
+        wait_for_post_captcha_destination(page)
+
+        page.wait_for_timeout.assert_called_once_with(250)
 
 
 class HttpDiagnosticsTests(TestCase):
