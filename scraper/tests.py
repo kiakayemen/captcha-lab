@@ -11,6 +11,7 @@ from flows.captcha_flow import (
     click_selected_captcha_tiles,
     click_verify_selection,
     wait_for_post_captcha_page_ready,
+    background_submit_ready,
     appointment_form_ready,
     post_captcha_destination_visible,
     login_captcha_succeeded,
@@ -291,7 +292,7 @@ class CaptchaPacingTests(TestCase):
 
     @patch(
         "flows.captcha_flow.blocking_overlay_visible",
-        side_effect=(True, True, False),
+        side_effect=(True, True, False, False),
     )
     @patch(
         "flows.captcha_flow.post_captcha_destination_visible",
@@ -307,10 +308,12 @@ class CaptchaPacingTests(TestCase):
         overlay_visible,
     ):
         page = MagicMock()
+        page.locator.return_value.last.is_visible.return_value = True
+        page.locator.return_value.last.is_enabled.return_value = True
 
         self.assertEqual(wait_for_post_captcha_page_ready(page), "ready")
 
-        self.assertEqual(overlay_visible.call_count, 3)
+        self.assertEqual(overlay_visible.call_count, 4)
         self.assertEqual(page.wait_for_timeout.call_count, 2)
 
     @patch(
@@ -337,6 +340,21 @@ class CaptchaPacingTests(TestCase):
             "destination",
         )
         self.assertEqual(page.wait_for_timeout.call_count, 1)
+
+    @patch("flows.captcha_flow.blocking_overlay_visible", return_value=False)
+    @patch("flows.captcha_flow.disclaimer_dialog_visible", return_value=False)
+    @patch("flows.captcha_flow.post_captcha_destination_visible", return_value=False)
+    @patch("flows.captcha_flow.site_error_page_visible", return_value=False)
+    @patch("flows.captcha_flow.raise_for_http_forbidden")
+    def test_clear_overlay_is_not_ready_without_usable_submit(
+        self, _forbidden, _error, _destination, _disclaimer, _overlay
+    ):
+        page = MagicMock()
+        page.locator.return_value.last.is_visible.return_value = False
+
+        self.assertFalse(background_submit_ready(page))
+        with self.assertRaisesRegex(RuntimeError, "Neither a usable background Submit"):
+            wait_for_post_captcha_page_ready(page, timeout_ms=0)
 
 
 class HttpDiagnosticsTests(TestCase):

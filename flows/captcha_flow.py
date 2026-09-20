@@ -122,6 +122,16 @@ def post_captcha_destination_visible(page: Page) -> bool:
     return disclaimer_dialog_visible(page) or appointment_form_ready(page)
 
 
+def background_submit_ready(page: Page) -> bool:
+    if blocking_overlay_visible(page) or disclaimer_dialog_visible(page):
+        return False
+    try:
+        button = page.locator(BACKGROUND_SUBMIT_BUTTON_SELECTOR).last
+        return button.is_visible() is True and button.is_enabled() is True
+    except Exception:
+        return False
+
+
 def wait_for_post_captcha_page_ready(
     page: Page,
     *,
@@ -138,10 +148,12 @@ def wait_for_post_captcha_page_ready(
         if not blocking_overlay_visible(page):
             if post_captcha_destination_visible(page):
                 return "destination"
-            return "ready"
+            if background_submit_ready(page):
+                return "ready"
         page.wait_for_timeout(250)
     raise RuntimeError(
-        "A loading overlay remained visible for 30 seconds after CAPTCHA."
+        "Neither a usable background Submit nor a post-CAPTCHA destination "
+        "appeared after the loading overlay cleared."
     )
 
 
@@ -757,6 +769,11 @@ def click_background_submit(page: Page) -> None:
         )
         background_submit.click(timeout=10_000)
         logger.info("Retried background Submit once")
+        if wait_for_post_captcha_page_ready(page) == "destination":
+            return
+    raise RuntimeError(
+        "Background Submit did not reach an unobstructed disclaimer or form."
+    )
 
 
 def get_verify_selection_frame(page: Page) -> FrameLocator:
