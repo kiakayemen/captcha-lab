@@ -14,8 +14,8 @@ if [ -n "$username" ] || [ -n "$password" ]; then
     fi
 
     case "$username$password" in
-        *[!A-Za-z0-9._~-]*)
-            echo "Tinyproxy credentials may contain only letters, numbers, '.', '_', '~', and '-'." >&2
+        *[[:space:]]*)
+            echo "Tinyproxy credentials cannot contain whitespace." >&2
             exit 1
             ;;
     esac

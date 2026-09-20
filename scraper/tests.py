@@ -198,6 +198,18 @@ class ProxyConfigurationTests(TestCase):
             },
         )
 
+    def test_playwright_proxy_config_decodes_special_characters(self):
+        self.assertEqual(
+            playwright_proxy_config(
+                "http://root%40proxy:p%21%40%5B%5B@proxy.internal:8888"
+            ),
+            {
+                "server": "http://proxy.internal:8888",
+                "username": "root@proxy",
+                "password": "p!@[[",
+            },
+        )
+
     @patch.dict(
         "os.environ",
         {

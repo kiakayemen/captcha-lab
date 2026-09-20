@@ -50,6 +50,11 @@ The proxy image accepts optional `TINYPROXY_USERNAME` and
 include URL-encoded credentials in `SCRAPER_PROXY_URLS` if internal network
 access alone is not sufficient. Do not enable Hamravesh external access unless
 the proxy is authenticated and intentionally meant to be public.
+For example, encode `!`, `@`, and `[` inside a username or password as `%21`,
+`%40`, and `%5B`; the scraper decodes them before passing the credentials to
+Playwright. The Tinyproxy image permits characters such as `!`, `@`, and `[`
+in credentials, but rejects whitespace because its configuration uses
+whitespace-separated fields.
 
 For local testing, start the optional proxy profile with:
 
