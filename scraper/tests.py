@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from contextlib import ExitStack
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
 
@@ -36,6 +37,7 @@ from scraper.service import (
     subtype_retry_delay_seconds,
     wait_for_login_captcha_outcome,
     restart_unclear_login_captcha,
+    _run_login_captcha_attempt,
 )
 from scraper.http_diagnostics import response_diagnostics
 from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
@@ -47,6 +49,40 @@ from scraper.proxy import (
     configured_proxy_urls,
     playwright_proxy_config,
 )
+
+
+class LoginCaptchaAttemptRegressionTests(TestCase):
+    def test_login_attempt_reaches_tile_selection_without_second_captcha_frame(self):
+        class ReachedTileSelection(Exception):
+            pass
+
+        page = MagicMock()
+        page.locator.return_value.inner_text.return_value = "Please select all boxes with number 123"
+        decision = MagicMock()
+        decision.selected_tiles = (1,)
+        decision.uncertain_tiles = ()
+
+        def solve(_image, *, target, reader, timings):
+            now = datetime.now(timezone.utc).isoformat()
+            timings.update(ocr_started_at=now, ocr_finished_at=now, ocr_duration_ms=0)
+            return decision, [MagicMock()] * 9, None, MagicMock()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("scraper.service.fill_password"))
+            stack.enter_context(patch("scraper.service.find_true_captcha_label", return_value=(None, "label", "123")))
+            stack.enter_context(patch("scraper.service.expect"))
+            stack.enter_context(patch("scraper.service.wait_for_captcha_tiles_ready"))
+            stack.enter_context(patch("scraper.service.save_captcha_crop", return_value=MagicMock()))
+            stack.enter_context(patch("scraper.service.record_captcha_stage"))
+            stack.enter_context(patch("scraper.service.solve_captcha_image", side_effect=solve))
+            stack.enter_context(patch("scraper.service.log_captcha_decision"))
+            stack.enter_context(patch("scraper.service.print_decision"))
+            stack.enter_context(patch("scraper.service.click_selected_captcha_tiles", side_effect=ReachedTileSelection))
+
+            with self.assertRaises(ReachedTileSelection):
+                _run_login_captcha_attempt(
+                    page, gpu=False, output_dir=MagicMock(), reader=MagicMock(), attempt_number=1
+                )
 
 
 class ProxyConfigurationTests(TestCase):

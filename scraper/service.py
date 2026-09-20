@@ -746,7 +746,6 @@ def _run_login_captcha_attempt(
         decision
     )
 
-    submitted_challenge_signature = second_captcha_challenge_signature(frame)
     selection_started_at = datetime.now(timezone.utc)
     selection_started = time.perf_counter()
     click_selected_captcha_tiles(
@@ -1171,6 +1170,7 @@ def _run_second_captcha_attempt(
         decision
     )
 
+    submitted_challenge_signature = second_captcha_challenge_signature(frame)
     selection_started_at = datetime.now(timezone.utc)
     selection_started = time.perf_counter()
     click_selected_captcha_tiles(
