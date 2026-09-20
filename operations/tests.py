@@ -107,6 +107,16 @@ class ScraperEventTests(TestCase):
                 status="403",
                 data={"proxy_endpoint": "http://proxy-a:8888", "response_url": url},
             )
+        for status in ("403", "200"):
+            ScraperEvent.objects.create(
+                run=self.run,
+                event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+                status=status,
+                data={
+                    "proxy_endpoint": "http://proxy-a:8888",
+                    "response_request_url": "https://example.test/Global/account/login",
+                },
+            )
         output = StringIO()
 
         call_command("proxy_403_report", "--hours", "24", "--json", stdout=output)
@@ -119,6 +129,17 @@ class ScraperEventTests(TestCase):
                 "request_path": "/global/newcaptcha/generatecaptcha",
                 "responses": 2,
                 "runs": 1,
+                "total_responses": None,
+                "forbidden_percent": None,
+                "independent_egress_probes": [],
+            }, {
+                "proxy_endpoint": "http://proxy-a:8888",
+                "request_path": "/global/account/login",
+                "responses": 1,
+                "runs": 1,
+                "total_responses": 2,
+                "forbidden_percent": 50.0,
+                "independent_egress_probes": [],
             }],
         )
 
