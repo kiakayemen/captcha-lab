@@ -29,27 +29,48 @@ When running Python commands directly, the application loads both `.env` and `.e
 
 The `proxy/` directory contains a standalone Tinyproxy image. It is separate
 from the web, worker, and beat image and can be deployed repeatedly from the
-same repository. In Hamravesh, create five apps using `proxy/Dockerfile`, give
-each app one replica and internal port `8888`, disable external access, and
-assign a different static outbound IP to each app.
+same repository. In Hamravesh, give each proxy app one replica and internal
+port `8888`, disable external access, and assign a different static outbound
+IP where available.
 
-Configure the Celery worker with the five internal service addresses:
+Configure the Celery worker with its internal service addresses:
 
 ```text
-SCRAPER_PROXY_URLS=http://tinyproxy-1.namespace.svc:8888,http://tinyproxy-2.namespace.svc:8888,http://tinyproxy-3.namespace.svc:8888,http://tinyproxy-4.namespace.svc:8888,http://tinyproxy-5.namespace.svc:8888
+SCRAPER_PROXY_URLS=http://tinyproxy-1.namespace.svc:8888,http://tinyproxy-2.namespace.svc:8888
 ```
 
 Each scraper run shuffles the configured endpoints and uses every proxy once
 before starting another shuffled cycle. Consecutive browser attempts do not
 reuse the same proxy when another endpoint is available. Each browser keeps its
-selected proxy for the entire session. When the variable is empty, the scraper
-retains its previous direct-network behavior.
+selected proxy for the entire session. At least two distinct configured routes
+are required; otherwise the scraper stops before opening a browser.
 
 The proxy image accepts optional `TINYPROXY_USERNAME` and
 `TINYPROXY_PASSWORD` environment variables. Set both on every proxy app and
 include URL-encoded credentials in `SCRAPER_PROXY_URLS` if internal network
 access alone is not sufficient. Do not enable Hamravesh external access unless
 the proxy is authenticated and intentionally meant to be public.
+
+To add an external authenticated route without replacing the worker's existing
+pool, set `SCRAPER_ADDITIONAL_PROXY_URLS` in the worker's secret environment.
+For the ParsPack endpoint, its value has this shape (replace the placeholder
+with the URL-encoded password; never commit the password):
+
+```text
+http://captcha:<URL-encoded-password>@94.184.43.30:8888
+```
+
+Before adding it to the worker pool, test HTTPS CONNECT from the worker shell:
+
+```text
+python manage.py check_proxy_tunnel --server 94.184.43.30:8888 --username captcha
+```
+
+The command prompts for the password without putting it in shell history. It
+checks tunnels to both the IP-check service and the BLS host, and does not run
+the scraper or consume browser retries. A successful CONNECT establishes only
+that the proxy can reach the host; it does not guarantee BLS will accept its
+outbound IP.
 
 For local testing, start the optional proxy profile with:
 
