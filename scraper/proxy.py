@@ -34,13 +34,9 @@ def configured_proxy_urls() -> tuple[str, ...]:
 
     # Repeating an endpoint in the environment must not give that IP
     # additional weight in the rotation.
-    return tuple(
-        dict.fromkeys(
-            value
-            for value in values
-            if value
-        )
-    )
+    return tuple(dict.fromkeys(
+        value.rstrip("/") for value in values if value
+    ))
 
 
 def playwright_proxy_config(

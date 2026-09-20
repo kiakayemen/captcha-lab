@@ -168,6 +168,24 @@ class ProxyConfigurationTests(TestCase):
             ("http://proxy-1.internal:8888",),
         )
 
+    @patch.dict(
+        "os.environ",
+        {
+            "SCRAPER_PROXY_URLS": (
+                "http://captcha:secret@proxy-1.internal:8888,"
+                "http://captcha:secret@proxy-1.internal:8888/"
+            )
+        },
+        clear=False,
+    )
+    def test_trailing_slash_cannot_disguise_one_proxy_as_two(self):
+        self.assertEqual(
+            configured_proxy_urls(),
+            ("http://captcha:secret@proxy-1.internal:8888",),
+        )
+        with self.assertRaises(ProxyConfigurationError):
+            PlaywrightProxyRotator().validate_required_pool()
+
     def test_playwright_proxy_config_separates_credentials(self):
         self.assertEqual(
             playwright_proxy_config(
