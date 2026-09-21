@@ -34,10 +34,11 @@ no fixed proxy count or provider-specific configuration.
 
 Configure the Celery worker with at least two distinct, comma-separated proxy
 URLs. Append new routes to the existing value rather than replacing it. For
-example, once a ParsPack route has been verified:
+example, once a ParsPack route has been verified, use its actual proxy address
+and the URL-encoded Tinyproxy credentials:
 
 ```text
-SCRAPER_PROXY_URLS=<existing-proxy-1>,<existing-proxy-2>,http://captcha:<URL-encoded-password>@188.121.112.77:8888
+SCRAPER_PROXY_URLS=<existing-proxy-1>,<existing-proxy-2>,http://captcha:<URL-encoded-Tinyproxy-password>@<ParsPack-proxy-address>:8888
 ```
 
 Each scraper run shuffles the configured endpoints and uses every proxy once
@@ -57,7 +58,9 @@ Playwright. The Tinyproxy image permits characters such as `!`, `@`, and `[`
 in credentials, but rejects whitespace because its configuration uses
 whitespace-separated fields.
 
-The proxy URL's host and port identify where the worker connects. Before
+The current ParsPack server address is `94.184.43.30`; replace the address in
+the example only if the proxy is reachable at a different address. The proxy
+URL's host and port identify where the worker connects. Before
 putting a route into the live pool, verify the proxy's *outbound* IP with a
 separate IP-check request; an inbound static IP does not by itself guarantee
 a fixed outbound IP.
