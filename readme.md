@@ -29,21 +29,22 @@ When running Python commands directly, the application loads both `.env` and `.e
 
 The `proxy/` directory contains a standalone Tinyproxy image. It is separate
 from the web, worker, and beat image and can be deployed repeatedly from the
-same repository. In Hamravesh, create five apps using `proxy/Dockerfile`, give
-each app one replica and internal port `8888`, disable external access, and
-assign a different static outbound IP to each app.
+same repository. Each proxy route may be hosted separately; the scraper has
+no fixed proxy count or provider-specific configuration.
 
-Configure the Celery worker with the five internal service addresses:
+Configure the Celery worker with at least two distinct, comma-separated proxy
+URLs. Append new routes to the existing value rather than replacing it. For
+example, once a ParsPack route has been verified:
 
 ```text
-SCRAPER_PROXY_URLS=http://tinyproxy-1.namespace.svc:8888,http://tinyproxy-2.namespace.svc:8888,http://tinyproxy-3.namespace.svc:8888,http://tinyproxy-4.namespace.svc:8888,http://tinyproxy-5.namespace.svc:8888
+SCRAPER_PROXY_URLS=<existing-proxy-1>,<existing-proxy-2>,http://captcha:<URL-encoded-password>@188.121.112.77:8888
 ```
 
 Each scraper run shuffles the configured endpoints and uses every proxy once
 before starting another shuffled cycle. Consecutive browser attempts do not
 reuse the same proxy when another endpoint is available. Each browser keeps its
 selected proxy for the entire session. When the variable is empty, the scraper
-retains its previous direct-network behavior.
+refuses to start; browser requests never use the worker's direct egress.
 
 The proxy image accepts optional `TINYPROXY_USERNAME` and
 `TINYPROXY_PASSWORD` environment variables. Set both on every proxy app and
@@ -55,6 +56,11 @@ For example, encode `!`, `@`, and `[` inside a username or password as `%21`,
 Playwright. The Tinyproxy image permits characters such as `!`, `@`, and `[`
 in credentials, but rejects whitespace because its configuration uses
 whitespace-separated fields.
+
+The proxy URL's host and port identify where the worker connects. Before
+putting a route into the live pool, verify the proxy's *outbound* IP with a
+separate IP-check request; an inbound static IP does not by itself guarantee
+a fixed outbound IP.
 
 For local testing, start the optional proxy profile with:
 
