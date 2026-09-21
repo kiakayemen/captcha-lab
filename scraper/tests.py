@@ -3,6 +3,8 @@ from contextlib import ExitStack
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
 
+from config import BLS_EMAIL, BLS_PASSWORD, configured_bls_accounts
+
 from flows.captcha_flow import (
     CAPTCHA_POST_SELECTION_SETTLE_MS,
     CAPTCHA_PRE_CLICK_SETTLE_MS,
@@ -58,6 +60,21 @@ from scraper.proxy import (
     configured_proxy_urls,
     playwright_proxy_config,
 )
+
+
+class AccountConfigurationTests(TestCase):
+    @patch.dict("os.environ", {"BLS_EMAIL_2": "second@example.com", "BLS_PASSWORD_2": "second-pass"})
+    def test_loads_both_account_pairs(self):
+        accounts = configured_bls_accounts()
+        self.assertEqual(accounts[0].email, BLS_EMAIL)
+        self.assertEqual(accounts[0].password, BLS_PASSWORD)
+        self.assertEqual(accounts[1].email, "second@example.com")
+        self.assertEqual(accounts[1].password, "second-pass")
+
+    @patch.dict("os.environ", {"BLS_EMAIL_2": "second@example.com", "BLS_PASSWORD_2": ""})
+    def test_rejects_incomplete_second_account(self):
+        with self.assertRaisesRegex(RuntimeError, "must both be set"):
+            configured_bls_accounts()
 
 
 class CaptchaAttemptRegressionTests(TestCase):
@@ -519,7 +536,7 @@ class HttpDiagnosticsTests(TestCase):
         self.assertTrue(restart_unclear_login_captcha(page))
 
         page.goto.assert_called_once()
-        run_login.assert_called_once_with(page)
+        run_login.assert_called_once_with(page, account=None)
 
     @patch("flows.captcha_flow.raise_for_http_forbidden")
     @patch("flows.captcha_flow.expect")
@@ -674,6 +691,7 @@ class FailureChainTests(TestCase):
         self.assertEqual(result.terminal_failure, result.attempt_failures[0])
         self.assertEqual(result.terminal_failure["error_type"], "HTTP403Forbidden")
 
+    @patch.dict("os.environ", {"BLS_EMAIL_2": "second@example.com", "BLS_PASSWORD_2": "second-pass"})
     @patch("scraper.service.interruptible_cooldown")
     @patch("scraper.service.get_reader")
     @patch("scraper.service._run_single_subtype_attempt")
@@ -705,6 +723,8 @@ class FailureChainTests(TestCase):
 
         self.assertEqual(result.status, ScraperStatus.NO_APPOINTMENT)
         self.assertEqual(run_attempt.call_count, 2)
+        selected_accounts = [entry.kwargs["account"].email for entry in run_attempt.call_args_list]
+        self.assertEqual(len(set(selected_accounts)), 2)
         self.assertEqual(len(result.attempt_failures), 1)
         self.assertEqual(result.first_failure["status"], "server_error")
         self.assertIsNone(result.terminal_failure)
@@ -856,7 +876,7 @@ class FailureChainTests(TestCase):
         self.assertEqual(solve_attempt.call_count, 2)
         self.assertIs(solve_attempt.call_args_list[0].args[0], page)
         self.assertIs(solve_attempt.call_args_list[1].args[0], page)
-        restart_login.assert_called_once_with(page)
+        restart_login.assert_called_once_with(page, account=None)
 
     @patch(
         "scraper.service._run_login_captcha_attempt",

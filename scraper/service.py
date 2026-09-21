@@ -25,9 +25,11 @@ from captcha_solver import (
     write_outputs,
 )
 from config import (
+    BLSAccount,
     BLS_EMAIL,
     BLS_PASSWORD,
     LOGIN_URL,
+    configured_bls_accounts,
 )
 from flows.appointment_flow import (
     appointment_available_dialog_visible,
@@ -234,6 +236,7 @@ def wait_for_form_result(
 
 def record_detected_http_403(
     *,
+    account: BLSAccount,
     page,
     context,
     egress_ip: str | None,
@@ -251,7 +254,7 @@ def record_detected_http_403(
     data = response_diagnostics(
         response=response,
         context=context,
-        account=BLS_EMAIL,
+        account=account.email,
         egress_ip=egress_ip,
         egress_ip_hash=egress_ip_hash,
         egress_lookup_error=egress_lookup_error,
@@ -422,14 +425,14 @@ def record_captcha_stage(
         max(0, duration_ms),
         status,
     )
-def run_login_step(page) -> None:
+def run_login_step(page, account: BLSAccount | None = None) -> None:
     logger.info(
         "Submitting login email."
     )
 
     submit_email(
         page,
-        BLS_EMAIL,
+        (account.email if account else BLS_EMAIL),
     )
 
     page.wait_for_load_state(
@@ -508,6 +511,7 @@ def save_live_attempt_bundle(
 def run_captcha_step(
     page,
     *,
+    account: BLSAccount | None = None,
     gpu: bool,
     output_dir: Path,
     reader,
@@ -523,6 +527,7 @@ def run_captcha_step(
         )
         outcome = _run_login_captcha_attempt(
             page,
+            account=account,
             gpu=gpu,
             output_dir=output_dir,
             reader=reader,
@@ -536,7 +541,7 @@ def run_captcha_step(
                     "Login CAPTCHA remained unclear after "
                     f"{MAX_LOGIN_CAPTCHA_ATTEMPTS} same-session attempts."
                 )
-            if not restart_unclear_login_captcha(page):
+            if not restart_unclear_login_captcha(page, account=account):
                 raise RuntimeError(
                     "Login CAPTCHA outcome was unclear on an unknown page state."
                 )
@@ -553,7 +558,7 @@ def run_captcha_step(
     )
 
 
-def restart_unclear_login_captcha(page) -> bool:
+def restart_unclear_login_captcha(page, account: BLSAccount | None = None) -> bool:
     """Restart login inside the existing browser for known unclear pages."""
     path = urlparse(str(page.url)).path.lower()
     if path not in RECOVERABLE_UNCLEAR_LOGIN_PATHS:
@@ -575,13 +580,14 @@ def restart_unclear_login_captcha(page) -> bool:
         wait_until="domcontentloaded",
         timeout=60_000,
     )
-    run_login_step(page)
+    run_login_step(page, account=account)
     return True
 
 
 def _run_login_captcha_attempt(
     page,
     *,
+    account: BLSAccount | None = None,
     gpu: bool,
     output_dir: Path,
     reader,
@@ -595,7 +601,7 @@ def _run_login_captcha_attempt(
 
     fill_password(
         page,
-        target_password=BLS_PASSWORD,
+        target_password=(account.password if account else BLS_PASSWORD),
     )
 
     logger.info(
@@ -1393,6 +1399,7 @@ def run_post_login_step(
 
 def _run_single_subtype_attempt(
     *,
+    account: BLSAccount,
     config: ScraperConfig,
     visa_sub_type: str,
     attempt_number: int,
@@ -1514,7 +1521,7 @@ def _run_single_subtype_attempt(
                 login_response_data = response_diagnostics(
                     response=response,
                     context=context,
-                    account=BLS_EMAIL,
+                    account=account.email,
                     egress_ip=egress_ip,
                     egress_ip_hash=egress_ip_hash,
                     egress_lookup_error=egress_lookup_error,
@@ -1567,7 +1574,8 @@ def _run_single_subtype_attempt(
             )
 
             run_login_step(
-                page
+                page,
+                account=account,
             )
 
             logger.info(
@@ -1576,6 +1584,7 @@ def _run_single_subtype_attempt(
 
             run_captcha_step(
                 page,
+                account=account,
                 gpu=config.gpu,
                 output_dir=(
                     config.output_dir
@@ -1791,6 +1800,7 @@ def _run_single_subtype_attempt(
             page_state = inspect_page_state(page)
             if page_state.get("http_403"):
                 record_detected_http_403(
+                    account=account,
                     page=page,
                     context=context,
                     egress_ip=egress_ip,
@@ -1893,6 +1903,7 @@ def _run_single_subtype_attempt(
             page_state = inspect_page_state(page)
             if page_state.get("http_403"):
                 record_detected_http_403(
+                    account=account,
                     page=page,
                     context=context,
                     egress_ip=egress_ip,
@@ -2073,6 +2084,9 @@ def run_scraper(
         )
 
     proxy_rotator = PlaywrightProxyRotator()
+    accounts = list(configured_bls_accounts())
+    random.shuffle(accounts)
+    account_index = 0
     try:
         proxy_rotator.validate_required_pool(
             allow_single_proxy=config.allow_single_proxy,
@@ -2146,8 +2160,11 @@ def run_scraper(
             1,
             MAX_SUBTYPE_ATTEMPTS + 1,
         ):
+            account = accounts[account_index % len(accounts)]
+            account_index += 1
             result = (
                 _run_single_subtype_attempt(
+                    account=account,
                     config=config,
                     visa_sub_type=visa_sub_type,
                     attempt_number=attempt_number,
