@@ -10,10 +10,12 @@ credential-bearing ParsPack proxy URL or TINYPROXY_USERNAME/PASSWORD.
 from __future__ import annotations
 
 import os
+import base64
+import socket
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -52,6 +54,35 @@ def parspack_proxy_url(env: dict[str, str]) -> str:
     return urlunsplit(("http", authority, "", "", ""))
 
 
+def check_proxy_tunnel(proxy_url: str, target: str) -> bool:
+    """Check HTTPS CONNECT without printing the proxy credentials."""
+    parsed = urlsplit(proxy_url)
+    credentials = f"{unquote(parsed.username or '')}:{unquote(parsed.password or '')}"
+    authorization = base64.b64encode(credentials.encode()).decode("ascii")
+    request = (
+        f"CONNECT {target}:443 HTTP/1.1\r\n"
+        f"Host: {target}:443\r\n"
+        f"Proxy-Authorization: Basic {authorization}\r\n"
+        "\r\n"
+    ).encode("ascii")
+    try:
+        with socket.create_connection((parsed.hostname, parsed.port), timeout=15) as connection:
+            connection.settimeout(15)
+            connection.sendall(request)
+            response = bytearray()
+            while b"\r\n" not in response and len(response) < 1024:
+                chunk = connection.recv(1024)
+                if not chunk:
+                    break
+                response.extend(chunk)
+        status = response.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+    except OSError as error:
+        print(f"Proxy check for {target}: connection error ({type(error).__name__}).", file=sys.stderr)
+        return False
+    print(f"Proxy check for {target}: {status or 'no HTTP response'}.", flush=True)
+    return status.startswith("HTTP/1.1 200 ") or status.startswith("HTTP/1.0 200 ")
+
+
 def main() -> int:
     load_dotenv(PROJECT_ROOT / ".env")
     load_dotenv(PROJECT_ROOT / ".env.secrets")
@@ -65,6 +96,13 @@ def main() -> int:
         proxy_url = parspack_proxy_url(env)
     except ValueError as error:
         print(error, file=sys.stderr)
+        return 2
+    checks = [
+        check_proxy_tunnel(proxy_url, target)
+        for target in ("api.ipify.org", "iran.blsspainglobal.com")
+    ]
+    if not all(checks):
+        print("ParsPack proxy tunnel failed; scraper was not started.", file=sys.stderr)
         return 2
 
     # The child process sees only the requested account and proxy. Never print
