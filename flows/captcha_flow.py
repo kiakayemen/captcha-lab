@@ -25,10 +25,12 @@ from extract_tiles import (
 from .selectors import (
     CAPTCHA_INSTRUCTION_PATTERN,
     BOOK_NOW_SELECTOR,
+    BOOK_NEW_APPOINTMENT_SELECTOR,
     BACKGROUND_SUBMIT_BUTTON_SELECTOR,
     CAPTCHA_LABEL_SELECTOR,
     CAPTCHA_TILE_SELECTOR,
     LOGIN_FORM_SELECTOR,
+    LOGOUT_SELECTOR,
     NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
     OK_DIALOG_BUTTON_SELECTOR,
     SECOND_CAPTCHA_SUBMIT_SELECTOR,
@@ -81,7 +83,7 @@ def site_error_page_visible(page: Page) -> bool:
 def appointment_form_visible(page: Page) -> bool:
     try:
         return (
-            page.locator('label.form-label:has-text("Jurisdiction")')
+            page.locator('label.form-label:visible:has-text("Jurisdiction")')
             .first
             .is_visible()
             is True
@@ -102,7 +104,7 @@ def appointment_form_ready(page: Page) -> bool:
         return False
     try:
         jurisdiction = page.locator(
-            'div.mb-3:has(label.form-label:has-text("Jurisdiction")) '
+            'div.mb-3:visible:has(label.form-label:visible:has-text("Jurisdiction")) '
             'span.k-widget.k-dropdown:visible'
         ).first
         # Playwright checks real actionability without selecting anything.
@@ -127,7 +129,7 @@ def post_disclaimer_state(page: Page) -> dict[str, object]:
         overlay_count = None
     try:
         widget_visible = page.locator(
-            'div.mb-3:has(label.form-label:has-text("Jurisdiction")) '
+            'div.mb-3:visible:has(label.form-label:visible:has-text("Jurisdiction")) '
             'span.k-widget.k-dropdown:visible'
         ).first.is_visible()
     except Exception:
@@ -630,7 +632,7 @@ def wait_for_book_now(page: Page) -> None:
 
 def click_nav_book_new_appointment(page: Page) -> None:
     wait_for_preloader_to_clear(page, timeout=90_000)
-    nav_link = page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR)
+    nav_link = page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR).first
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         raise_for_http_forbidden(page)
@@ -640,6 +642,11 @@ def click_nav_book_new_appointment(page: Page) -> None:
             )
         if nav_link.is_visible():
             break
+        if page.locator(LOGOUT_SELECTOR).first.is_visible():
+            fallback_link = page.locator(BOOK_NEW_APPOINTMENT_SELECTOR).first
+            if fallback_link.is_visible():
+                nav_link = fallback_link
+                break
         page.wait_for_timeout(250)
     else:
         raise RuntimeError(
@@ -673,7 +680,12 @@ def login_captcha_succeeded(page: Page) -> bool:
     try:
         if "logincaptcha" in page.url.lower():
             return False
-        return page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible()
+        if page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible():
+            return True
+        return (
+            page.locator(LOGOUT_SELECTOR).first.is_visible()
+            and page.locator(BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible()
+        )
     except Exception:
         return False
 

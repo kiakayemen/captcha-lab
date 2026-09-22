@@ -70,7 +70,7 @@ def _find_visible_dropdown_container(
 
         for i in range(containers.count()):
             container = containers.nth(i)
-            label = container.locator("label.form-label")
+            label = container.locator("label.form-label:visible")
 
             if label.count() == 0:
                 continue

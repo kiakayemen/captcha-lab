@@ -9,7 +9,13 @@ BOOK_NOW_SELECTOR = 'a[href="/Global/blsappointment/manageappointment"]'
 NO_APPOINTMENTS_MODAL_SELECTOR = 'div.modal-dialog.modal-dialog-centered:has(#commonModalLabel)'
 NO_APPOINTMENTS_HEADER_SELECTOR = "#commonModalHeader"
 NO_APPOINTMENTS_BODY_SELECTOR = "#commonModalBody"
-NAV_BOOK_NEW_APPOINTMENT_SELECTOR = 'a.nav-link.new-app-active[href="/Global/bls/visatypeverification"]'
+NAV_BOOK_NEW_APPOINTMENT_SELECTOR = (
+    'nav a[href*="/bls/visatypeverification" i]:visible'
+)
+BOOK_NEW_APPOINTMENT_SELECTOR = (
+    'a[href*="/bls/visatypeverification" i]:visible'
+)
+LOGOUT_SELECTOR = 'a[href*="OnLogout" i]:visible'
 OK_DIALOG_BUTTON_SELECTOR = (
     'div.modal-dialog.modal-dialog-centered:has(#commonModalLabel) '
     'button[data-bs-dismiss="modal"], '

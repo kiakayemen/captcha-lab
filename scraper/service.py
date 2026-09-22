@@ -70,8 +70,11 @@ from flows.errors import (
 )
 from flows.selectors import (
     BACKGROUND_SUBMIT_BUTTON_SELECTOR,
+    BOOK_NEW_APPOINTMENT_SELECTOR,
     CAPTCHA_INSTRUCTION_PATTERN,
     CAPTCHA_TILE_SELECTOR,
+    LOGOUT_SELECTOR,
+    NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
 )
 from notifications import (
     log_no_appointment,
@@ -330,6 +333,17 @@ def wait_for_login_captcha_outcome(page) -> str:
 
     if captcha_instruction_present(page):
         return "instruction_present"
+    try:
+        logger.warning(
+            "Login CAPTCHA outcome unclear: path=%s nav_link=%s "
+            "appointment_link=%s logout_link=%s",
+            urlparse(str(page.url)).path,
+            page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible(),
+            page.locator(BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible(),
+            page.locator(LOGOUT_SELECTOR).first.is_visible(),
+        )
+    except Exception:
+        logger.warning("Login CAPTCHA outcome unclear; navigation state unavailable.")
     return "unclear"
 
 
