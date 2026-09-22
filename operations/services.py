@@ -219,6 +219,7 @@ def serialize_scraper_config(
             config.visa_sub_types
         ),
         "allow_single_proxy": config.allow_single_proxy,
+        "direct_connection": config.direct_connection,
     }
 
 
@@ -242,6 +243,7 @@ def deserialize_scraper_config(
             config_data["visa_sub_types"]
         ),
         allow_single_proxy=bool(config_data.get("allow_single_proxy", False)),
+        direct_connection=bool(config_data.get("direct_connection", False)),
     )
 
 

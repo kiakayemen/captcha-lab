@@ -332,6 +332,40 @@ class ProxyConfigurationTests(TestCase):
             choose_playwright_proxy()
         )
 
+    @patch.dict(
+        "os.environ",
+        {"SCRAPER_PROXY_URLS": "http://one:8888,http://two:8888"},
+    )
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_explicit_direct_run_ignores_configured_proxies(
+        self, run_attempt, _reader
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.return_value = ScraperResult(
+            status=ScraperStatus.NO_APPOINTMENT,
+            started_at=now,
+            finished_at=now,
+        )
+
+        result = run_scraper(ScraperConfig(
+            visa_sub_types=("Student Visa",),
+            direct_connection=True,
+        ))
+
+        self.assertEqual(result.status, ScraperStatus.NO_APPOINTMENT)
+        self.assertIsNone(run_attempt.call_args.kwargs["proxy_config"])
+
+    @patch.dict("os.environ", {"SCRAPER_PROXY_URLS": ""})
+    @patch("scraper.service.get_reader")
+    def test_default_run_still_requires_proxy_pool(self, get_reader):
+        result = run_scraper(ScraperConfig(
+            visa_sub_types=("Student Visa",),
+        ))
+
+        self.assertEqual(result.error_type, "ProxyConfigurationError")
+        get_reader.assert_not_called()
+
     def test_playwright_proxy_config_rejects_invalid_scheme(self):
         with self.assertRaises(ValueError):
             playwright_proxy_config(

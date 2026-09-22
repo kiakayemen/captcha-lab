@@ -2,7 +2,21 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
+
+import django
+from dotenv import load_dotenv
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(PROJECT_ROOT / ".env.secrets")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "control_panel.settings")
+# This standalone entry point does not create a ScraperRun or write events.
+if not os.environ.get("DATABASE_URL"):
+    os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+django.setup()
 
 from scraper.models import ScraperConfig
 from scraper.service import run_scraper
@@ -26,6 +40,12 @@ def parse_args() -> argparse.Namespace:
         "--headless",
         action="store_true",
         help="Run without displaying the browser.",
+    )
+
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="Use this machine's connection without a scraper proxy.",
     )
 
     parser.add_argument(
@@ -66,6 +86,7 @@ def main() -> None:
         gpu=args.gpu,
         output_dir=args.output,
         visa_sub_types=tuple(args.visa_sub_types),
+        direct_connection=args.direct,
     )
 
     result = run_scraper(config)

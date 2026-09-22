@@ -25,6 +25,12 @@ class Command(BaseCommand):
         )
 
         parser.add_argument(
+            "--direct",
+            action="store_true",
+            help="Use this machine's connection for this manual run.",
+        )
+
+        parser.add_argument(
             "--gpu",
             action="store_true",
             help="Use CUDA when available (MPS is selected automatically).",
@@ -59,6 +65,7 @@ class Command(BaseCommand):
                 options["visa_sub_types"]
             ),
             allow_single_proxy=options["allow_single_proxy"],
+            direct_connection=options["direct"],
         )
 
         self.stdout.write(

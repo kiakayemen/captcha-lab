@@ -2097,29 +2097,32 @@ def run_scraper(
             error_message=str(error),
         )
 
-    proxy_rotator = PlaywrightProxyRotator()
+    proxy_rotator = None if config.direct_connection else PlaywrightProxyRotator()
     accounts = list(configured_bls_accounts())
     random.shuffle(accounts)
     account_index = 0
-    try:
-        proxy_rotator.validate_required_pool(
-            allow_single_proxy=config.allow_single_proxy,
-        )
-    except ProxyConfigurationError as error:
-        logger.error("Proxy configuration rejected: %s", error)
-        return ScraperResult(
-            status=ScraperStatus.FAILED,
-            started_at=overall_started_at,
-            finished_at=datetime.now(timezone.utc),
-            error_type=type(error).__name__,
-            error_message=str(error),
-        )
+    if proxy_rotator is None:
+        logger.warning("Manual direct connection selected; browser proxy disabled.")
+    else:
+        try:
+            proxy_rotator.validate_required_pool(
+                allow_single_proxy=config.allow_single_proxy,
+            )
+        except ProxyConfigurationError as error:
+            logger.error("Proxy configuration rejected: %s", error)
+            return ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=overall_started_at,
+                finished_at=datetime.now(timezone.utc),
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
 
-    logger.info(
-        "Validated fail-closed proxy pool with %s endpoints; "
-        "direct browser egress is disabled.",
-        len(proxy_rotator.proxy_urls),
-    )
+        logger.info(
+            "Validated fail-closed proxy pool with %s endpoints; "
+            "direct browser egress is disabled.",
+            len(proxy_rotator.proxy_urls),
+        )
     logger.info("Getting PARSeq-tiny reader for this worker. GPU=%s", config.gpu)
     reader = get_reader(gpu=config.gpu)
     login_request_state: dict[str, float | None] = {
@@ -2183,7 +2186,7 @@ def run_scraper(
                     visa_sub_type=visa_sub_type,
                     attempt_number=attempt_number,
                     reader=reader,
-                    proxy_config=proxy_rotator.choose(),
+                    proxy_config=(proxy_rotator.choose() if proxy_rotator else None),
                     login_request_state=login_request_state,
                     should_stop=should_stop,
                 )

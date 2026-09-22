@@ -239,6 +239,11 @@ it does not install the browser binary. `playwright install chromium` is
 required before running `playwright_smoke.py`, Celery scraper tasks, or any
 other browser automation.
 
+For a visible manual run from the laptop's own connection, use
+`python playwright_smoke.py --direct`. This explicit option ignores
+`SCRAPER_PROXY_URLS` for that run. The standalone script does not need a
+database; scheduled runs still require their configured proxy pool.
+
 On Linux, install the Chromium system dependencies as well when required:
 
 ```bash
