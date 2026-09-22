@@ -99,7 +99,7 @@ def main() -> int:
         return 2
     checks = [
         check_proxy_tunnel(proxy_url, target)
-        for target in ("api.ipify.org", "iran.blsspainglobal.com")
+        for target in ("checkip.amazonaws.com", "iran.blsspainglobal.com")
     ]
     if not all(checks):
         print("ParsPack proxy tunnel failed; scraper was not started.", file=sys.stderr)

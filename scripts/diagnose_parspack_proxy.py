@@ -22,7 +22,7 @@ if proxy.username is not None:
     token = base64.b64encode(credentials.encode("utf-8"))
     auth_header = b"Proxy-Authorization: Basic " + token + b"\r\n"
 
-for target in ("api.ipify.org", "iran.blsspainglobal.com"):
+for target in ("checkip.amazonaws.com", "iran.blsspainglobal.com"):
     try:
         with socket.create_connection((proxy.hostname, proxy.port), timeout=15) as sock:
             sock.settimeout(15)

@@ -271,7 +271,7 @@ def record_detected_http_403(
         failure_egress_lookup_error,
     ) = resolve_egress_ip(context)
     data["egress_ip_at_failure"] = failure_egress_ip
-    data["egress_ip_at_failure_observation"] = "independent_ipify_probe"
+    data["egress_ip_at_failure_observation"] = "independent_aws_checkip_probe"
     data["egress_ip_hash_at_failure"] = failure_egress_ip_hash
     data["egress_lookup_error_at_failure"] = failure_egress_lookup_error
     data["response_url"] = state.get("url")

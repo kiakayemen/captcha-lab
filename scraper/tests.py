@@ -50,7 +50,7 @@ from scraper.service import (
     _run_second_captcha_attempt,
     AppointmentResultUnconfirmed,
 )
-from scraper.http_diagnostics import response_diagnostics
+from scraper.http_diagnostics import EGRESS_IP_URL, resolve_egress_ip, response_diagnostics
 from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
 
 from scraper.proxy import (
@@ -472,6 +472,29 @@ class CaptchaPacingTests(TestCase):
 
 
 class HttpDiagnosticsTests(TestCase):
+    def test_egress_probe_reads_aws_plain_text_response(self):
+        context = MagicMock()
+        context.request.get.return_value.ok = True
+        context.request.get.return_value.text.return_value = "94.184.43.30\n"
+
+        address, address_hash, error = resolve_egress_ip(context)
+
+        context.request.get.assert_called_once_with(EGRESS_IP_URL, timeout=10_000)
+        self.assertEqual(address, "94.184.43.30")
+        self.assertEqual(len(address_hash), 16)
+        self.assertIsNone(error)
+
+    def test_egress_probe_rejects_non_ip_response(self):
+        context = MagicMock()
+        context.request.get.return_value.ok = True
+        context.request.get.return_value.text.return_value = "upstream error"
+
+        address, address_hash, error = resolve_egress_ip(context)
+
+        self.assertIsNone(address)
+        self.assertIsNone(address_hash)
+        self.assertEqual(error, "ValueError")
+
     def test_visible_403_heading_is_detected(self):
         page = MagicMock()
         page.get_by_role.return_value.first.is_visible.return_value = True

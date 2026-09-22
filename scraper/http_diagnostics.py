@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import socket
@@ -31,7 +32,7 @@ REQUEST_ID_HEADERS = (
     "x-correlation-id",
     "traceparent",
 )
-EGRESS_IP_URL = "https://api.ipify.org?format=json"
+EGRESS_IP_URL = "https://checkip.amazonaws.com/"
 
 
 def diagnostic_hash(value: str) -> str:
@@ -60,14 +61,15 @@ def worker_id() -> str:
 
 
 def resolve_egress_ip(context) -> tuple[str | None, str | None, str | None]:
-    """Resolve the exact public egress IP through the browser proxy."""
+    """Observe the IP AWS checkip sees through the browser's proxy."""
     try:
         response = context.request.get(EGRESS_IP_URL, timeout=10_000)
         if not response.ok:
             return None, None, f"http_{response.status}"
-        address = str(response.json().get("ip", "")).strip()
+        address = response.text().strip()
         if not address:
             return None, None, "missing_ip"
+        address = str(ipaddress.ip_address(address))
         return address, diagnostic_hash(address), None
     except Exception as error:
         return None, None, type(error).__name__
@@ -129,7 +131,7 @@ def response_diagnostics(
         "body_length": body_length,
         "server_request_id": request_id,
         "egress_ip": egress_ip,
-        "egress_ip_observation": "independent_ipify_probe",
+        "egress_ip_observation": "independent_aws_checkip_probe",
         "egress_ip_hash": egress_ip_hash,
         "egress_lookup_error": egress_lookup_error,
         "proxy_endpoint": proxy_endpoint,
