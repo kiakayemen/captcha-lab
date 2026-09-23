@@ -43,7 +43,7 @@ from scraper.service import (
     record_captcha_stage,
     wait_for_form_result,
     run_scraper,
-    subtype_retry_delay_seconds,
+    appointment_cycle_retry_delay_seconds,
     wait_for_login_captcha_outcome,
     restart_unclear_login_captcha,
     run_authenticated_appointment_cycle,
@@ -340,7 +340,7 @@ class ProxyConfigurationTests(TestCase):
         {"SCRAPER_PROXY_URLS": "http://one:8888,http://two:8888"},
     )
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_single_subtype_attempt")
+    @patch("scraper.service._run_appointment_cycle_attempt")
     def test_explicit_direct_run_ignores_configured_proxies(
         self, run_attempt, _reader
     ):
@@ -738,7 +738,7 @@ class FailureChainTests(TestCase):
         get_reader.assert_not_called()
 
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_single_subtype_attempt")
+    @patch("scraper.service._run_appointment_cycle_attempt")
     def test_terminal_403_is_stored_separately(self, run_attempt, _reader):
         now = datetime.now(timezone.utc)
         run_attempt.return_value = ScraperResult(
@@ -761,7 +761,7 @@ class FailureChainTests(TestCase):
     @patch.dict("os.environ", {"BLS_EMAIL_2": "second@example.com", "BLS_PASSWORD_2": "second-pass"})
     @patch("scraper.service.interruptible_cooldown")
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_single_subtype_attempt")
+    @patch("scraper.service._run_appointment_cycle_attempt")
     def test_temporary_server_error_retries_with_fresh_browser(
         self,
         run_attempt,
@@ -798,7 +798,7 @@ class FailureChainTests(TestCase):
 
     @patch("scraper.service.interruptible_cooldown")
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_single_subtype_attempt")
+    @patch("scraper.service._run_appointment_cycle_attempt")
     def test_recovered_run_preserves_all_attempt_failures(
         self,
         run_attempt,
@@ -1317,7 +1317,7 @@ class FailureChainTests(TestCase):
     @patch("scraper.service.random.randint", side_effect=(31, 63, 125, 175))
     def test_retry_cooldown_grows_with_jitter(self, randint):
         self.assertEqual(
-            [subtype_retry_delay_seconds(attempt) for attempt in range(1, 6)],
+            [appointment_cycle_retry_delay_seconds(attempt) for attempt in range(1, 6)],
             [31, 63, 125, 175, 0],
         )
         self.assertEqual(
