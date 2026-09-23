@@ -10,12 +10,16 @@ NO_APPOINTMENTS_MODAL_SELECTOR = 'div.modal-dialog.modal-dialog-centered:has(#co
 NO_APPOINTMENTS_HEADER_SELECTOR = "#commonModalHeader"
 NO_APPOINTMENTS_BODY_SELECTOR = "#commonModalBody"
 NAV_BOOK_NEW_APPOINTMENT_SELECTOR = (
-    'nav a[href*="/bls/visatypeverification" i]:visible'
+    'a[href*="/bls/visatypeverification" i]:visible'
 )
 BOOK_NEW_APPOINTMENT_SELECTOR = (
     'a[href*="/bls/visatypeverification" i]:visible'
 )
 LOGOUT_SELECTOR = 'a[href*="OnLogout" i]:visible'
+TRY_AGAIN_BUTTON_SELECTOR = (
+    'button:visible:has-text("Try Again"), '
+    'a:visible:has-text("Try Again")'
+)
 OK_DIALOG_BUTTON_SELECTOR = (
     'div.modal-dialog.modal-dialog-centered:has(#commonModalLabel) '
     'button[data-bs-dismiss="modal"], '

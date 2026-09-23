@@ -244,6 +244,13 @@ For a visible manual run from the laptop's own connection, use
 `SCRAPER_PROXY_URLS` for that run. The standalone script does not need a
 database; scheduled runs still require their configured proxy pool.
 
+One browser session checks the configured visa subtypes in order. After login,
+the scraper opens Book New Appointment and accepts either a CAPTCHA-first or a
+form-first page. A no-appointments result for the first subtype is followed by
+Try Again and the second subtype in the same session. An appointment sends the
+admin notification and ends the cycle immediately; two negative results finish
+with No Appointment Found.
+
 On Linux, install the Chromium system dependencies as well when required:
 
 ```bash

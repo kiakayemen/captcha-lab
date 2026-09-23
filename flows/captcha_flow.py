@@ -30,7 +30,6 @@ from .selectors import (
     CAPTCHA_LABEL_SELECTOR,
     CAPTCHA_TILE_SELECTOR,
     LOGIN_FORM_SELECTOR,
-    LOGOUT_SELECTOR,
     NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
     OK_DIALOG_BUTTON_SELECTOR,
     SECOND_CAPTCHA_SUBMIT_SELECTOR,
@@ -642,11 +641,6 @@ def click_nav_book_new_appointment(page: Page) -> None:
             )
         if nav_link.is_visible():
             break
-        if page.locator(LOGOUT_SELECTOR).first.is_visible():
-            fallback_link = page.locator(BOOK_NEW_APPOINTMENT_SELECTOR).first
-            if fallback_link.is_visible():
-                nav_link = fallback_link
-                break
         page.wait_for_timeout(250)
     else:
         raise RuntimeError(
@@ -680,12 +674,7 @@ def login_captcha_succeeded(page: Page) -> bool:
     try:
         if "logincaptcha" in page.url.lower():
             return False
-        if page.locator(NAV_BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible():
-            return True
-        return (
-            page.locator(LOGOUT_SELECTOR).first.is_visible()
-            and page.locator(BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible()
-        )
+        return page.locator(BOOK_NEW_APPOINTMENT_SELECTOR).first.is_visible()
     except Exception:
         return False
 

@@ -46,6 +46,9 @@ from scraper.service import (
     subtype_retry_delay_seconds,
     wait_for_login_captcha_outcome,
     restart_unclear_login_captcha,
+    run_authenticated_appointment_cycle,
+    reach_appointment_form,
+    submit_appointment_form_and_wait,
     _run_login_captcha_attempt,
     _run_second_captcha_attempt,
     AppointmentResultUnconfirmed,
@@ -624,6 +627,13 @@ class HttpDiagnosticsTests(TestCase):
         page.locator.return_value.first.is_visible.return_value = False
 
         self.assertFalse(login_captcha_succeeded(page))
+
+    def test_login_success_accepts_visible_book_link_without_logout(self):
+        page = MagicMock()
+        page.url = "https://example.test/Global/home/index"
+        page.locator.return_value.first.is_visible.return_value = True
+
+        self.assertTrue(login_captcha_succeeded(page))
 
     @patch(
         "flows.captcha_flow.wait_for_post_captcha_page_ready",
@@ -1319,3 +1329,154 @@ class FailureChainTests(TestCase):
                 call(144, 216),
             ],
         )
+
+
+class AppointmentCycleTests(TestCase):
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch("scraper.service.appointment_form_ready", return_value=True)
+    @patch("scraper.service.solve_visible_appointment_captcha")
+    def test_direct_form_branch_does_not_force_captcha(
+        self, solve_captcha, _form_ready, _site_error
+    ):
+        reach_appointment_form(
+            MagicMock(),
+            config=ScraperConfig(),
+            reader=MagicMock(),
+            output_dir=MagicMock(),
+            should_stop=None,
+        )
+
+        solve_captcha.assert_not_called()
+
+    @patch(
+        "scraper.service.appointment_form_ready",
+        side_effect=(False, True),
+    )
+    @patch("scraper.service.background_submit_ready", return_value=False)
+    @patch("scraper.service.appointment_captcha_visible", return_value=True)
+    @patch("scraper.service.solve_visible_appointment_captcha")
+    @patch("scraper.service.disclaimer_dialog_visible", return_value=False)
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    def test_captcha_first_branch_reaches_form(
+        self,
+        _site_error,
+        _disclaimer,
+        solve_captcha,
+        _captcha_visible,
+        _background_submit,
+        _form_ready,
+    ):
+        reach_appointment_form(
+            MagicMock(),
+            config=ScraperConfig(),
+            reader=MagicMock(),
+            output_dir=MagicMock(),
+            should_stop=None,
+        )
+
+        solve_captcha.assert_called_once()
+
+    @patch(
+        "scraper.service.no_appointments_dialog_visible",
+        side_effect=(False, True),
+    )
+    @patch("scraper.service.appointment_available_dialog_visible", return_value=False)
+    @patch("scraper.service.appointment_captcha_visible", return_value=True)
+    @patch("scraper.service.solve_visible_appointment_captcha")
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch("scraper.service.expect")
+    def test_post_form_captcha_is_solved_before_result(
+        self,
+        _expect,
+        _site_error,
+        solve_captcha,
+        _captcha_visible,
+        _available,
+        _no_appointment,
+    ):
+        page = MagicMock()
+
+        result = submit_appointment_form_and_wait(
+            page,
+            config=ScraperConfig(),
+            reader=MagicMock(),
+            output_dir=MagicMock(),
+            should_stop=None,
+        )
+
+        self.assertIs(result, ScraperStatus.NO_APPOINTMENT)
+        solve_captcha.assert_called_once()
+
+    @patch("scraper.service.log_no_appointment")
+    @patch("scraper.service.click_try_again")
+    @patch(
+        "scraper.service.submit_appointment_form_and_wait",
+        side_effect=(ScraperStatus.NO_APPOINTMENT, ScraperStatus.NO_APPOINTMENT),
+    )
+    @patch("scraper.service.fill_appointment_form")
+    @patch("scraper.service.reach_appointment_form")
+    @patch("scraper.service.click_nav_book_new_appointment")
+    def test_both_subtypes_share_one_authenticated_session(
+        self,
+        open_appointment,
+        reach_form,
+        fill_form,
+        submit_form,
+        try_again,
+        _log_no_appointment,
+    ):
+        page = MagicMock(url="https://example.test/Global/bls/visatype")
+        config = ScraperConfig()
+
+        result = run_authenticated_appointment_cycle(
+            page,
+            config=config,
+            reader=MagicMock(),
+            attempt_number=1,
+            should_stop=None,
+        )
+
+        self.assertIs(result.status, ScraperStatus.NO_APPOINTMENT)
+        open_appointment.assert_called_once_with(page)
+        self.assertEqual(reach_form.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["visa_sub_type"] for call in fill_form.call_args_list],
+            ["Student Visa", "Non-Working Residence Visa"],
+        )
+        self.assertEqual(submit_form.call_count, 2)
+        try_again.assert_called_once_with(page)
+
+    @patch("scraper.service.notify_admin")
+    @patch("scraper.service.click_try_again")
+    @patch(
+        "scraper.service.submit_appointment_form_and_wait",
+        return_value=ScraperStatus.APPOINTMENT_FOUND,
+    )
+    @patch("scraper.service.fill_appointment_form")
+    @patch("scraper.service.reach_appointment_form")
+    @patch("scraper.service.click_nav_book_new_appointment")
+    def test_first_appointment_stops_before_second_subtype(
+        self,
+        _open_appointment,
+        reach_form,
+        fill_form,
+        submit_form,
+        try_again,
+        notify,
+    ):
+        page = MagicMock(url="https://example.test/result")
+
+        result = run_authenticated_appointment_cycle(
+            page,
+            config=ScraperConfig(),
+            reader=MagicMock(),
+            attempt_number=1,
+            should_stop=None,
+        )
+
+        self.assertIs(result.status, ScraperStatus.APPOINTMENT_FOUND)
+        self.assertEqual(reach_form.call_count, 1)
+        self.assertEqual(fill_form.call_count, 1)
+        self.assertEqual(submit_form.call_count, 1)
+        try_again.assert_not_called()
+        notify.assert_called_once()

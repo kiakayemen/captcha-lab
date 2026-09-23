@@ -38,6 +38,7 @@ from flows.appointment_flow import (
 )
 from flows.captcha_flow import (
     appointment_form_ready,
+    background_submit_ready,
     blocking_overlay_visible,
     captcha_instruction_present,
     click_background_submit,
@@ -75,6 +76,8 @@ from flows.selectors import (
     CAPTCHA_TILE_SELECTOR,
     LOGOUT_SELECTOR,
     NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
+    TRY_AGAIN_BUTTON_SELECTOR,
+    VERIFY_BUTTON_SELECTOR,
 )
 from notifications import (
     log_no_appointment,
@@ -234,6 +237,206 @@ def wait_for_form_result(
     raise AppointmentResultUnconfirmed(
         "Appointment form returned neither an explicit available nor "
         "unavailable result within 30 seconds."
+    )
+
+
+def appointment_captcha_visible(page) -> bool:
+    """Return whether the appointment CAPTCHA can be opened or is already open."""
+    try:
+        popup = page.locator("div.k-widget.k-window").filter(
+            has_text="Verify Selection"
+        ).first
+        if popup.is_visible():
+            return True
+        return page.locator(VERIFY_BUTTON_SELECTOR).first.is_visible()
+    except Exception:
+        return False
+
+
+def solve_visible_appointment_captcha(
+    page,
+    *,
+    config: ScraperConfig,
+    reader,
+    output_dir: Path,
+    should_stop: Callable[[], bool] | None,
+) -> None:
+    """Solve the appointment CAPTCHA regardless of whether its popup is open yet."""
+    popup = page.locator("div.k-widget.k-window").filter(
+        has_text="Verify Selection"
+    ).first
+    if not popup.is_visible():
+        click_verify_selection(page)
+    run_second_captcha_step(
+        page,
+        gpu=config.gpu,
+        output_dir=output_dir,
+        reader=reader,
+        should_stop=should_stop,
+    )
+
+
+def reach_appointment_form(
+    page,
+    *,
+    config: ScraperConfig,
+    reader,
+    output_dir: Path,
+    should_stop: Callable[[], bool] | None,
+    timeout_seconds: int = 60,
+) -> None:
+    """Handle either supported route: appointment CAPTCHA first or form first."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        check_stop_requested(should_stop)
+        raise_for_http_forbidden(page)
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        if appointment_form_ready(page):
+            return
+        if disclaimer_dialog_visible(page):
+            click_ok_dialog(page)
+            continue
+        if appointment_captcha_visible(page):
+            solve_visible_appointment_captcha(
+                page,
+                config=config,
+                reader=reader,
+                output_dir=output_dir,
+                should_stop=should_stop,
+            )
+            if background_submit_ready(page):
+                click_background_submit(page)
+            continue
+        if background_submit_ready(page):
+            click_background_submit(page)
+            continue
+        page.wait_for_timeout(250)
+    raise RuntimeError(
+        "Neither the appointment form nor the appointment CAPTCHA appeared."
+    )
+
+
+def submit_appointment_form_and_wait(
+    page,
+    *,
+    config: ScraperConfig,
+    reader,
+    output_dir: Path,
+    should_stop: Callable[[], bool] | None,
+    timeout_seconds: int = 60,
+) -> ScraperStatus:
+    """Submit a filled form, solving a post-form CAPTCHA when the site requests it."""
+    submit_button = page.get_by_role("button", name="Submit").first
+    expect(submit_button).to_be_visible(timeout=30_000)
+    expect(submit_button).to_be_enabled(timeout=30_000)
+    submit_button.click(timeout=10_000)
+
+    deadline = time.monotonic() + timeout_seconds
+    captcha_solved = False
+    while time.monotonic() < deadline:
+        check_stop_requested(should_stop)
+        raise_for_http_forbidden(page)
+        if site_error_page_visible(page):
+            raise RuntimeError(
+                "Target site returned its temporary processing-error page."
+            )
+        if no_appointments_dialog_visible(page):
+            return ScraperStatus.NO_APPOINTMENT
+        if appointment_available_dialog_visible(page):
+            return ScraperStatus.APPOINTMENT_FOUND
+        if appointment_captcha_visible(page) and not captcha_solved:
+            solve_visible_appointment_captcha(
+                page,
+                config=config,
+                reader=reader,
+                output_dir=output_dir,
+                should_stop=should_stop,
+            )
+            captcha_solved = True
+            continue
+        page.wait_for_timeout(250)
+    raise AppointmentResultUnconfirmed(
+        "Appointment submission produced neither a result nor a usable CAPTCHA."
+    )
+
+
+def click_try_again(page) -> None:
+    """Close a no-appointments result and continue in the authenticated session."""
+    button = page.locator(TRY_AGAIN_BUTTON_SELECTOR).first
+    expect(button).to_be_visible(timeout=30_000)
+    expect(button).to_be_enabled(timeout=30_000)
+    button.click(timeout=10_000)
+    logger.info('Clicked "Try Again" after no-appointments result.')
+
+
+def run_authenticated_appointment_cycle(
+    page,
+    *,
+    config: ScraperConfig,
+    reader,
+    attempt_number: int,
+    should_stop: Callable[[], bool] | None,
+) -> ScraperResult:
+    """Check all configured subtypes in one authenticated browser session."""
+    started_at = datetime.now(timezone.utc)
+    click_nav_book_new_appointment(page)
+
+    for index, visa_sub_type in enumerate(config.visa_sub_types):
+        output_dir = (
+            config.output_dir
+            / visa_sub_type
+            / f"browser_attempt_{attempt_number:02d}"
+        )
+        reach_appointment_form(
+            page,
+            config=config,
+            reader=reader,
+            output_dir=output_dir,
+            should_stop=should_stop,
+        )
+        logger.info("Filling appointment form. Visa subtype=%s", visa_sub_type)
+        fill_appointment_form(page, visa_sub_type=visa_sub_type)
+        result = submit_appointment_form_and_wait(
+            page,
+            config=config,
+            reader=reader,
+            output_dir=output_dir,
+            should_stop=should_stop,
+        )
+        if result is ScraperStatus.APPOINTMENT_FOUND:
+            evidence_path = output_dir / "appointment_found.png"
+            try:
+                evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(evidence_path), full_page=True)
+            except Exception:
+                logger.exception("Could not save appointment evidence.")
+            notify_admin(
+                "Appointment availability was explicitly shown by the site.",
+                page_url=page.url,
+                visa_sub_type=visa_sub_type,
+                confirmed=True,
+            )
+            return ScraperResult(
+                status=ScraperStatus.APPOINTMENT_FOUND,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=page.url,
+                visa_sub_type=visa_sub_type,
+            )
+
+        logger.info("No appointment found. Visa subtype=%s", visa_sub_type)
+        log_no_appointment(page_url=page.url, visa_sub_type=visa_sub_type)
+        if index < len(config.visa_sub_types) - 1:
+            click_try_again(page)
+
+    return ScraperResult(
+        status=ScraperStatus.NO_APPOINTMENT,
+        started_at=started_at,
+        finished_at=datetime.now(timezone.utc),
+        page_url=page.url,
     )
 
 
@@ -1423,10 +1626,10 @@ def _run_single_subtype_attempt(
     should_stop: Callable[[], bool] | None,
 ) -> ScraperResult:
     """
-    One completely fresh browser attempt for exactly one visa subtype.
+    One completely fresh browser attempt for the full appointment cycle.
 
-    Success means the appointment form for this subtype was submitted
-    and produced either:
+    Success means the configured subtypes were checked in one authenticated
+    session and produced either:
         - NO_APPOINTMENT
         - APPOINTMENT_FOUND
 
@@ -1443,8 +1646,8 @@ def _run_single_subtype_attempt(
 
     logger.info(
         "Starting fresh browser attempt. "
-        "Visa subtype=%s | Attempt=%s/%s",
-        visa_sub_type,
+        "Visa subtypes=%s | Attempt=%s/%s",
+        ", ".join(config.visa_sub_types),
         attempt_number,
         MAX_SUBTYPE_ATTEMPTS,
     )
@@ -1610,190 +1813,16 @@ def _run_single_subtype_attempt(
             )
             check_stop_requested(should_stop)
 
-            #
-            # CAPTCHA 2
-            #
             logger.info(
-                "Login CAPTCHA complete. "
-                "Opening new appointment workflow."
+                "Login CAPTCHA complete. Opening new appointment workflow."
             )
-
-            click_nav_book_new_appointment(
-                page
-            )
-
-            logger.info(
-                "Opening Verify Selection CAPTCHA."
-            )
-
-            click_verify_selection(
-                page
-            )
-
-            run_second_captcha_step(
+            return run_authenticated_appointment_cycle(
                 page,
-                gpu=config.gpu,
-                output_dir=(
-                    config.output_dir
-                    / visa_sub_type
-                    / f"browser_attempt_{attempt_number:02d}"
-                ),
+                config=config,
                 reader=reader,
+                attempt_number=attempt_number,
                 should_stop=should_stop,
             )
-            check_stop_requested(should_stop)
-
-            logger.info(
-                "Second CAPTCHA complete."
-            )
-
-            click_background_submit(
-                page
-            )
-
-            logger.info(
-                "Submitted background appointment step."
-            )
-
-            click_ok_dialog(
-                page
-            )
-            check_stop_requested(should_stop)
-
-            logger.info(
-                "Visa type disclaimer accepted."
-            )
-
-            #
-            # ONE form only.
-            #
-            logger.info(
-                "Filling appointment form. "
-                "Visa subtype=%s",
-                visa_sub_type,
-            )
-
-            fill_appointment_form(
-                page,
-                visa_sub_type=visa_sub_type,
-            )
-            check_stop_requested(should_stop)
-
-            logger.info(
-                "Appointment form filled. "
-                "Visa subtype=%s",
-                visa_sub_type,
-            )
-
-            submit_button = (
-                page.get_by_role(
-                    "button",
-                    name="Submit",
-                )
-                .first
-            )
-
-            expect(
-                submit_button
-            ).to_be_visible(
-                timeout=30_000
-            )
-
-            expect(
-                submit_button
-            ).to_be_enabled(
-                timeout=30_000
-            )
-
-            logger.info(
-                "Clicking appointment Submit. "
-                "Visa subtype=%s",
-                visa_sub_type,
-            )
-
-            submit_button.click(
-                timeout=10_000
-            )
-
-            # A delayed no-appointments response must not become a false
-            # confirmed-appointment result merely because it was absent at 3s.
-            form_result = wait_for_form_result(page, should_stop=should_stop)
-
-            #
-            # Form check successfully completed.
-            #
-            if form_result is ScraperStatus.NO_APPOINTMENT:
-                logger.info(
-                    "Successful form check: "
-                    "NO APPOINTMENT. "
-                    "Visa subtype=%s",
-                    visa_sub_type,
-                )
-
-                log_no_appointment(
-                    page_url=page.url,
-                    visa_sub_type=visa_sub_type,
-                )
-
-                return ScraperResult(
-                    status=(
-                        ScraperStatus
-                        .NO_APPOINTMENT
-                    ),
-                    started_at=started_at,
-                    finished_at=datetime.now(
-                        timezone.utc
-                    ),
-                    page_url=page.url,
-                    visa_sub_type=visa_sub_type,
-                )
-
-            #
-            # Only an explicit availability response reaches this branch.
-            logger.warning(
-                "Form check showed an explicit appointment-available result. "
-                "Visa subtype=%s | URL=%s",
-                visa_sub_type,
-                page.url,
-            )
-            evidence_path = (
-                config.output_dir
-                / visa_sub_type
-                / f"browser_attempt_{attempt_number:02d}"
-                / "appointment_found.png"
-            )
-            try:
-                evidence_path.parent.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(evidence_path), full_page=True)
-                logger.info("Saved appointment page evidence: %s", evidence_path)
-            except Exception:
-                logger.exception("Could not save possible-appointment screenshot.")
-
-            result = ScraperResult(
-                status=(
-                    ScraperStatus
-                    .APPOINTMENT_FOUND
-                ),
-                started_at=started_at,
-                finished_at=datetime.now(
-                    timezone.utc
-                ),
-                page_url=page.url,
-                visa_sub_type=visa_sub_type,
-            )
-
-            # Notify immediately when this form check finds an appointment.
-            # The overall run may continue checking other subtypes, but the
-            # alert must not wait for final run bookkeeping.
-            if result.status is ScraperStatus.APPOINTMENT_FOUND:
-                notify_admin(
-                    "Appointment availability was explicitly shown by the site.",
-                    page_url=result.page_url or page.url,
-                    visa_sub_type=result.visa_sub_type,
-                    confirmed=True,
-                )
-
-            return result
 
         except ScraperStopRequested as error:
             logger.warning(
@@ -2075,9 +2104,9 @@ def run_scraper(
     )
 
     logger.info(
-        "Starting independent-subtype scraper. "
+        "Starting authenticated appointment-cycle scraper. "
         "Headless=%s | GPU=%s | Visa subtypes=%s | "
-        "Max fresh attempts per subtype=%s",
+        "Max fresh browser attempts=%s",
         config.headless,
         config.gpu,
         ", ".join(
@@ -2138,9 +2167,9 @@ def run_scraper(
     ] = []
     attempt_failures: list[dict[str, object]] = []
 
-    for visa_sub_type in (
-        config.visa_sub_types
-    ):
+    # One browser attempt now checks every subtype in sequence. The first
+    # subtype is retained here only as the attempt label for existing logs.
+    for visa_sub_type in config.visa_sub_types[:1]:
         try:
             check_stop_requested(should_stop)
         except ScraperStopRequested as error:
@@ -2158,9 +2187,8 @@ def run_scraper(
         )
 
         logger.info(
-            "Beginning independent check. "
-            "Visa subtype=%s",
-            visa_sub_type,
+            "Beginning full appointment cycle. Visa subtypes=%s",
+            ", ".join(config.visa_sub_types),
         )
 
         subtype_result: (
@@ -2193,8 +2221,15 @@ def run_scraper(
             )
 
             if result.succeeded:
-                subtype_result = result
-                break
+                return ScraperResult(
+                    status=result.status,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=result.visa_sub_type,
+                    first_failure=(attempt_failures[0] if attempt_failures else None),
+                    attempt_failures=tuple(attempt_failures),
+                )
 
             if result.status is ScraperStatus.STOPPED:
                 return ScraperResult(
@@ -2236,10 +2271,10 @@ def run_scraper(
                 )
 
             logger.warning(
-                "Subtype attempt failed; "
+                "Appointment-cycle attempt failed; "
                 "discarding browser state and "
                 "starting completely fresh. "
-                "Visa subtype=%s | "
+                "First visa subtype=%s | "
                 "Failed attempt=%s/%s | "
                 "Error=%s: %s",
                 visa_sub_type,

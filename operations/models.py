@@ -24,7 +24,7 @@ class ScraperRun(models.Model):
         )
         NO_APPOINTMENT = (
             "no_appointment",
-            "No Appointment",
+            "No Appointment Found",
         )
         SERVER_ERROR = "server_error", "Server Error"
         FAILED = "failed", "Failed"
