@@ -108,8 +108,8 @@ logger = logging.getLogger(
 #
 # We deliberately do NOT retry forever. If BLS changes or is down,
 # an infinite unattended browser loop would be dangerous.
-MAX_APPOINTMENT_CYCLE_ATTEMPTS = 5
-APPOINTMENT_CYCLE_RETRY_BACKOFF_SECONDS = (
+MAX_SUBTYPE_ATTEMPTS = 5
+SUBTYPE_RETRY_BACKOFF_SECONDS = (
     30,
     60,
     120,
@@ -158,11 +158,11 @@ def interruptible_cooldown(
         time.sleep(min(1, max(0, deadline - time.monotonic())))
 
 
-def appointment_cycle_retry_delay_seconds(attempt_number: int) -> int:
+def subtype_retry_delay_seconds(attempt_number: int) -> int:
     """Return an increasing cooldown with bounded random jitter."""
-    if attempt_number < 1 or attempt_number >= MAX_APPOINTMENT_CYCLE_ATTEMPTS:
+    if attempt_number < 1 or attempt_number >= MAX_SUBTYPE_ATTEMPTS:
         return 0
-    base_delay = APPOINTMENT_CYCLE_RETRY_BACKOFF_SECONDS[attempt_number - 1]
+    base_delay = SUBTYPE_RETRY_BACKOFF_SECONDS[attempt_number - 1]
     return random.randint(
         round(base_delay * 0.8),
         round(base_delay * 1.2),
@@ -377,71 +377,69 @@ def dismiss_no_appointments_dialog(page) -> None:
     logger.info('Clicked "Ok" on the no-appointments dialog.')
 
 
-def run_authenticated_appointment_cycle(
+def run_authenticated_subtype_check(
     page,
     *,
     config: ScraperConfig,
     reader,
+    visa_sub_type: str,
     attempt_number: int,
     should_stop: Callable[[], bool] | None,
 ) -> ScraperResult:
-    """Check all configured subtypes in one authenticated browser session."""
+    """Check one subtype in its own authenticated browser session."""
     started_at = datetime.now(timezone.utc)
     click_nav_book_new_appointment(page)
-
-    for index, visa_sub_type in enumerate(config.visa_sub_types):
-        output_dir = (
-            config.output_dir
-            / visa_sub_type
-            / f"browser_attempt_{attempt_number:02d}"
+    output_dir = (
+        config.output_dir
+        / visa_sub_type
+        / f"browser_attempt_{attempt_number:02d}"
+    )
+    reach_appointment_form(
+        page,
+        config=config,
+        reader=reader,
+        output_dir=output_dir,
+        should_stop=should_stop,
+    )
+    logger.info("Filling appointment form. Visa subtype=%s", visa_sub_type)
+    fill_appointment_form(page, visa_sub_type=visa_sub_type)
+    result = submit_appointment_form_and_wait(
+        page,
+        config=config,
+        reader=reader,
+        output_dir=output_dir,
+        should_stop=should_stop,
+    )
+    if result is ScraperStatus.APPOINTMENT_FOUND:
+        evidence_path = output_dir / "appointment_found.png"
+        try:
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(evidence_path), full_page=True)
+        except Exception:
+            logger.exception("Could not save appointment evidence.")
+        notify_admin(
+            "Appointment availability was explicitly shown by the site.",
+            page_url=page.url,
+            visa_sub_type=visa_sub_type,
+            confirmed=True,
         )
-        reach_appointment_form(
-            page,
-            config=config,
-            reader=reader,
-            output_dir=output_dir,
-            should_stop=should_stop,
+        return ScraperResult(
+            status=ScraperStatus.APPOINTMENT_FOUND,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            page_url=page.url,
+            visa_sub_type=visa_sub_type,
         )
-        logger.info("Filling appointment form. Visa subtype=%s", visa_sub_type)
-        fill_appointment_form(page, visa_sub_type=visa_sub_type)
-        result = submit_appointment_form_and_wait(
-            page,
-            config=config,
-            reader=reader,
-            output_dir=output_dir,
-            should_stop=should_stop,
-        )
-        if result is ScraperStatus.APPOINTMENT_FOUND:
-            evidence_path = output_dir / "appointment_found.png"
-            try:
-                evidence_path.parent.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(evidence_path), full_page=True)
-            except Exception:
-                logger.exception("Could not save appointment evidence.")
-            notify_admin(
-                "Appointment availability was explicitly shown by the site.",
-                page_url=page.url,
-                visa_sub_type=visa_sub_type,
-                confirmed=True,
-            )
-            return ScraperResult(
-                status=ScraperStatus.APPOINTMENT_FOUND,
-                started_at=started_at,
-                finished_at=datetime.now(timezone.utc),
-                page_url=page.url,
-                visa_sub_type=visa_sub_type,
-            )
 
-        logger.info("No appointment found. Visa subtype=%s", visa_sub_type)
-        log_no_appointment(page_url=page.url, visa_sub_type=visa_sub_type)
-        if index < len(config.visa_sub_types) - 1:
-            dismiss_no_appointments_dialog(page)
-
+    logger.info("No appointment found. Visa subtype=%s", visa_sub_type)
+    log_no_appointment(page_url=page.url, visa_sub_type=visa_sub_type)
+    dismiss_no_appointments_dialog(page)
     return ScraperResult(
         status=ScraperStatus.NO_APPOINTMENT,
         started_at=started_at,
         finished_at=datetime.now(timezone.utc),
         page_url=page.url,
+        visa_sub_type=visa_sub_type,
     )
 
 
@@ -1619,7 +1617,7 @@ def run_post_login_step(
     )
 
 
-def _run_appointment_cycle_attempt(
+def _run_single_subtype_attempt(
     *,
     account: BLSAccount,
     config: ScraperConfig,
@@ -1631,12 +1629,7 @@ def _run_appointment_cycle_attempt(
     should_stop: Callable[[], bool] | None,
 ) -> ScraperResult:
     """
-    One completely fresh browser attempt for the full appointment cycle.
-
-    Success means the configured subtypes were checked in one authenticated
-    session and produced either:
-        - NO_APPOINTMENT
-        - APPOINTMENT_FOUND
+    One completely fresh browser attempt for one visa subtype.
 
     Any infrastructure/CAPTCHA/navigation failure returns FAILED.
     """
@@ -1651,10 +1644,10 @@ def _run_appointment_cycle_attempt(
 
     logger.info(
         "Starting fresh browser attempt. "
-        "Visa subtypes=%s | Attempt=%s/%s",
-        ", ".join(config.visa_sub_types),
+        "Visa subtype=%s | Attempt=%s/%s",
+        visa_sub_type,
         attempt_number,
-        MAX_APPOINTMENT_CYCLE_ATTEMPTS,
+        MAX_SUBTYPE_ATTEMPTS,
     )
 
     logger.info(
@@ -1821,10 +1814,11 @@ def _run_appointment_cycle_attempt(
             logger.info(
                 "Login CAPTCHA complete. Opening new appointment workflow."
             )
-            return run_authenticated_appointment_cycle(
+            return run_authenticated_subtype_check(
                 page,
                 config=config,
                 reader=reader,
+                visa_sub_type=visa_sub_type,
                 attempt_number=attempt_number,
                 should_stop=should_stop,
             )
@@ -1900,7 +1894,7 @@ def _run_appointment_cycle_attempt(
                 "Visa subtype=%s | Attempt=%s/%s",
                 visa_sub_type,
                 attempt_number,
-                MAX_APPOINTMENT_CYCLE_ATTEMPTS,
+                MAX_SUBTYPE_ATTEMPTS,
             )
 
             detected_status = (
@@ -2003,7 +1997,7 @@ def _run_appointment_cycle_attempt(
                 "Visa subtype=%s | Attempt=%s/%s",
                 visa_sub_type,
                 attempt_number,
-                MAX_APPOINTMENT_CYCLE_ATTEMPTS,
+                MAX_SUBTYPE_ATTEMPTS,
             )
 
             detected_status = (
@@ -2081,24 +2075,18 @@ def run_scraper(
     *,
     should_stop: Callable[[], bool] | None = None,
 ) -> ScraperResult:
-    """Run one complete authenticated appointment cycle.
-
-    A browser attempt logs in once, checks the configured visa subtypes in
-    order in the same session, and stops as soon as an appointment is found.
-    Technical failures discard the browser and retry the complete cycle.
-    """
+    """Check every configured subtype in a separate authenticated browser."""
 
     overall_started_at = datetime.now(timezone.utc)
     subtype_names = ", ".join(config.visa_sub_types)
 
     logger.info(
-        "Starting authenticated appointment-cycle scraper. "
-        "Headless=%s | GPU=%s | Visa subtypes=%s | "
-        "Max fresh browser attempts=%s",
+        "Starting scraper. Headless=%s | GPU=%s | Visa subtypes=%s | "
+        "Max fresh browser attempts per subtype=%s",
         config.headless,
         config.gpu,
         subtype_names,
-        MAX_APPOINTMENT_CYCLE_ATTEMPTS,
+        MAX_SUBTYPE_ATTEMPTS,
     )
 
     if not config.visa_sub_types:
@@ -2121,13 +2109,29 @@ def run_scraper(
             error_message=str(error),
         )
 
-    proxy_rotator = None if config.direct_connection else PlaywrightProxyRotator()
     accounts = list(configured_bls_accounts())
+    if len(config.visa_sub_types) > 1 and len(accounts) < 2:
+        message = (
+            "At least two distinct BLS accounts are required when checking "
+            "multiple visa subtypes."
+        )
+        logger.error(message)
+        return ScraperResult(
+            status=ScraperStatus.FAILED,
+            started_at=overall_started_at,
+            finished_at=datetime.now(timezone.utc),
+            error_type="AccountConfigurationError",
+            error_message=message,
+        )
     random.shuffle(accounts)
     account_index = 0
 
+    proxy_rotator = None if config.direct_connection else PlaywrightProxyRotator()
     if proxy_rotator is None:
-        logger.warning("Manual direct connection selected; browser proxy disabled.")
+        logger.warning(
+            "Manual direct connection selected; each subtype gets a fresh browser "
+            "and account, but the network IP cannot rotate."
+        )
     else:
         try:
             proxy_rotator.validate_required_pool(
@@ -2142,10 +2146,8 @@ def run_scraper(
                 error_type=type(error).__name__,
                 error_message=str(error),
             )
-
         logger.info(
-            "Validated fail-closed proxy pool with %s endpoints; "
-            "direct browser egress is disabled.",
+            "Validated fail-closed proxy pool with %s endpoints.",
             len(proxy_rotator.proxy_urls),
         )
 
@@ -2155,166 +2157,190 @@ def run_scraper(
         "previous_request_monotonic": None,
     }
     attempt_failures: list[dict[str, object]] = []
-    last_failure: ScraperResult | None = None
-    attempt_label = config.visa_sub_types[0]
+    successful_results: list[ScraperResult] = []
 
-    for attempt_number in range(1, MAX_APPOINTMENT_CYCLE_ATTEMPTS + 1):
-        try:
-            check_stop_requested(should_stop)
-        except ScraperStopRequested as error:
-            return ScraperResult(
-                status=ScraperStatus.STOPPED,
-                started_at=overall_started_at,
-                finished_at=datetime.now(timezone.utc),
-                error_type=type(error).__name__,
-                error_message=str(error),
-                first_failure=(attempt_failures[0] if attempt_failures else None),
-                attempt_failures=tuple(attempt_failures),
-            )
+    for visa_sub_type in config.visa_sub_types:
+        subtype_result: ScraperResult | None = None
+        last_failure: ScraperResult | None = None
 
-        logger.info(
-            "Beginning full appointment cycle. Visa subtypes=%s | Attempt=%s/%s",
-            subtype_names,
-            attempt_number,
-            MAX_APPOINTMENT_CYCLE_ATTEMPTS,
-        )
-        account = accounts[account_index % len(accounts)]
-        account_index += 1
-        result = _run_appointment_cycle_attempt(
-            account=account,
-            config=config,
-            visa_sub_type=attempt_label,
-            attempt_number=attempt_number,
-            reader=reader,
-            proxy_config=(proxy_rotator.choose() if proxy_rotator else None),
-            login_request_state=login_request_state,
-            should_stop=should_stop,
-        )
-
-        if result.succeeded:
-            return ScraperResult(
-                status=result.status,
-                started_at=overall_started_at,
-                finished_at=datetime.now(timezone.utc),
-                page_url=result.page_url,
-                visa_sub_type=result.visa_sub_type,
-                first_failure=(attempt_failures[0] if attempt_failures else None),
-                attempt_failures=tuple(attempt_failures),
-            )
-
-        if result.status is ScraperStatus.STOPPED:
-            return ScraperResult(
-                status=ScraperStatus.STOPPED,
-                started_at=overall_started_at,
-                finished_at=datetime.now(timezone.utc),
-                page_url=result.page_url,
-                visa_sub_type=result.visa_sub_type,
-                error_type=result.error_type,
-                error_message=result.error_message,
-                first_failure=(attempt_failures[0] if attempt_failures else None),
-                attempt_failures=tuple(attempt_failures),
-            )
-
-        last_failure = result
-        failure_subtype = result.visa_sub_type or subtype_names
-        current_failure = failure_record(
-            result,
-            visa_sub_type=failure_subtype,
-            attempt_number=attempt_number,
-        )
-        attempt_failures.append(current_failure)
-
-        if result.error_type == "HTTP403Forbidden":
-            logger.error("HTTP 403 is terminal; stopping without another attempt.")
-            return ScraperResult(
-                status=ScraperStatus.FAILED,
-                started_at=overall_started_at,
-                finished_at=datetime.now(timezone.utc),
-                page_url=result.page_url,
-                visa_sub_type=result.visa_sub_type,
-                error_type=result.error_type,
-                error_message=result.error_message,
-                failure_screenshot=result.failure_screenshot,
-                first_failure=attempt_failures[0],
-                attempt_failures=tuple(attempt_failures),
-                terminal_failure=current_failure,
-            )
-
-        logger.warning(
-            "Appointment-cycle attempt failed; discarding browser state and "
-            "starting completely fresh. Visa subtypes=%s | "
-            "Failed attempt=%s/%s | Error=%s: %s",
-            subtype_names,
-            attempt_number,
-            MAX_APPOINTMENT_CYCLE_ATTEMPTS,
-            result.error_type,
-            result.error_message,
-        )
-
-        retry_delay = appointment_cycle_retry_delay_seconds(attempt_number)
-        if retry_delay:
-            logger.info(
-                "Cooling down before the next full appointment cycle. "
-                "Next attempt=%s/%s | Delay=%ss",
-                attempt_number + 1,
-                MAX_APPOINTMENT_CYCLE_ATTEMPTS,
-                retry_delay,
-            )
+        for attempt_number in range(1, MAX_SUBTYPE_ATTEMPTS + 1):
             try:
-                interruptible_cooldown(retry_delay, should_stop)
+                check_stop_requested(should_stop)
             except ScraperStopRequested as error:
                 return ScraperResult(
                     status=ScraperStatus.STOPPED,
                     started_at=overall_started_at,
                     finished_at=datetime.now(timezone.utc),
+                    visa_sub_type=visa_sub_type,
                     error_type=type(error).__name__,
                     error_message=str(error),
-                    first_failure=attempt_failures[0],
+                    first_failure=(attempt_failures[0] if attempt_failures else None),
                     attempt_failures=tuple(attempt_failures),
                 )
 
-    error_type = "AppointmentCycleRetryExhausted"
-    logger.error(
-        "The complete appointment cycle failed after %s fresh browser attempts. "
-        "Visa subtypes=%s",
-        MAX_APPOINTMENT_CYCLE_ATTEMPTS,
-        subtype_names,
-    )
+            account = accounts[account_index % len(accounts)]
+            account_index += 1
+            proxy_config = proxy_rotator.choose() if proxy_rotator else None
+            logger.info(
+                "Checking visa subtype in a fresh browser. "
+                "Visa subtype=%s | Attempt=%s/%s | Account=%s | Proxy=%s",
+                visa_sub_type,
+                attempt_number,
+                MAX_SUBTYPE_ATTEMPTS,
+                account.email,
+                proxy_config.get("server") if proxy_config else "direct",
+            )
+            result = _run_single_subtype_attempt(
+                account=account,
+                config=config,
+                visa_sub_type=visa_sub_type,
+                attempt_number=attempt_number,
+                reader=reader,
+                proxy_config=proxy_config,
+                login_request_state=login_request_state,
+                should_stop=should_stop,
+            )
+
+            if result.succeeded:
+                subtype_result = result
+                successful_results.append(result)
+                break
+
+            if result.status is ScraperStatus.STOPPED:
+                return ScraperResult(
+                    status=ScraperStatus.STOPPED,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=visa_sub_type,
+                    error_type=result.error_type,
+                    error_message=result.error_message,
+                    first_failure=(attempt_failures[0] if attempt_failures else None),
+                    attempt_failures=tuple(attempt_failures),
+                )
+
+            last_failure = result
+            current_failure = failure_record(
+                result,
+                visa_sub_type=visa_sub_type,
+                attempt_number=attempt_number,
+            )
+            attempt_failures.append(current_failure)
+
+            if result.error_type == "HTTP403Forbidden":
+                logger.error("HTTP 403 is terminal; stopping without another attempt.")
+                return ScraperResult(
+                    status=ScraperStatus.FAILED,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=visa_sub_type,
+                    error_type=result.error_type,
+                    error_message=result.error_message,
+                    failure_screenshot=result.failure_screenshot,
+                    first_failure=attempt_failures[0],
+                    attempt_failures=tuple(attempt_failures),
+                    terminal_failure=current_failure,
+                )
+
+            logger.warning(
+                "Subtype attempt failed; retrying it with a fresh browser, "
+                "account, and proxy. Visa subtype=%s | Attempt=%s/%s | "
+                "Error=%s: %s",
+                visa_sub_type,
+                attempt_number,
+                MAX_SUBTYPE_ATTEMPTS,
+                result.error_type,
+                result.error_message,
+            )
+            retry_delay = subtype_retry_delay_seconds(attempt_number)
+            if retry_delay:
+                try:
+                    interruptible_cooldown(retry_delay, should_stop)
+                except ScraperStopRequested as error:
+                    return ScraperResult(
+                        status=ScraperStatus.STOPPED,
+                        started_at=overall_started_at,
+                        finished_at=datetime.now(timezone.utc),
+                        visa_sub_type=visa_sub_type,
+                        error_type=type(error).__name__,
+                        error_message=str(error),
+                        first_failure=attempt_failures[0],
+                        attempt_failures=tuple(attempt_failures),
+                    )
+
+        if subtype_result is None:
+            error_type = "SubtypeRetryExhausted"
+            return ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=overall_started_at,
+                finished_at=datetime.now(timezone.utc),
+                page_url=last_failure.page_url if last_failure else None,
+                visa_sub_type=visa_sub_type,
+                error_type=error_type,
+                error_message=(
+                    f"Could not check {visa_sub_type!r} after "
+                    f"{MAX_SUBTYPE_ATTEMPTS} fresh browser attempts. Last error: "
+                    f"{last_failure.error_type if last_failure else 'unknown'}: "
+                    f"{last_failure.error_message if last_failure else 'unknown'}"
+                ),
+                failure_screenshot=(
+                    last_failure.failure_screenshot if last_failure else None
+                ),
+                first_failure=(attempt_failures[0] if attempt_failures else None),
+                attempt_failures=tuple(attempt_failures),
+                terminal_failure={
+                    "visa_sub_type": visa_sub_type,
+                    "attempt_number": MAX_SUBTYPE_ATTEMPTS,
+                    "status": ScraperStatus.FAILED.value,
+                    "error_type": error_type,
+                    "error_message": "Fresh browser retry limit exhausted.",
+                    "page_url": last_failure.page_url if last_failure else "",
+                    "failure_screenshot": (
+                        str(last_failure.failure_screenshot)
+                        if last_failure and last_failure.failure_screenshot
+                        else ""
+                    ),
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+        logger.info(
+            "Visa subtype check complete. Visa subtype=%s | Result=%s",
+            visa_sub_type,
+            subtype_result.status.value,
+        )
+
+    appointment_results = [
+        result
+        for result in successful_results
+        if result.status in {
+            ScraperStatus.APPOINTMENT_FOUND,
+            ScraperStatus.POSSIBLE_APPOINTMENT,
+        }
+    ]
+    if appointment_results:
+        appointment_subtypes = ", ".join(
+            result.visa_sub_type
+            for result in appointment_results
+            if result.visa_sub_type
+        )
+        return ScraperResult(
+            status=ScraperStatus.APPOINTMENT_FOUND,
+            started_at=overall_started_at,
+            finished_at=datetime.now(timezone.utc),
+            page_url=appointment_results[0].page_url,
+            visa_sub_type=appointment_subtypes,
+            first_failure=(attempt_failures[0] if attempt_failures else None),
+            attempt_failures=tuple(attempt_failures),
+        )
+
+    last_result = successful_results[-1]
     return ScraperResult(
-        status=ScraperStatus.FAILED,
+        status=ScraperStatus.NO_APPOINTMENT,
         started_at=overall_started_at,
         finished_at=datetime.now(timezone.utc),
-        page_url=last_failure.page_url if last_failure else None,
-        visa_sub_type=last_failure.visa_sub_type if last_failure else None,
-        error_type=error_type,
-        error_message=(
-            "Could not complete the appointment cycle after "
-            f"{MAX_APPOINTMENT_CYCLE_ATTEMPTS} fresh browser attempts. "
-            "Last error: "
-            f"{last_failure.error_type if last_failure else 'unknown'}: "
-            f"{last_failure.error_message if last_failure else 'unknown'}"
-        ),
-        failure_screenshot=(
-            last_failure.failure_screenshot if last_failure else None
-        ),
+        page_url=last_result.page_url,
         first_failure=(attempt_failures[0] if attempt_failures else None),
         attempt_failures=tuple(attempt_failures),
-        terminal_failure={
-            "visa_sub_type": (
-                last_failure.visa_sub_type
-                if last_failure and last_failure.visa_sub_type
-                else subtype_names
-            ),
-            "attempt_number": MAX_APPOINTMENT_CYCLE_ATTEMPTS,
-            "status": ScraperStatus.FAILED.value,
-            "error_type": error_type,
-            "error_message": "Fresh browser retry limit exhausted.",
-            "page_url": last_failure.page_url if last_failure else "",
-            "failure_screenshot": (
-                str(last_failure.failure_screenshot)
-                if last_failure and last_failure.failure_screenshot
-                else ""
-            ),
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
-        },
     )

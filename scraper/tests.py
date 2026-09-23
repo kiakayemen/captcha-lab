@@ -43,10 +43,10 @@ from scraper.service import (
     record_captcha_stage,
     wait_for_form_result,
     run_scraper,
-    appointment_cycle_retry_delay_seconds,
+    subtype_retry_delay_seconds,
     wait_for_login_captcha_outcome,
     restart_unclear_login_captcha,
-    run_authenticated_appointment_cycle,
+    run_authenticated_subtype_check,
     dismiss_no_appointments_dialog,
     reach_appointment_form,
     submit_appointment_form_and_wait,
@@ -341,7 +341,7 @@ class ProxyConfigurationTests(TestCase):
         {"SCRAPER_PROXY_URLS": "http://one:8888,http://two:8888"},
     )
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_appointment_cycle_attempt")
+    @patch("scraper.service._run_single_subtype_attempt")
     def test_explicit_direct_run_ignores_configured_proxies(
         self, run_attempt, _reader
     ):
@@ -739,7 +739,7 @@ class FailureChainTests(TestCase):
         get_reader.assert_not_called()
 
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_appointment_cycle_attempt")
+    @patch("scraper.service._run_single_subtype_attempt")
     def test_terminal_403_is_stored_separately(self, run_attempt, _reader):
         now = datetime.now(timezone.utc)
         run_attempt.return_value = ScraperResult(
@@ -759,10 +759,55 @@ class FailureChainTests(TestCase):
         self.assertEqual(result.terminal_failure, result.attempt_failures[0])
         self.assertEqual(result.terminal_failure["error_type"], "HTTP403Forbidden")
 
+    @patch.dict(
+        "os.environ",
+        {"BLS_EMAIL_2": "second@example.com", "BLS_PASSWORD_2": "second-pass"},
+    )
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_both_subtypes_run_with_different_accounts_and_proxies(
+        self, run_attempt, _reader
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.side_effect = (
+            ScraperResult(
+                status=ScraperStatus.APPOINTMENT_FOUND,
+                started_at=now,
+                finished_at=now,
+                page_url="https://example.test/student",
+                visa_sub_type="Student Visa",
+            ),
+            ScraperResult(
+                status=ScraperStatus.NO_APPOINTMENT,
+                started_at=now,
+                finished_at=now,
+                page_url="https://example.test/residence",
+                visa_sub_type="Non-Working Residence Visa",
+            ),
+        )
+
+        result = run_scraper(ScraperConfig())
+
+        self.assertIs(result.status, ScraperStatus.APPOINTMENT_FOUND)
+        self.assertEqual(run_attempt.call_count, 2)
+        calls = run_attempt.call_args_list
+        self.assertEqual(
+            [entry.kwargs["visa_sub_type"] for entry in calls],
+            ["Student Visa", "Non-Working Residence Visa"],
+        )
+        self.assertNotEqual(
+            calls[0].kwargs["account"].email,
+            calls[1].kwargs["account"].email,
+        )
+        self.assertNotEqual(
+            calls[0].kwargs["proxy_config"]["server"],
+            calls[1].kwargs["proxy_config"]["server"],
+        )
+
     @patch.dict("os.environ", {"BLS_EMAIL_2": "second@example.com", "BLS_PASSWORD_2": "second-pass"})
     @patch("scraper.service.interruptible_cooldown")
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_appointment_cycle_attempt")
+    @patch("scraper.service._run_single_subtype_attempt")
     def test_temporary_server_error_retries_with_fresh_browser(
         self,
         run_attempt,
@@ -799,7 +844,7 @@ class FailureChainTests(TestCase):
 
     @patch("scraper.service.interruptible_cooldown")
     @patch("scraper.service.get_reader")
-    @patch("scraper.service._run_appointment_cycle_attempt")
+    @patch("scraper.service._run_single_subtype_attempt")
     def test_recovered_run_preserves_all_attempt_failures(
         self,
         run_attempt,
@@ -1318,7 +1363,7 @@ class FailureChainTests(TestCase):
     @patch("scraper.service.random.randint", side_effect=(31, 63, 125, 175))
     def test_retry_cooldown_grows_with_jitter(self, randint):
         self.assertEqual(
-            [appointment_cycle_retry_delay_seconds(attempt) for attempt in range(1, 6)],
+            [subtype_retry_delay_seconds(attempt) for attempt in range(1, 6)],
             [31, 63, 125, 175, 0],
         )
         self.assertEqual(
@@ -1412,12 +1457,12 @@ class AppointmentCycleTests(TestCase):
     @patch("scraper.service.dismiss_no_appointments_dialog")
     @patch(
         "scraper.service.submit_appointment_form_and_wait",
-        side_effect=(ScraperStatus.NO_APPOINTMENT, ScraperStatus.NO_APPOINTMENT),
+        return_value=ScraperStatus.NO_APPOINTMENT,
     )
     @patch("scraper.service.fill_appointment_form")
     @patch("scraper.service.reach_appointment_form")
     @patch("scraper.service.click_nav_book_new_appointment")
-    def test_both_subtypes_share_one_authenticated_session(
+    def test_one_subtype_is_checked_in_authenticated_session(
         self,
         open_appointment,
         reach_form,
@@ -1429,22 +1474,20 @@ class AppointmentCycleTests(TestCase):
         page = MagicMock(url="https://example.test/Global/bls/visatype")
         config = ScraperConfig()
 
-        result = run_authenticated_appointment_cycle(
+        result = run_authenticated_subtype_check(
             page,
             config=config,
             reader=MagicMock(),
+            visa_sub_type="Student Visa",
             attempt_number=1,
             should_stop=None,
         )
 
         self.assertIs(result.status, ScraperStatus.NO_APPOINTMENT)
         open_appointment.assert_called_once_with(page)
-        self.assertEqual(reach_form.call_count, 2)
-        self.assertEqual(
-            [call.kwargs["visa_sub_type"] for call in fill_form.call_args_list],
-            ["Student Visa", "Non-Working Residence Visa"],
-        )
-        self.assertEqual(submit_form.call_count, 2)
+        reach_form.assert_called_once()
+        fill_form.assert_called_once_with(page, visa_sub_type="Student Visa")
+        submit_form.assert_called_once()
         dismiss_dialog.assert_called_once_with(page)
 
     @patch("scraper.service.notify_admin")
@@ -1456,7 +1499,7 @@ class AppointmentCycleTests(TestCase):
     @patch("scraper.service.fill_appointment_form")
     @patch("scraper.service.reach_appointment_form")
     @patch("scraper.service.click_nav_book_new_appointment")
-    def test_first_appointment_stops_before_second_subtype(
+    def test_appointment_found_notifies_for_checked_subtype(
         self,
         _open_appointment,
         reach_form,
@@ -1467,10 +1510,11 @@ class AppointmentCycleTests(TestCase):
     ):
         page = MagicMock(url="https://example.test/result")
 
-        result = run_authenticated_appointment_cycle(
+        result = run_authenticated_subtype_check(
             page,
             config=ScraperConfig(),
             reader=MagicMock(),
+            visa_sub_type="Student Visa",
             attempt_number=1,
             should_stop=None,
         )
