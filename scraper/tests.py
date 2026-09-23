@@ -47,6 +47,7 @@ from scraper.service import (
     wait_for_login_captcha_outcome,
     restart_unclear_login_captcha,
     run_authenticated_appointment_cycle,
+    dismiss_no_appointments_dialog,
     reach_appointment_form,
     submit_appointment_form_and_wait,
     _run_login_captcha_attempt,
@@ -1408,7 +1409,7 @@ class AppointmentCycleTests(TestCase):
         solve_captcha.assert_called_once()
 
     @patch("scraper.service.log_no_appointment")
-    @patch("scraper.service.click_try_again")
+    @patch("scraper.service.dismiss_no_appointments_dialog")
     @patch(
         "scraper.service.submit_appointment_form_and_wait",
         side_effect=(ScraperStatus.NO_APPOINTMENT, ScraperStatus.NO_APPOINTMENT),
@@ -1422,7 +1423,7 @@ class AppointmentCycleTests(TestCase):
         reach_form,
         fill_form,
         submit_form,
-        try_again,
+        dismiss_dialog,
         _log_no_appointment,
     ):
         page = MagicMock(url="https://example.test/Global/bls/visatype")
@@ -1444,10 +1445,10 @@ class AppointmentCycleTests(TestCase):
             ["Student Visa", "Non-Working Residence Visa"],
         )
         self.assertEqual(submit_form.call_count, 2)
-        try_again.assert_called_once_with(page)
+        dismiss_dialog.assert_called_once_with(page)
 
     @patch("scraper.service.notify_admin")
-    @patch("scraper.service.click_try_again")
+    @patch("scraper.service.dismiss_no_appointments_dialog")
     @patch(
         "scraper.service.submit_appointment_form_and_wait",
         return_value=ScraperStatus.APPOINTMENT_FOUND,
@@ -1461,7 +1462,7 @@ class AppointmentCycleTests(TestCase):
         reach_form,
         fill_form,
         submit_form,
-        try_again,
+        dismiss_dialog,
         notify,
     ):
         page = MagicMock(url="https://example.test/result")
@@ -1478,5 +1479,17 @@ class AppointmentCycleTests(TestCase):
         self.assertEqual(reach_form.call_count, 1)
         self.assertEqual(fill_form.call_count, 1)
         self.assertEqual(submit_form.call_count, 1)
-        try_again.assert_not_called()
+        dismiss_dialog.assert_not_called()
         notify.assert_called_once()
+
+    @patch("scraper.service.expect")
+    def test_no_appointments_dialog_ok_is_clicked(self, _expect):
+        page = MagicMock()
+        modal = MagicMock()
+        button = MagicMock()
+        page.locator.return_value.first = modal
+        modal.locator.return_value.filter.return_value.first = button
+
+        dismiss_no_appointments_dialog(page)
+
+        button.click.assert_called_once_with(timeout=10_000)

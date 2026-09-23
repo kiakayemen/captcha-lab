@@ -76,7 +76,7 @@ from flows.selectors import (
     CAPTCHA_TILE_SELECTOR,
     LOGOUT_SELECTOR,
     NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
-    TRY_AGAIN_BUTTON_SELECTOR,
+    NO_APPOINTMENTS_MODAL_SELECTOR,
     VERIFY_BUTTON_SELECTOR,
 )
 from notifications import (
@@ -363,13 +363,18 @@ def submit_appointment_form_and_wait(
     )
 
 
-def click_try_again(page) -> None:
-    """Close a no-appointments result and continue in the authenticated session."""
-    button = page.locator(TRY_AGAIN_BUTTON_SELECTOR).first
-    expect(button).to_be_visible(timeout=30_000)
-    expect(button).to_be_enabled(timeout=30_000)
-    button.click(timeout=10_000)
-    logger.info('Clicked "Try Again" after no-appointments result.')
+def dismiss_no_appointments_dialog(page) -> None:
+    """Dismiss the confirmed no-appointments modal before reusing the form."""
+    modal = page.locator(NO_APPOINTMENTS_MODAL_SELECTOR).first
+    expect(modal).to_be_visible(timeout=30_000)
+    ok_button = modal.locator("button:visible").filter(
+        has_text=re.compile(r"^\s*ok\s*$", re.IGNORECASE),
+    ).first
+    expect(ok_button).to_be_visible(timeout=30_000)
+    expect(ok_button).to_be_enabled(timeout=30_000)
+    ok_button.click(timeout=10_000)
+    expect(modal).to_be_hidden(timeout=30_000)
+    logger.info('Clicked "Ok" on the no-appointments dialog.')
 
 
 def run_authenticated_appointment_cycle(
@@ -430,7 +435,7 @@ def run_authenticated_appointment_cycle(
         logger.info("No appointment found. Visa subtype=%s", visa_sub_type)
         log_no_appointment(page_url=page.url, visa_sub_type=visa_sub_type)
         if index < len(config.visa_sub_types) - 1:
-            click_try_again(page)
+            dismiss_no_appointments_dialog(page)
 
     return ScraperResult(
         status=ScraperStatus.NO_APPOINTMENT,
