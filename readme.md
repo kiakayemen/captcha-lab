@@ -244,6 +244,20 @@ For a visible manual run from the laptop's own connection, use
 `SCRAPER_PROXY_URLS` for that run. The standalone script does not need a
 database; scheduled runs still require their configured proxy pool.
 
+To check every configured proxy from the worker's actual network path without
+logging in or submitting a CAPTCHA, run this inside the worker pod:
+
+```bash
+python scripts/check_proxy_ips.py
+```
+
+The diagnostic performs exactly one egress-IP lookup and one public BLS login
+page GET per proxy, with no retries. It prints only credential-free proxy
+endpoints. Exit status `0` means every endpoint was accessible, `1` means at
+least one endpoint returned HTTP 403, and `2` means one or more results were
+inconclusive or the configuration was invalid. Add `--json` for JSON Lines
+output suitable for capture from the pod logs.
+
 Each configured visa subtype is checked in its own fresh browser with the next
 BLS account and proxy endpoint. After login, the scraper opens Book New
 Appointment and accepts either a CAPTCHA-first or a form-first page. Every

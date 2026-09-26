@@ -64,6 +64,33 @@ from scraper.proxy import (
     configured_proxy_urls,
     playwright_proxy_config,
 )
+from scripts.check_proxy_ips import classify_response, safe_endpoint
+
+
+class ProxyIpDiagnosticTests(TestCase):
+    def test_safe_endpoint_never_exposes_credentials(self):
+        self.assertEqual(
+            safe_endpoint("http://user:secret@proxy.example:8888"),
+            "http://proxy.example:8888",
+        )
+
+    def test_known_403_is_classified_as_blocked(self):
+        self.assertEqual(
+            classify_response(403, "awselb/2.0", "8b73b6ccd7091d6d"),
+            ("blocked", True),
+        )
+
+    def test_other_403_is_still_classified_as_blocked(self):
+        self.assertEqual(
+            classify_response(403, "cloudflare", "different"),
+            ("blocked", False),
+        )
+
+    def test_success_is_classified_as_accessible(self):
+        self.assertEqual(
+            classify_response(200, "", "anything"),
+            ("accessible", False),
+        )
 
 
 class AccountConfigurationTests(TestCase):
