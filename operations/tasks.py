@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import timedelta
 
 from celery import shared_task
@@ -11,6 +12,7 @@ from .models import (
     ScraperRun,
     ScraperSchedule,
 )
+from .proxy_health import select_proxy_pool, update_proxy_health_from_run
 from .services import (
     ACTIVE_RUN_STATUSES,
     build_default_scraper_config,
@@ -62,6 +64,10 @@ def run_scraper_task(
         config=config,
         trigger=db_run.trigger,
         db_run=db_run,
+    )
+    update_proxy_health_from_run(
+        db_run,
+        cooldown_minutes=ScraperSchedule.load().interval_minutes,
     )
 
     return str(
@@ -163,6 +169,21 @@ def run_scheduled_scraper_task() -> str:
                 f"{active_run.pk}"
             )
 
+        config = build_default_scraper_config()
+        proxy_selection = select_proxy_pool(now)
+        if not proxy_selection.proxy_urls:
+            logger.warning(
+                "Scheduled scraper circuit is open; no proxy endpoint is "
+                "ready for a controlled recovery check."
+            )
+            return "circuit_open"
+
+        config = replace(
+            config,
+            proxy_urls=proxy_selection.proxy_urls,
+            allow_single_proxy=(len(proxy_selection.proxy_urls) == 1),
+        )
+
         # Mark the dispatch before launching the scraper.
         #
         # This prevents two scheduler checks from launching
@@ -176,10 +197,6 @@ def run_scheduled_scraper_task() -> str:
             ]
         )
 
-        config = (
-            build_default_scraper_config()
-        )
-
         db_run = create_scraper_run(
             config=config,
             trigger=(
@@ -188,10 +205,12 @@ def run_scheduled_scraper_task() -> str:
         )
 
     logger.info(
-        "Scheduled scraper run created. "
-        "Run ID=%s | Interval=%s minute(s)",
+        "Scheduled scraper run created. Run ID=%s | Interval=%s minute(s) | "
+        "Proxy endpoints=%s | Recovery probe=%s",
         db_run.pk,
         schedule.interval_minutes,
+        len(proxy_selection.proxy_urls),
+        proxy_selection.recovery_probe,
     )
 
     execute_scraper_run(
@@ -200,6 +219,10 @@ def run_scheduled_scraper_task() -> str:
             ScraperRun.Trigger.SCHEDULED
         ),
         db_run=db_run,
+    )
+    update_proxy_health_from_run(
+        db_run,
+        cooldown_minutes=schedule.interval_minutes,
     )
 
     return str(

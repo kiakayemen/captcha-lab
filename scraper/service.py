@@ -96,7 +96,11 @@ from scraper.http_diagnostics import (
     resolve_egress_ip,
     response_diagnostics,
 )
-from scraper.proxy import PlaywrightProxyRotator, ProxyConfigurationError
+from scraper.proxy import (
+    PlaywrightProxyRotator,
+    ProxyConfigurationError,
+    configured_proxy_urls,
+)
 
 
 logger = logging.getLogger(
@@ -505,6 +509,7 @@ def failure_record(
     *,
     visa_sub_type: str,
     attempt_number: int,
+    proxy_endpoint: str | None = None,
 ) -> dict[str, object]:
     return {
         "visa_sub_type": visa_sub_type,
@@ -517,6 +522,7 @@ def failure_record(
             str(result.failure_screenshot) if result.failure_screenshot else ""
         ),
         "occurred_at": result.finished_at.isoformat(),
+        "proxy_endpoint": proxy_endpoint or "",
     }
 
 
@@ -2126,7 +2132,17 @@ def run_scraper(
     random.shuffle(accounts)
     account_index = 0
 
-    proxy_rotator = None if config.direct_connection else PlaywrightProxyRotator()
+    proxy_rotator = (
+        None
+        if config.direct_connection
+        else PlaywrightProxyRotator(
+            proxy_urls=(
+                config.proxy_urls
+                if config.proxy_urls is not None
+                else configured_proxy_urls()
+            )
+        )
+    )
     if proxy_rotator is None:
         logger.warning(
             "Manual direct connection selected; each subtype gets a fresh browser "
@@ -2224,11 +2240,31 @@ def run_scraper(
                 result,
                 visa_sub_type=visa_sub_type,
                 attempt_number=attempt_number,
+                proxy_endpoint=(
+                    proxy_config.get("server") if proxy_config else None
+                ),
             )
             attempt_failures.append(current_failure)
 
             if result.error_type == "HTTP403Forbidden":
-                logger.error("HTTP 403 is terminal; stopping without another attempt.")
+                if proxy_rotator is not None and proxy_config is not None:
+                    proxy_rotator.quarantine(proxy_config["server"])
+
+                if (
+                    attempt_number < MAX_SUBTYPE_ATTEMPTS
+                    and proxy_rotator is not None
+                    and proxy_rotator.has_available_endpoint
+                ):
+                    logger.error(
+                        "HTTP 403 quarantined one proxy for this run; "
+                        "continuing through an untried endpoint. Proxy=%s",
+                        proxy_config["server"],
+                    )
+                    continue
+
+                logger.error(
+                    "HTTP 403 exhausted every available proxy; stopping run."
+                )
                 return ScraperResult(
                     status=ScraperStatus.FAILED,
                     started_at=overall_started_at,

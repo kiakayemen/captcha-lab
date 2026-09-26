@@ -29,6 +29,7 @@ from django.utils.html import format_html
 from django.db.models import Max, Min, Prefetch
 
 from .models import (
+    ProxyEndpointHealth,
     ScraperEvent,
     ScraperRun,
     ScraperRunLog,
@@ -167,6 +168,33 @@ class ScraperScheduleAdmin(
         request: HttpRequest,
         obj=None,
     ) -> bool:
+        return False
+
+
+@admin.register(ProxyEndpointHealth)
+class ProxyEndpointHealthAdmin(admin.ModelAdmin):
+    list_display = (
+        "endpoint",
+        "is_quarantined",
+        "quarantined_until",
+        "consecutive_403",
+        "last_checked_at",
+        "last_success_at",
+    )
+    readonly_fields = (
+        "endpoint",
+        "quarantined_until",
+        "consecutive_403",
+        "last_checked_at",
+        "last_403_at",
+        "last_success_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj=None) -> bool:
         return False
 
 

@@ -140,6 +140,27 @@ class PlaywrightProxyRotator:
         self._last_url = selected_url
         return playwright_proxy_config(selected_url)
 
+    def quarantine(self, proxy_server: str) -> None:
+        """Remove one endpoint from this run after a terminal HTTP 403."""
+        self.proxy_urls = tuple(
+            url
+            for url in self.proxy_urls
+            if playwright_proxy_config(url)["server"] != proxy_server
+        )
+        self._remaining = [
+            url
+            for url in self._remaining
+            if playwright_proxy_config(url)["server"] != proxy_server
+        ]
+        if self._last_url is not None and (
+            playwright_proxy_config(self._last_url)["server"] == proxy_server
+        ):
+            self._last_url = None
+
+    @property
+    def has_available_endpoint(self) -> bool:
+        return bool(self.proxy_urls)
+
 
 def choose_playwright_proxy() -> dict[str, str] | None:
     """Choose a proxy for callers that need a single browser."""

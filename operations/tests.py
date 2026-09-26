@@ -5,6 +5,7 @@ import logging
 import threading
 from io import StringIO
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.core.exceptions import SynchronousOnlyOperation
@@ -19,10 +20,18 @@ from scraper.models import ScraperConfig
 
 from .events import bind_scraper_event_context, record_event_from_log, record_scraper_event
 from .database_writer import run_database_write
-from .models import ScraperEvent, ScraperRun, ScraperRunLog
+from .models import (
+    ProxyEndpointHealth,
+    ScraperEvent,
+    ScraperRun,
+    ScraperRunLog,
+    ScraperSchedule,
+)
 from .admin import LogDateRangeForm, ScraperRunAdmin
 from .jalali import parse_jalali_date
 from .run_logging import ScraperRunDatabaseHandler
+from .proxy_health import select_proxy_pool, update_proxy_health_from_run
+from .tasks import run_scheduled_scraper_task
 from .services import (
     ScraperRunAlreadyStarted,
     active_scraper_runs,
@@ -178,6 +187,165 @@ class ScraperEventTests(TestCase):
         self.assertEqual(self.run.status, ScraperRun.Status.STOP_REQUESTED)
         self.assertIsNotNone(self.run.stop_requested_at)
         self.assertTrue(active_scraper_runs().filter(pk=self.run.pk).exists())
+
+
+@patch.dict(
+    "os.environ",
+    {
+        "SCRAPER_PROXY_URLS": (
+            "http://proxy-1.internal:8888,http://proxy-2.internal:8888"
+        )
+    },
+)
+class ProxyCircuitBreakerTests(TestCase):
+    def test_healthy_pool_excludes_quarantined_endpoint(self):
+        ProxyEndpointHealth.objects.create(
+            endpoint="http://proxy-1.internal:8888",
+            quarantined_until=timezone.now() + timezone.timedelta(minutes=40),
+        )
+
+        selection = select_proxy_pool()
+
+        self.assertEqual(
+            selection.proxy_urls,
+            ("http://proxy-2.internal:8888",),
+        )
+        self.assertFalse(selection.recovery_probe)
+
+    def test_all_quarantined_endpoints_wait_until_probe_is_due(self):
+        future = timezone.now() + timezone.timedelta(minutes=40)
+        for endpoint in (
+            "http://proxy-1.internal:8888",
+            "http://proxy-2.internal:8888",
+        ):
+            ProxyEndpointHealth.objects.create(
+                endpoint=endpoint,
+                quarantined_until=future,
+            )
+
+        selection = select_proxy_pool()
+
+        self.assertEqual(selection.proxy_urls, ())
+        self.assertFalse(selection.recovery_probe)
+
+    def test_all_quarantined_endpoints_allow_one_due_recovery_probe(self):
+        now = timezone.now()
+        older = ProxyEndpointHealth.objects.create(
+            endpoint="http://proxy-1.internal:8888",
+            quarantined_until=now - timezone.timedelta(minutes=1),
+            last_checked_at=now - timezone.timedelta(minutes=80),
+        )
+        ProxyEndpointHealth.objects.create(
+            endpoint="http://proxy-2.internal:8888",
+            quarantined_until=now - timezone.timedelta(minutes=1),
+            last_checked_at=now - timezone.timedelta(minutes=40),
+        )
+
+        selection = select_proxy_pool(now)
+
+        self.assertEqual(selection.proxy_urls, (older.endpoint,))
+        self.assertTrue(selection.recovery_probe)
+
+    def test_run_events_quarantine_403_and_clear_on_later_200(self):
+        run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            visa_sub_types=["Student Visa"],
+        )
+        endpoint = "http://proxy-1.internal:8888"
+        ScraperEvent.objects.create(
+            run=run,
+            event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+            status="403",
+            data={"proxy_endpoint": endpoint},
+        )
+
+        update_proxy_health_from_run(run, cooldown_minutes=40)
+        health = ProxyEndpointHealth.objects.get(endpoint=endpoint)
+        self.assertEqual(health.consecutive_403, 1)
+        self.assertIsNotNone(health.quarantined_until)
+
+        recovery_run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            visa_sub_types=["Student Visa"],
+        )
+        ScraperEvent.objects.create(
+            run=recovery_run,
+            event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+            status="200",
+            data={"proxy_endpoint": endpoint},
+        )
+        update_proxy_health_from_run(recovery_run, cooldown_minutes=40)
+        health.refresh_from_db()
+        self.assertEqual(health.consecutive_403, 0)
+        self.assertIsNone(health.quarantined_until)
+        self.assertIsNotNone(health.last_success_at)
+
+    @patch("operations.tasks.update_proxy_health_from_run")
+    @patch("operations.tasks.execute_scraper_run")
+    def test_scheduler_continues_with_remaining_healthy_endpoint(
+        self,
+        execute_run,
+        _update_health,
+    ):
+        ProxyEndpointHealth.objects.create(
+            endpoint="http://proxy-1.internal:8888",
+            quarantined_until=timezone.now() + timezone.timedelta(minutes=40),
+        )
+        ScraperSchedule.objects.create(enabled=True, interval_minutes=40)
+
+        result = run_scheduled_scraper_task.run()
+
+        self.assertTrue(result)
+        config = execute_run.call_args.kwargs["config"]
+        self.assertEqual(config.proxy_urls, ("http://proxy-2.internal:8888",))
+        self.assertTrue(config.allow_single_proxy)
+
+    @patch("operations.tasks.execute_scraper_run")
+    def test_scheduler_does_not_launch_full_run_while_all_probes_cooling_down(
+        self,
+        execute_run,
+    ):
+        future = timezone.now() + timezone.timedelta(minutes=40)
+        for endpoint in (
+            "http://proxy-1.internal:8888",
+            "http://proxy-2.internal:8888",
+        ):
+            ProxyEndpointHealth.objects.create(
+                endpoint=endpoint,
+                quarantined_until=future,
+            )
+        ScraperSchedule.objects.create(enabled=True, interval_minutes=40)
+
+        result = run_scheduled_scraper_task.run()
+
+        self.assertEqual(result, "circuit_open")
+        execute_run.assert_not_called()
+        self.assertFalse(ScraperRun.objects.exists())
+
+    @patch("operations.tasks.update_proxy_health_from_run")
+    @patch("operations.tasks.execute_scraper_run")
+    def test_scheduler_launches_only_one_due_recovery_endpoint(
+        self,
+        execute_run,
+        _update_health,
+    ):
+        now = timezone.now()
+        for index, endpoint in enumerate((
+            "http://proxy-1.internal:8888",
+            "http://proxy-2.internal:8888",
+        )):
+            ProxyEndpointHealth.objects.create(
+                endpoint=endpoint,
+                quarantined_until=now - timezone.timedelta(minutes=1),
+                last_checked_at=now - timezone.timedelta(minutes=80 - index * 40),
+            )
+        ScraperSchedule.objects.create(enabled=True, interval_minutes=40)
+
+        run_scheduled_scraper_task.run()
+
+        config = execute_run.call_args.kwargs["config"]
+        self.assertEqual(config.proxy_urls, ("http://proxy-1.internal:8888",))
+        self.assertTrue(config.allow_single_proxy)
 
 
 class ScraperRunLoggingTests(TestCase):

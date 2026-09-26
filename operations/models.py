@@ -355,3 +355,55 @@ class ScraperSchedule(models.Model):
         )
 
         return schedule
+
+
+class ProxyEndpointHealth(models.Model):
+    """Persistent circuit-breaker state for one sanitized proxy endpoint."""
+
+    endpoint = models.CharField(
+        max_length=500,
+        unique=True,
+    )
+
+    quarantined_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+
+    consecutive_403 = models.PositiveIntegerField(
+        default=0,
+    )
+
+    last_checked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+
+    last_403_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    last_success_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    class Meta:
+        ordering = ["endpoint"]
+        verbose_name = "Proxy endpoint health"
+        verbose_name_plural = "Proxy endpoint health"
+
+    @property
+    def is_quarantined(self) -> bool:
+        return self.quarantined_until is not None
+
+    def __str__(self) -> str:
+        state = "Quarantined" if self.is_quarantined else "Healthy"
+        return f"{self.endpoint} — {state}"

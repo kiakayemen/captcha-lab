@@ -27,6 +27,7 @@ class ScraperConfig:
     )
     allow_single_proxy: bool = False
     direct_connection: bool = False
+    proxy_urls: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

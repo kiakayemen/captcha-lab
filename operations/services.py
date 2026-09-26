@@ -220,6 +220,7 @@ def serialize_scraper_config(
         ),
         "allow_single_proxy": config.allow_single_proxy,
         "direct_connection": config.direct_connection,
+        "proxy_urls": list(config.proxy_urls) if config.proxy_urls is not None else None,
     }
 
 
@@ -244,6 +245,11 @@ def deserialize_scraper_config(
         ),
         allow_single_proxy=bool(config_data.get("allow_single_proxy", False)),
         direct_connection=bool(config_data.get("direct_connection", False)),
+        proxy_urls=(
+            tuple(config_data["proxy_urls"])
+            if config_data.get("proxy_urls") is not None
+            else None
+        ),
     )
 
 

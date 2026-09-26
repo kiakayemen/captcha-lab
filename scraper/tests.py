@@ -742,22 +742,70 @@ class FailureChainTests(TestCase):
     @patch("scraper.service._run_single_subtype_attempt")
     def test_terminal_403_is_stored_separately(self, run_attempt, _reader):
         now = datetime.now(timezone.utc)
-        run_attempt.return_value = ScraperResult(
-            status=ScraperStatus.FAILED,
-            started_at=now,
-            finished_at=now,
-            error_type="HTTP403Forbidden",
-            error_message="blocked",
+        run_attempt.side_effect = (
+            ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                error_type="HTTP403Forbidden",
+                error_message="blocked",
+            ),
+            ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                error_type="HTTP403Forbidden",
+                error_message="blocked",
+            ),
         )
 
         result = run_scraper(
             ScraperConfig(visa_sub_types=("Student Visa",))
         )
 
-        self.assertEqual(len(result.attempt_failures), 1)
+        self.assertEqual(run_attempt.call_count, 2)
+        self.assertEqual(len(result.attempt_failures), 2)
         self.assertEqual(result.first_failure, result.attempt_failures[0])
-        self.assertEqual(result.terminal_failure, result.attempt_failures[0])
+        self.assertEqual(result.terminal_failure, result.attempt_failures[1])
         self.assertEqual(result.terminal_failure["error_type"], "HTTP403Forbidden")
+
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_403_quarantines_endpoint_and_continues_on_healthy_proxy(
+        self, run_attempt, _reader
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.side_effect = (
+            ScraperResult(
+                status=ScraperStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                error_type="HTTP403Forbidden",
+                error_message="blocked",
+            ),
+            ScraperResult(
+                status=ScraperStatus.NO_APPOINTMENT,
+                started_at=now,
+                finished_at=now,
+            ),
+        )
+
+        result = run_scraper(
+            ScraperConfig(visa_sub_types=("Student Visa",))
+        )
+
+        self.assertEqual(result.status, ScraperStatus.NO_APPOINTMENT)
+        self.assertEqual(run_attempt.call_count, 2)
+        used_servers = [
+            call.kwargs["proxy_config"]["server"]
+            for call in run_attempt.call_args_list
+        ]
+        self.assertEqual(len(set(used_servers)), 2)
+        self.assertEqual(
+            result.attempt_failures[0]["proxy_endpoint"],
+            used_servers[0],
+        )
+        self.assertIsNone(result.terminal_failure)
 
     @patch.dict(
         "os.environ",
