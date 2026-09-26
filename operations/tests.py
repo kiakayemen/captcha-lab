@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import csv
 import logging
 import threading
 from io import StringIO
@@ -225,10 +226,66 @@ class ScraperRunLoggingTests(TestCase):
         })
         with timezone.override("Asia/Tehran"):
             response = admin.download_all_logs_view(request)
-        content = response.content.decode()
+        self.assertTrue(response.streaming)
+        self.assertEqual(
+            response["Content-Disposition"],
+            'attachment; filename="scraper_run_logs_2026-09-16_to_2026-09-16.csv"',
+        )
+        content = b"".join(response.streaming_content).decode()
         self.assertNotIn("before", content)
         self.assertIn("inside", content)
         self.assertNotIn("after", content)
+
+    def test_log_export_streams_valid_csv_without_query_cache(self):
+        ScraperRunLog.objects.create(
+            run=self.run,
+            level="WARNING",
+            message='large, quoted "message"',
+        )
+        admin = ScraperRunAdmin(ScraperRun, None)
+
+        response = admin.download_all_logs_view(
+            RequestFactory().get("/download-logs/")
+        )
+
+        self.assertTrue(response.streaming)
+        self.assertEqual(
+            response["Content-Disposition"],
+            (
+                'attachment; filename="scraper_run_logs_'
+                f'{timezone.localdate()}_to_{timezone.localdate()}.csv"'
+            ),
+        )
+        content = b"".join(response.streaming_content).decode()
+        rows = list(csv.DictReader(StringIO(content)))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["level"], "WARNING")
+        self.assertEqual(rows[0]["message"], 'large, quoted "message"')
+
+    def test_single_run_log_filename_includes_actual_date_range(self):
+        first = ScraperRunLog.objects.create(run=self.run, message="first")
+        last = ScraperRunLog.objects.create(run=self.run, message="last")
+        ScraperRunLog.objects.filter(pk=first.pk).update(
+            created_at=datetime(2026, 9, 15, 20, 31, tzinfo=ZoneInfo("UTC"))
+        )
+        ScraperRunLog.objects.filter(pk=last.pk).update(
+            created_at=datetime(2026, 9, 17, 20, 31, tzinfo=ZoneInfo("UTC"))
+        )
+        admin = ScraperRunAdmin(ScraperRun, None)
+
+        with timezone.override("Asia/Tehran"):
+            response = admin.download_run_logs_view(
+                RequestFactory().get("/download-logs/"),
+                self.run.pk,
+            )
+
+        self.assertEqual(
+            response["Content-Disposition"],
+            (
+                f'attachment; filename="scraper_run_{self.run.pk}_logs_'
+                '2026-09-16_to_2026-09-18.csv"'
+            ),
+        )
 
     def test_log_export_rejects_reversed_dates(self):
         form = LogDateRangeForm({"start_date": "1405/06/26", "end_date": "1405/06/25"})

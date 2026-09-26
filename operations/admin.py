@@ -14,6 +14,7 @@ from django.http import (
     HttpResponse,
     HttpResponseBadRequest,
     JsonResponse,
+    StreamingHttpResponse,
 )
 from django.shortcuts import (
     get_object_or_404,
@@ -25,7 +26,7 @@ from django.urls import (
 )
 from django.utils import timezone
 from django.utils.html import format_html
-from django.db.models import Prefetch
+from django.db.models import Max, Min, Prefetch
 
 from .models import (
     ScraperEvent,
@@ -65,6 +66,14 @@ class LogDateRangeForm(forms.Form):
         if start and end and start > end:
             raise forms.ValidationError("Start date must be on or before end date.")
         return cleaned
+
+
+class CSVBuffer:
+    """Minimal file-like object that lets csv write one row at a time."""
+
+    @staticmethod
+    def write(value: str) -> str:
+        return value
 
 
 @admin.register(ScraperEvent)
@@ -595,12 +604,12 @@ class ScraperRunAdmin(
         form = LogDateRangeForm(request.GET)
         if not form.is_valid():
             return HttpResponseBadRequest("Invalid Jalali log date range. Use YYYY/MM/DD and start before end.")
-        logs = ScraperRunLog.objects.select_related("run").order_by(
-            "run__created_at",
-            "id",
+        logs = self._logs_for_export(
+            ScraperRunLog.objects.order_by("run__created_at", "id")
         )
         logs = self._filter_logs_by_date(logs, form)
-        return self._logs_csv_response(logs, "scraper_run_logs.csv")
+        filename = self._logs_filename(logs, form, "scraper_run_logs")
+        return self._logs_csv_response(logs, filename)
 
     def download_run_logs_view(
         self,
@@ -611,11 +620,16 @@ class ScraperRunAdmin(
         form = LogDateRangeForm(request.GET)
         if not form.is_valid():
             return HttpResponseBadRequest("Invalid Jalali log date range. Use YYYY/MM/DD and start before end.")
-        logs = run.logs.select_related("run").order_by("id")
+        logs = self._logs_for_export(run.logs.order_by("id"))
         logs = self._filter_logs_by_date(logs, form)
+        filename = self._logs_filename(
+            logs,
+            form,
+            f"scraper_run_{run.pk}_logs",
+        )
         return self._logs_csv_response(
             logs,
-            f"scraper_run_{run.pk}_logs.csv",
+            filename,
         )
 
     @staticmethod
@@ -630,12 +644,59 @@ class ScraperRunAdmin(
         return logs
 
     @staticmethod
-    def _logs_csv_response(logs, filename: str) -> HttpResponse:
-        response = HttpResponse(content_type="text/csv; charset=utf-8")
-        response["Content-Disposition"] = (
-            f'attachment; filename="{filename}"'
+    def _logs_filename(logs, form: LogDateRangeForm, prefix: str) -> str:
+        """Include the requested or actual local date range in every export."""
+        start = form.cleaned_data.get("start_date")
+        end = form.cleaned_data.get("end_date")
+
+        if start is None or end is None:
+            bounds = logs.aggregate(
+                first_log_at=Min("created_at"),
+                last_log_at=Max("created_at"),
+            )
+            if start is None and bounds["first_log_at"] is not None:
+                start = timezone.localdate(bounds["first_log_at"])
+            if end is None and bounds["last_log_at"] is not None:
+                end = timezone.localdate(bounds["last_log_at"])
+
+        if start is None and end is None:
+            range_label = "no-logs"
+        elif start is None:
+            range_label = f"through_{end.isoformat()}"
+        elif end is None:
+            range_label = f"from_{start.isoformat()}"
+        else:
+            range_label = f"{start.isoformat()}_to_{end.isoformat()}"
+
+        return f"{prefix}_{range_label}.csv"
+
+    @staticmethod
+    def _logs_for_export(logs):
+        """Fetch only CSV fields while retaining one joined query per batch."""
+        return logs.select_related("run").only(
+            "id",
+            "created_at",
+            "level",
+            "message",
+            "run__id",
+            "run__status",
+            "run__trigger",
+            "run__created_at",
+            "run__started_at",
+            "run__finished_at",
+            "run__duration_seconds",
+            "run__appointment_visa_sub_type",
+            "run__page_url",
+            "run__error_type",
+            "run__error_message",
+            "run__failure_screenshot",
+            "run__first_failure",
+            "run__attempt_failures",
+            "run__terminal_failure",
         )
 
+    @staticmethod
+    def _logs_csv_response(logs, filename: str) -> StreamingHttpResponse:
         fieldnames = [
             "log_id",
             "log_created_at",
@@ -657,47 +718,57 @@ class ScraperRunAdmin(
             "attempt_failures",
             "terminal_failure",
         ]
-        writer = csv.DictWriter(response, fieldnames=fieldnames)
-        writer.writeheader()
 
-        for log in logs.iterator():
-            run = log.run
-            writer.writerow(
-                {
-                    "log_id": log.id,
-                    "log_created_at": log.created_at.isoformat(),
-                    "level": log.level,
-                    "message": log.message,
-                    "run_id": run.id,
-                    "run_status": run.status,
-                    "run_trigger": run.trigger,
-                    "run_created_at": run.created_at.isoformat(),
-                    "run_started_at": (
-                        run.started_at.isoformat()
-                        if run.started_at
-                        else ""
-                    ),
-                    "run_finished_at": (
-                        run.finished_at.isoformat()
-                        if run.finished_at
-                        else ""
-                    ),
-                    "run_duration_seconds": (
-                        run.duration_seconds
-                        if run.duration_seconds is not None
-                        else ""
-                    ),
-                    "appointment_visa_sub_type": run.appointment_visa_sub_type,
-                    "run_page_url": run.page_url,
-                    "error_type": run.error_type,
-                    "error_message": run.error_message,
-                    "failure_screenshot": run.failure_screenshot,
-                    "first_failure": json.dumps(run.first_failure or {}),
-                    "attempt_failures": json.dumps(run.attempt_failures or []),
-                    "terminal_failure": json.dumps(run.terminal_failure or {}),
-                }
-            )
+        def rows():
+            writer = csv.DictWriter(CSVBuffer(), fieldnames=fieldnames)
+            yield writer.writeheader()
 
+            # A bounded iterator prevents Django from caching the full queryset.
+            for log in logs.iterator(chunk_size=500):
+                run = log.run
+                yield writer.writerow(
+                    {
+                        "log_id": log.id,
+                        "log_created_at": log.created_at.isoformat(),
+                        "level": log.level,
+                        "message": log.message,
+                        "run_id": run.id,
+                        "run_status": run.status,
+                        "run_trigger": run.trigger,
+                        "run_created_at": run.created_at.isoformat(),
+                        "run_started_at": (
+                            run.started_at.isoformat()
+                            if run.started_at
+                            else ""
+                        ),
+                        "run_finished_at": (
+                            run.finished_at.isoformat()
+                            if run.finished_at
+                            else ""
+                        ),
+                        "run_duration_seconds": (
+                            run.duration_seconds
+                            if run.duration_seconds is not None
+                            else ""
+                        ),
+                        "appointment_visa_sub_type": run.appointment_visa_sub_type,
+                        "run_page_url": run.page_url,
+                        "error_type": run.error_type,
+                        "error_message": run.error_message,
+                        "failure_screenshot": run.failure_screenshot,
+                        "first_failure": json.dumps(run.first_failure or {}),
+                        "attempt_failures": json.dumps(run.attempt_failures or []),
+                        "terminal_failure": json.dumps(run.terminal_failure or {}),
+                    }
+                )
+
+        response = StreamingHttpResponse(
+            rows(),
+            content_type="text/csv; charset=utf-8",
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename}"'
+        )
         return response
 
     def run_now_view(
