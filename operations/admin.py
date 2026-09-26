@@ -645,19 +645,19 @@ class ScraperRunAdmin(
 
     @staticmethod
     def _logs_filename(logs, form: LogDateRangeForm, prefix: str) -> str:
-        """Include the requested or actual local date range in every export."""
-        start = form.cleaned_data.get("start_date")
-        end = form.cleaned_data.get("end_date")
-
-        if start is None or end is None:
-            bounds = logs.aggregate(
-                first_log_at=Min("created_at"),
-                last_log_at=Max("created_at"),
-            )
-            if start is None and bounds["first_log_at"] is not None:
-                start = timezone.localdate(bounds["first_log_at"])
-            if end is None and bounds["last_log_at"] is not None:
-                end = timezone.localdate(bounds["last_log_at"])
+        """Include the actual exported date range in every filename."""
+        bounds = logs.aggregate(
+            first_log_at=Min("created_at"),
+            last_log_at=Max("created_at"),
+        )
+        if bounds["first_log_at"] is not None:
+            start = timezone.localdate(bounds["first_log_at"])
+            end = timezone.localdate(bounds["last_log_at"])
+        else:
+            # An empty export has no actual range, so retain the requested
+            # bounds to make the resulting filename as informative as possible.
+            start = form.cleaned_data.get("start_date")
+            end = form.cleaned_data.get("end_date")
 
         if start is None and end is None:
             range_label = "no-logs"

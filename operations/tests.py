@@ -287,6 +287,32 @@ class ScraperRunLoggingTests(TestCase):
             ),
         )
 
+    def test_log_filename_uses_exported_dates_not_wider_filter(self):
+        first = ScraperRunLog.objects.create(run=self.run, message="first")
+        last = ScraperRunLog.objects.create(run=self.run, message="last")
+        ScraperRunLog.objects.filter(pk=first.pk).update(
+            created_at=datetime(2026, 9, 22, 20, 31, tzinfo=ZoneInfo("UTC"))
+        )
+        ScraperRunLog.objects.filter(pk=last.pk).update(
+            created_at=datetime(2026, 9, 24, 20, 31, tzinfo=ZoneInfo("UTC"))
+        )
+        admin = ScraperRunAdmin(ScraperRun, None)
+        request = RequestFactory().get(
+            "/download-logs/",
+            {"start_date": "1405/07/01", "end_date": "1405/07/04"},
+        )
+
+        with timezone.override("Asia/Tehran"):
+            response = admin.download_all_logs_view(request)
+
+        self.assertEqual(
+            response["Content-Disposition"],
+            (
+                'attachment; filename="scraper_run_logs_'
+                '2026-09-23_to_2026-09-25.csv"'
+            ),
+        )
+
     def test_log_export_rejects_reversed_dates(self):
         form = LogDateRangeForm({"start_date": "1405/06/26", "end_date": "1405/06/25"})
         self.assertFalse(form.is_valid())
