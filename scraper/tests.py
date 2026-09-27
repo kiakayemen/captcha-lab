@@ -663,7 +663,22 @@ class HttpDiagnosticsTests(TestCase):
 
         self.assertTrue(login_captcha_succeeded(page))
 
-    def test_login_success_accepts_new_book_appointment_now_control(self):
+    def test_login_success_accepts_new_book_new_appointment_control(self):
+        page = MagicMock()
+        page.url = "https://example.test/Global/home/index"
+
+        def locate(selector):
+            control = MagicMock()
+            control.first.is_visible.return_value = (
+                "Book New Appointment" in selector
+            )
+            return control
+
+        page.locator.side_effect = locate
+
+        self.assertTrue(login_captcha_succeeded(page))
+
+    def test_login_success_keeps_book_appointment_now_fallback(self):
         page = MagicMock()
         page.url = "https://example.test/Global/home/index"
 
