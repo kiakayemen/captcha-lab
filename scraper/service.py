@@ -379,6 +379,9 @@ def submit_appointment_form_and_wait(
 def dismiss_no_appointments_dialog(page) -> None:
     """Dismiss the confirmed no-appointments modal before reusing the form."""
     modal = page.locator(NO_APPOINTMENTS_MODAL_SELECTOR).first
+    if not modal.is_visible():
+        logger.info("No-availability result is a page, not a modal; nothing to dismiss.")
+        return
     expect(modal).to_be_visible(timeout=30_000)
     ok_button = modal.locator("button:visible").filter(
         has_text=re.compile(r"^\s*ok\s*$", re.IGNORECASE),

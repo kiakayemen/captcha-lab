@@ -1534,6 +1534,30 @@ class FailureChainTests(TestCase):
 
         self.assertTrue(no_appointments_dialog_visible(page))
 
+    def test_page_level_no_slots_alert_is_recognized(self):
+        page = MagicMock()
+        modal = MagicMock()
+        modal.is_visible.return_value = False
+        modal_match = MagicMock()
+        modal_match.first = modal
+        alerts = MagicMock()
+        alerts.all_inner_texts.return_value = [
+            "Currently, no slots are available for the selected category. "
+            "Kindly try again after sometime."
+        ]
+        page.locator.side_effect = (modal_match, alerts)
+
+        self.assertTrue(no_appointments_dialog_visible(page))
+
+    @patch("scraper.service.expect")
+    def test_page_level_no_slots_result_needs_no_modal_dismissal(self, expect):
+        page = MagicMock()
+        page.locator.return_value.first.is_visible.return_value = False
+
+        dismiss_no_appointments_dialog(page)
+
+        expect.assert_not_called()
+
     def test_explicit_available_appointment_text_is_recognized(self):
         page = MagicMock()
         page.locator.return_value.first.is_visible.return_value = True

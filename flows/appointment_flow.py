@@ -37,6 +37,12 @@ APPOINTMENT_DROPDOWN_VALUES = {
     "Visa Type": VISA_TYPE,
 }
 
+NO_AVAILABILITY_PATTERN = re.compile(
+    r"\b(?:no\s+(?:appointments?|(?:time\s+)?slots?)\s+(?:are\s+)?available|"
+    r"no\s+available\s+(?:appointments?|(?:time\s+)?slots?))\b",
+    re.IGNORECASE,
+)
+
 
 def _log(message: str) -> None:
     logger.info("[appointment] %s", message)
@@ -428,20 +434,18 @@ def fill_appointment_form(
 def no_appointments_dialog_visible(page: Page) -> bool:
     try:
         modal = page.locator(NO_APPOINTMENTS_MODAL_SELECTOR).first
-        if not modal.is_visible():
-            return False
+        if modal.is_visible():
+            header = page.locator(NO_APPOINTMENTS_HEADER_SELECTOR).first
+            body = page.locator(NO_APPOINTMENTS_BODY_SELECTOR).first
+            header_text = header.inner_text().strip() if header.count() else ""
+            body_text = body.inner_text().strip() if body.count() else ""
+            if NO_AVAILABILITY_PATTERN.search(f"{header_text} {body_text}"):
+                return True
 
-        header = page.locator(NO_APPOINTMENTS_HEADER_SELECTOR).first
-        body = page.locator(NO_APPOINTMENTS_BODY_SELECTOR).first
-
-        header_text = header.inner_text().strip() if header.count() else ""
-        body_text = body.inner_text().strip() if body.count() else ""
-        return bool(
-            re.search(
-                r"\bno\s+appointments?\s+available\b",
-                f"{header_text} {body_text}",
-                re.IGNORECASE,
-            )
+        alerts = page.locator("div.alert:visible, [role='alert']:visible")
+        return any(
+            NO_AVAILABILITY_PATTERN.search(text) is not None
+            for text in alerts.all_inner_texts()
         )
     except Exception:
         logger.exception("[appointment] Failed while checking no-appointments dialog.")
