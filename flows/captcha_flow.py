@@ -626,7 +626,7 @@ def captcha_verification_succeeded(page: Page) -> bool:
 def wait_for_book_now(page: Page) -> None:
     book_now = page.locator(BOOK_NOW_SELECTOR).filter(has_text="Book Now").first
     expect(book_now).to_be_visible(timeout=60_000)
-    logger.info("Book New Appointment is visible")
+    logger.info("Book appointment entry control is visible")
 
 
 def click_nav_book_new_appointment(page: Page) -> None:
@@ -644,7 +644,7 @@ def click_nav_book_new_appointment(page: Page) -> None:
         page.wait_for_timeout(250)
     else:
         raise RuntimeError(
-            "Book New Appointment link did not become visible within 60 seconds."
+            "Book appointment entry control did not become visible within 60 seconds."
         )
     expect(nav_link).to_be_enabled(timeout=60_000)
     try:
@@ -656,7 +656,7 @@ def click_nav_book_new_appointment(page: Page) -> None:
             "settling; continuing with destination-state detection."
         )
         return
-    logger.info("Clicked navbar Book New Appointment")
+    logger.info("Clicked book appointment entry control")
 
 
 def captcha_instruction_present(page: Page) -> bool:
