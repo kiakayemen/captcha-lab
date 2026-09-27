@@ -26,9 +26,22 @@ ALLOWED_VISA_SUB_TYPES = {
     "Non-Working Residence Visa",
 }
 
+DROPDOWN_LABEL_ALIASES = {
+    "Appointment Category": ("Appointment Category", "Category"),
+}
+
 
 def _log(message: str) -> None:
     logger.info("[appointment] %s", message)
+
+
+def _dropdown_label_pattern(label_text: str) -> re.Pattern[str]:
+    labels = DROPDOWN_LABEL_ALIASES.get(label_text, (label_text,))
+    alternatives = "|".join(re.escape(label) for label in labels)
+    return re.compile(
+        rf"^\s*(?:{alternatives})\s*\*?\s*$",
+        re.IGNORECASE,
+    )
 
 
 def _describe_container(container: Locator, label_text: str) -> None:
@@ -56,10 +69,7 @@ def _find_visible_dropdown_container(
     timeout_seconds: float = 30,
     required: bool = True,
 ) -> Locator | None:
-    pattern = re.compile(
-        rf"^\s*{re.escape(label_text)}\s*\*?\s*$",
-        re.IGNORECASE,
-    )
+    pattern = _dropdown_label_pattern(label_text)
     deadline = time.monotonic() + timeout_seconds
     last_count = 0
 

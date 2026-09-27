@@ -24,6 +24,7 @@ from flows.captcha_flow import (
     SITE_ERROR_PATTERN,
 )
 from flows.appointment_flow import (
+    _dropdown_label_pattern,
     _select_kendo_option,
     appointment_available_dialog_visible,
     fill_appointment_form,
@@ -112,6 +113,13 @@ class AccountConfigurationTests(TestCase):
 
 
 class AppointmentFormTests(TestCase):
+    def test_appointment_category_accepts_both_site_labels(self):
+        pattern = _dropdown_label_pattern("Appointment Category")
+
+        self.assertIsNotNone(pattern.fullmatch("Appointment Category *"))
+        self.assertIsNotNone(pattern.fullmatch("Category *"))
+        self.assertIsNone(pattern.fullmatch("Visa Category"))
+
     @patch("flows.appointment_flow._fill_label_driven_dropdown")
     def test_form_opens_jurisdiction_without_waiting_for_preloaded_data(
         self,
