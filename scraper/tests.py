@@ -1312,6 +1312,32 @@ class FailureChainTests(TestCase):
             "explicitly_rejected",
         )
 
+    @patch(
+        "scraper.service.inspect_page_state",
+        return_value={"no_appointment": True},
+    )
+    @patch("scraper.service.blocking_overlay_visible", return_value=False)
+    @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch("scraper.service.http_forbidden_page_visible", return_value=False)
+    def test_post_form_captcha_accepts_no_slots_page_as_advanced(
+        self,
+        _forbidden,
+        _server_error,
+        _overlay,
+        _state,
+    ):
+        verified = MagicMock()
+        verified.is_visible.return_value = False
+        invalid = MagicMock()
+        invalid.is_visible.return_value = False
+        popup = MagicMock()
+        popup.is_visible.return_value = False
+
+        self.assertEqual(
+            classify_second_captcha_state(MagicMock(), verified, invalid, popup),
+            "advanced",
+        )
+
     def test_second_captcha_signature_changes_with_rendered_images(self):
         frame = MagicMock()
         images = [f"data:image/png;base64,{number}" for number in range(9)]

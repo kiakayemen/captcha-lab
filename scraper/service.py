@@ -182,6 +182,7 @@ def inspect_page_state(page) -> dict[str, bool]:
         "http_403": lambda: http_forbidden_page_visible(page),
         "server_error": lambda: site_error_page_visible(page),
         "no_appointment": lambda: no_appointments_dialog_visible(page),
+        "appointment_available": lambda: appointment_available_dialog_visible(page),
         "appointment_form": lambda: appointment_form_ready(page),
         "verified": lambda: page.get_by_text("Verified!", exact=True).first.is_visible(),
         "second_captcha_popup": lambda: page.locator(
@@ -194,6 +195,9 @@ def inspect_page_state(page) -> dict[str, bool]:
     }
     state: dict[str, bool] = {}
     for name, check in checks.items():
+        if name == "appointment_available" and state.get("no_appointment"):
+            state[name] = False
+            continue
         try:
             state[name] = check() is True
         except Exception:
@@ -1119,9 +1123,16 @@ def run_second_captcha_step(
             page_state = inspect_page_state(page)
             if page_state.get("http_403"):
                 raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
-            if not page_state.get("second_captcha_popup") and any(page_state.get(name) for name in (
-                "verified", "disclaimer_ok", "appointment_form"
-            )):
+            if not page_state.get("second_captcha_popup") and any(
+                page_state.get(name)
+                for name in (
+                    "verified",
+                    "disclaimer_ok",
+                    "appointment_form",
+                    "no_appointment",
+                    "appointment_available",
+                )
+            ):
                 logger.info(
                     "Second CAPTCHA advanced after its verification deadline. "
                     "State=%s", page_state,
@@ -1140,6 +1151,8 @@ def run_second_captcha_step(
                     "verified",
                     "disclaimer_ok",
                     "appointment_form",
+                    "no_appointment",
+                    "appointment_available",
                 )
             ):
                 logger.info(
@@ -1197,9 +1210,15 @@ def classify_second_captcha_state(page, verified_label, invalid_label, popup) ->
         return "loading"
     if not popup.is_visible():
         page_state = inspect_page_state(page)
-        if any(page_state.get(name) for name in (
-            "disclaimer_ok", "appointment_form"
-        )):
+        if any(
+            page_state.get(name)
+            for name in (
+                "disclaimer_ok",
+                "appointment_form",
+                "no_appointment",
+                "appointment_available",
+            )
+        ):
             return "advanced"
     return "pending"
 
