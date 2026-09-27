@@ -349,7 +349,6 @@ def fill_appointment_form(
         page,
         "Appointment Category",
         APPOINTMENT_CATEGORY,
-        optional=True,
     )
 
     _fill_label_driven_dropdown(

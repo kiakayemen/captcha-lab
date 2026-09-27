@@ -127,7 +127,6 @@ class AppointmentFormTests(TestCase):
                     ANY,
                     "Appointment Category",
                     "Normal",
-                    optional=True,
                 ),
                 call(ANY, "Jurisdiction", "Tehran"),
                 call(ANY, "Location", "Tehran"),
