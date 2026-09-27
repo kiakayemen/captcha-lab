@@ -305,6 +305,29 @@ The output includes the recorded expected egress IP and whether the observed
 egress matches it. Missing credentials are reported by their exact secret
 variable name; secret values are never printed.
 
+### Proxy route reference
+
+This is the human-readable reference for every known route. The secret variable
+contains that route's complete authenticated URL, including its own username
+and password. Never copy the credential value into this file.
+
+| Route name | Provider/location | Proxy endpoint | Expected outbound IP | Role | Authenticated URL secret |
+| --- | --- | --- | --- | --- | --- |
+| `hamravesh-157-119-191-249` | Hamravesh | `07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888` | `157.119.191.249` | Active | `PROXY_URL_HAMRAVESH_157_119_191_249` |
+| `parspack-tehran16-94-184-43-110` | ParsPack Tehran16 | `94.184.43.110:8888` | `94.184.43.110` | Active | `PROXY_URL_PARSPACK_94_184_43_110` |
+| `parspack-tehran3-185-239-3-80` | ParsPack Tehran3 | `185.239.3.80:8888` | `185.239.3.80` | Active | `PROXY_URL_PARSPACK_185_239_3_80` |
+| `parspack-tehran3-185-239-3-145` | ParsPack Tehran3 | `185.239.3.145:8888` | `185.239.3.145` | Active | `PROXY_URL_PARSPACK_185_239_3_145` |
+| `parspack-tehran11-212-23-201-85` | ParsPack Tehran11 | `212.23.201.85:8888` | `212.23.201.85` | Active | `PROXY_URL_PARSPACK_212_23_201_85` |
+| `legacy-94-184-43-30` | ParsPack Tehran16 | `94.184.43.30:8888` | `94.184.43.30` | Diagnostic; confirmed blocked on 2026-09-27 | `PROXY_URL_LEGACY_94_184_43_30` |
+| `legacy-hamravesh-95-128-194-189` | Hamravesh | `011ea9fd-5343-4ed6-a37f-57097720366b.hsvc.ir:25767` | `95.128.194.189` | Diagnostic; confirmed blocked on 2026-09-27 | `PROXY_URL_LEGACY_HAMRAVESH_95_128_194_189` |
+
+The two legacy checks returned the same known BLS block response: HTTP `403`,
+server `awselb/2.0`, 520-byte body, and fingerprint
+`8b73b6ccd7091d6d`. Both observed egress addresses matched their recorded IPs,
+so these were confirmed BLS blocks rather than proxy authentication or routing
+failures. `95.128.194.46` was not the removed Hamravesh route; the recorded and
+tested address was `95.128.194.189`.
+
 Each configured visa subtype is checked in its own fresh browser with the next
 BLS account and proxy endpoint. After login, the scraper opens Book New
 Appointment and accepts either a CAPTCHA-first or a form-first page. Every
