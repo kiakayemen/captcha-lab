@@ -8,6 +8,7 @@ from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
 
+from notifications import notify_consecutive_403
 from .models import (
     ScraperRun,
     ScraperSchedule,
@@ -26,6 +27,37 @@ from .services import (
 logger = logging.getLogger(
     "captcha_lab"
 )
+
+CONSECUTIVE_403_LIMIT = 10
+
+
+def update_scheduled_403_streak(run: ScraperRun) -> int:
+    """Persist the scheduled-run 403 streak and trip the safety stop at 10."""
+    with transaction.atomic():
+        schedule = ScraperSchedule.objects.select_for_update().get(pk=1)
+        if run.error_type == "HTTP403Forbidden":
+            schedule.consecutive_403_runs += 1
+        else:
+            schedule.consecutive_403_runs = 0
+
+        threshold_reached = (
+            schedule.consecutive_403_runs >= CONSECUTIVE_403_LIMIT
+            and schedule.enabled
+        )
+        if threshold_reached:
+            schedule.enabled = False
+
+        schedule.save(
+            update_fields=["consecutive_403_runs", "enabled", "updated_at"]
+        )
+        count = schedule.consecutive_403_runs
+
+        if threshold_reached:
+            transaction.on_commit(
+                lambda: notify_consecutive_403(run_id=str(run.pk), count=count)
+            )
+
+    return count
 
 
 @shared_task(
@@ -224,6 +256,8 @@ def run_scheduled_scraper_task() -> str:
         db_run,
         cooldown_minutes=schedule.interval_minutes,
     )
+    db_run.refresh_from_db(fields=["error_type"])
+    update_scheduled_403_streak(db_run)
 
     return str(
         db_run.pk

@@ -17,6 +17,7 @@ from django.contrib.staticfiles import finders
 from django.utils import timezone
 
 from scraper.models import ScraperConfig
+from notifications import notify_consecutive_403
 
 from .events import bind_scraper_event_context, record_event_from_log, record_scraper_event
 from .database_writer import run_database_write
@@ -31,7 +32,7 @@ from .admin import LogDateRangeForm, ScraperRunAdmin
 from .jalali import parse_jalali_date
 from .run_logging import ScraperRunDatabaseHandler
 from .proxy_health import select_proxy_pool, update_proxy_health_from_run
-from .tasks import run_scheduled_scraper_task
+from .tasks import run_scheduled_scraper_task, update_scheduled_403_streak
 from .services import (
     ScraperRunAlreadyStarted,
     active_scraper_runs,
@@ -198,6 +199,56 @@ class ScraperEventTests(TestCase):
     },
 )
 class ProxyCircuitBreakerTests(TestCase):
+    @patch("operations.tasks.notify_consecutive_403")
+    def test_tenth_scheduled_403_disables_schedule_and_notifies_once(self, notify):
+        schedule = ScraperSchedule.load()
+        schedule.enabled = True
+        schedule.consecutive_403_runs = 9
+        schedule.save(update_fields=["enabled", "consecutive_403_runs", "updated_at"])
+        run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            visa_sub_types=["Student Visa"],
+            error_type="HTTP403Forbidden",
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            count = update_scheduled_403_streak(run)
+
+        schedule.refresh_from_db()
+        self.assertEqual(count, 10)
+        self.assertEqual(schedule.consecutive_403_runs, 10)
+        self.assertFalse(schedule.enabled)
+        notify.assert_called_once_with(run_id=str(run.pk), count=10)
+
+    @patch("operations.tasks.notify_consecutive_403")
+    def test_non_403_run_resets_scheduled_streak(self, notify):
+        schedule = ScraperSchedule.load()
+        schedule.consecutive_403_runs = 9
+        schedule.save(update_fields=["consecutive_403_runs", "updated_at"])
+        run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            visa_sub_types=["Student Visa"],
+            error_type="",
+        )
+
+        count = update_scheduled_403_streak(run)
+
+        schedule.refresh_from_db()
+        self.assertEqual(count, 0)
+        self.assertEqual(schedule.consecutive_403_runs, 0)
+        self.assertTrue(schedule.enabled)
+        notify.assert_not_called()
+
+    @patch("notifications._append_event_log")
+    @patch("notifications._send_email")
+    def test_403_alert_uses_only_requested_recipient(self, send_email, _event_log):
+        notify_consecutive_403(run_id="run-123", count=10)
+
+        self.assertEqual(
+            send_email.call_args.kwargs["recipients_override"],
+            ["ikiapad00@gmail.com"],
+        )
+
     def test_healthy_pool_excludes_quarantined_endpoint(self):
         ProxyEndpointHealth.objects.create(
             endpoint="http://proxy-1.internal:8888",

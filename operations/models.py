@@ -298,6 +298,12 @@ class ScraperSchedule(models.Model):
         ),
     )
 
+    consecutive_403_runs = models.PositiveIntegerField(
+        default=0,
+        editable=False,
+        help_text="Consecutive scheduled runs ending in HTTP 403.",
+    )
+
     updated_at = models.DateTimeField(
         auto_now=True,
     )

@@ -248,15 +248,13 @@ def _split_recipients(
     ]
 
 
-def _email_configured() -> bool:
+def _email_configured(*, recipients_override: list[str] | None = None) -> bool:
     return all(
         [
             os.getenv(
                 "APPOINTMENT_SMTP_HOST"
             ),
-            os.getenv(
-                "APPOINTMENT_EMAIL_TO"
-            ),
+            recipients_override or os.getenv("APPOINTMENT_EMAIL_TO"),
         ]
     )
 
@@ -305,8 +303,12 @@ def _email_body(
 
 def _send_email(
     event: AppointmentEvent,
+    *,
+    recipients_override: list[str] | None = None,
+    subject_override: str | None = None,
+    body_override: str | None = None,
 ) -> None:
-    if not _email_configured():
+    if not _email_configured(recipients_override=recipients_override):
         raise RuntimeError(
             "Email notification is not configured."
         )
@@ -332,10 +334,8 @@ def _send_email(
         "",
     )
 
-    recipients = _split_recipients(
-        os.environ[
-            "APPOINTMENT_EMAIL_TO"
-        ]
+    recipients = recipients_override or _split_recipients(
+        os.environ["APPOINTMENT_EMAIL_TO"]
     )
 
     sender = os.getenv(
@@ -360,7 +360,7 @@ def _send_email(
 
     email = EmailMessage()
 
-    email["Subject"] = (
+    email["Subject"] = subject_override or (
         "🚨 BLS APPOINTMENT AVAILABLE"
         + (
             f" — {event.visa_sub_type}"
@@ -374,11 +374,7 @@ def _send_email(
         recipients
     )
 
-    email.set_content(
-        _email_body(
-            event
-        )
-    )
+    email.set_content(body_override or _email_body(event))
 
     timeout = float(
         os.getenv(
@@ -1031,6 +1027,48 @@ def log_no_appointment(
         logger.exception(
             "Failed to record no-appointment event. "
             "Continuing scraper."
+        )
+
+
+def notify_consecutive_403(*, run_id: str, count: int) -> None:
+    """Email one dedicated recipient when scheduled 403 failures hit the limit."""
+    recipient = "ikiapad00@gmail.com"
+    try:
+        event = _build_event(
+            event_type="consecutive_http_403",
+            message=f"Scheduled scraper reached {count} consecutive HTTP 403 runs.",
+            page_url=f"scraper-run:{run_id}",
+            visa_sub_type=None,
+        )
+        _append_event_log(event)
+        _send_email(
+            event,
+            recipients_override=[recipient],
+            subject_override=f"BLS warning: {count} consecutive HTTP 403 responses",
+            body_override="\n".join(
+                [
+                    "BLS HTTP 403 WARNING",
+                    "",
+                    f"Scraper run: {run_id}",
+                    f"Consecutive scheduled HTTP 403 runs: {count}",
+                    f"Detected at: {event.created_at}",
+                    "",
+                    "The automatic schedule has been disabled for safety.",
+                ]
+            ),
+        )
+        logger.critical(
+            "Consecutive-403 warning emailed to %s. Run=%s | Count=%s",
+            recipient,
+            run_id,
+            count,
+        )
+    except Exception:
+        logger.exception(
+            "Could not send consecutive-403 warning email. "
+            "Run=%s | Count=%s",
+            run_id,
+            count,
         )
 
 
