@@ -31,6 +31,7 @@ OK_DIALOG_BUTTON_SELECTOR = (
 )
 SUBMIT_SELECTION_BUTTON_SELECTOR = 'button:has-text("Submit Selection")'
 SECOND_CAPTCHA_SUBMIT_SELECTOR = 'div.img-action-div[onclick="onSubmit();"]'
+FULL_PAGE_CAPTCHA_SUBMIT_SELECTOR = 'button:has-text("Submit"):visible'
 BACKGROUND_SUBMIT_BUTTON_SELECTOR = 'button:has-text("Submit")'
 
 CAPTCHA_LABEL_SELECTOR = "div.col-12.box-label"

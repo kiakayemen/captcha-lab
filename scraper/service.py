@@ -45,12 +45,12 @@ from flows.captcha_flow import (
     click_nav_book_new_appointment,
     click_ok_dialog,
     click_selected_captcha_tiles,
-    click_submit_selection,
+    click_second_captcha_submit,
     click_verify_selection,
     disclaimer_dialog_visible,
     find_true_captcha_label,
     find_true_captcha_label_in_scope,
-    get_verify_selection_frame,
+    get_second_captcha_scope,
     login_captcha_invalid,
     login_captcha_succeeded,
     save_captcha_crop,
@@ -72,6 +72,7 @@ from flows.errors import (
 from flows.selectors import (
     BACKGROUND_SUBMIT_BUTTON_SELECTOR,
     BOOK_NEW_APPOINTMENT_SELECTOR,
+    CAPTCHA_LABEL_SELECTOR,
     CAPTCHA_INSTRUCTION_PATTERN,
     CAPTCHA_TILE_SELECTOR,
     LOGOUT_SELECTOR,
@@ -252,6 +253,10 @@ def appointment_captcha_visible(page) -> bool:
         ).first
         if popup.is_visible():
             return True
+        labels = page.locator(CAPTCHA_LABEL_SELECTOR)
+        for index in range(labels.count()):
+            if labels.nth(index).is_visible():
+                return True
         return page.locator(VERIFY_BUTTON_SELECTOR).first.is_visible()
     except Exception:
         return False
@@ -269,7 +274,11 @@ def solve_visible_appointment_captcha(
     popup = page.locator("div.k-widget.k-window").filter(
         has_text="Verify Selection"
     ).first
-    if not popup.is_visible():
+    labels = page.locator(CAPTCHA_LABEL_SELECTOR)
+    full_page_captcha_visible = any(
+        labels.nth(index).is_visible() for index in range(labels.count())
+    )
+    if not popup.is_visible() and not full_page_captcha_visible:
         click_verify_selection(page)
     run_second_captcha_step(
         page,
@@ -1148,7 +1157,8 @@ def run_second_captcha_step(
             )
             page.reload(wait_until="domcontentloaded", timeout=60_000)
             page.wait_for_timeout(SECOND_CAPTCHA_RETRY_SETTLE_MS)
-            click_verify_selection(page)
+            if not appointment_captcha_visible(page):
+                click_verify_selection(page)
             continue
         if verified:
             return
@@ -1245,9 +1255,7 @@ def _run_second_captcha_attempt(
 ) -> bool:
     """Solve one rendered Verify Selection challenge."""
 
-    frame = get_verify_selection_frame(
-        page
-    )
+    captcha_scope, full_page = get_second_captcha_scope(page)
 
     screenshot_path = Path(
         "captcha_page_2.png"
@@ -1272,11 +1280,11 @@ def _run_second_captcha_attempt(
         true_label_id,
         target,
     ) = find_true_captcha_label_in_scope(
-        frame
+        captcha_scope
     )
 
     true_label_by_id = (
-        frame.locator(
+        captcha_scope.locator(
             f"#{true_label_id}"
         )
     )
@@ -1327,7 +1335,7 @@ def _run_second_captcha_attempt(
 
     tiles_in_frame = wait_for_captcha_tiles_ready(
         page,
-        frame,
+        captcha_scope,
     )
 
     page.wait_for_timeout(
@@ -1414,7 +1422,7 @@ def _run_second_captcha_attempt(
         decision
     )
 
-    submitted_challenge_signature = second_captcha_challenge_signature(frame)
+    submitted_challenge_signature = second_captcha_challenge_signature(captcha_scope)
     selection_started_at = datetime.now(timezone.utc)
     selection_started = time.perf_counter()
     click_selected_captcha_tiles(
@@ -1433,9 +1441,7 @@ def _run_second_captcha_attempt(
     submission_started_at = datetime.now(timezone.utc)
     submission_started = time.perf_counter()
     try:
-        click_submit_selection(
-            frame
-        )
+        click_second_captcha_submit(captcha_scope, full_page=full_page)
     except PlaywrightTimeoutError:
         if http_forbidden_page_visible(page):
             raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
@@ -1467,8 +1473,8 @@ def _run_second_captcha_attempt(
         tiles=tiles,
     )
 
-    verified_label = frame.get_by_text("Verified!", exact=True).first
-    invalid_label = frame.get_by_text(
+    verified_label = captcha_scope.get_by_text("Verified!", exact=True).first
+    invalid_label = captcha_scope.get_by_text(
         re.compile(r"invalid captcha selection|incorrect selection", re.IGNORECASE)
     ).first
 
@@ -1496,7 +1502,7 @@ def _run_second_captcha_attempt(
                 attempt_number,
             )
             wait_for_regenerated_second_captcha(
-                page, frame, submitted_challenge_signature, invalid_label
+                page, captcha_scope, submitted_challenge_signature, invalid_label
             )
             return False
         if outcome == "advanced":

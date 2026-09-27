@@ -29,6 +29,7 @@ from .selectors import (
     BACKGROUND_SUBMIT_BUTTON_SELECTOR,
     CAPTCHA_LABEL_SELECTOR,
     CAPTCHA_TILE_SELECTOR,
+    FULL_PAGE_CAPTCHA_SUBMIT_SELECTOR,
     LOGIN_FORM_SELECTOR,
     NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
     OK_DIALOG_BUTTON_SELECTOR,
@@ -838,3 +839,31 @@ def get_verify_selection_frame(page: Page) -> FrameLocator:
     expect(frame.locator("body")).to_be_visible(timeout=60_000)
     logger.info("Verify Selection iframe is visible.")
     return frame
+
+
+def get_second_captcha_scope(page: Page):
+    """Return the iframe or page containing the rendered appointment CAPTCHA."""
+    iframe = page.locator('iframe[title="Verify Selection"]').first
+    if iframe.is_visible():
+        frame = page.frame_locator('iframe[title="Verify Selection"]')
+        expect(frame.locator("body")).to_be_visible(timeout=30_000)
+        logger.info("Appointment CAPTCHA is rendered in the Verify Selection iframe.")
+        return frame, False
+
+    labels = page.locator(CAPTCHA_LABEL_SELECTOR)
+    expect(labels).not_to_have_count(0, timeout=30_000)
+    logger.info("Appointment CAPTCHA is rendered directly on the page.")
+    return page, True
+
+
+def click_second_captcha_submit(scope, *, full_page: bool) -> None:
+    selector = (
+        FULL_PAGE_CAPTCHA_SUBMIT_SELECTOR
+        if full_page
+        else SECOND_CAPTCHA_SUBMIT_SELECTOR
+    )
+    submit = scope.locator(selector).first
+    expect(submit).to_be_visible(timeout=30_000)
+    expect(submit).to_be_enabled(timeout=30_000)
+    submit.click(timeout=10_000)
+    logger.info("Clicked appointment CAPTCHA Submit.")

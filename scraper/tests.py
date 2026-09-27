@@ -11,7 +11,9 @@ from flows.captcha_flow import (
     click_background_submit,
     click_ok_dialog,
     click_selected_captcha_tiles,
+    click_second_captcha_submit,
     click_verify_selection,
+    get_second_captcha_scope,
     wait_for_post_captcha_page_ready,
     wait_for_post_captcha_destination,
     background_submit_ready,
@@ -141,6 +143,45 @@ class AppointmentFormTests(TestCase):
 
 
 class CaptchaAttemptRegressionTests(TestCase):
+    @patch("flows.captcha_flow.expect")
+    def test_full_page_appointment_captcha_uses_page_scope(self, _expect):
+        page = MagicMock()
+        iframe = MagicMock()
+        iframe.is_visible.return_value = False
+        iframe_match = MagicMock()
+        iframe_match.first = iframe
+        labels = MagicMock()
+        page.locator.side_effect = (iframe_match, labels)
+
+        scope, full_page = get_second_captcha_scope(page)
+
+        self.assertIs(scope, page)
+        self.assertTrue(full_page)
+        page.frame_locator.assert_not_called()
+
+    @patch("flows.captcha_flow.expect")
+    def test_modal_appointment_captcha_uses_iframe_scope(self, _expect):
+        page = MagicMock()
+        iframe = MagicMock()
+        iframe.is_visible.return_value = True
+        frame = MagicMock()
+        page.locator.return_value = iframe
+        page.frame_locator.return_value = frame
+
+        scope, full_page = get_second_captcha_scope(page)
+
+        self.assertIs(scope, frame)
+        self.assertFalse(full_page)
+
+    @patch("flows.captcha_flow.expect")
+    def test_full_page_captcha_uses_visible_submit_button(self, _expect):
+        scope = MagicMock()
+
+        click_second_captcha_submit(scope, full_page=True)
+
+        scope.locator.assert_called_once_with('button:has-text("Submit"):visible')
+        scope.locator.return_value.first.click.assert_called_once_with(timeout=10_000)
+
     def test_login_attempt_reaches_tile_selection_without_second_captcha_frame(self):
         class ReachedTileSelection(Exception):
             pass
@@ -192,7 +233,12 @@ class CaptchaAttemptRegressionTests(TestCase):
             return decision, [MagicMock()] * 9, None, MagicMock()
 
         with ExitStack() as stack:
-            stack.enter_context(patch("scraper.service.get_verify_selection_frame", return_value=frame))
+            stack.enter_context(
+                patch(
+                    "scraper.service.get_second_captcha_scope",
+                    return_value=(frame, False),
+                )
+            )
             stack.enter_context(patch("scraper.service.find_true_captcha_label_in_scope", return_value=(None, "label", "123")))
             stack.enter_context(patch("scraper.service.expect"))
             stack.enter_context(patch("scraper.service.wait_for_captcha_tiles_ready", return_value=[MagicMock()] * 9))
@@ -1147,6 +1193,7 @@ class FailureChainTests(TestCase):
         self.assertEqual(page.wait_for_timeout.call_count, 2)
 
     @patch("scraper.service.click_verify_selection")
+    @patch("scraper.service.appointment_captcha_visible", return_value=False)
     @patch("scraper.service.site_error_page_visible", return_value=False)
     @patch(
         "scraper.service._run_second_captcha_attempt",
@@ -1156,6 +1203,7 @@ class FailureChainTests(TestCase):
         self,
         solve_attempt,
         _server_error,
+        _captcha_visible,
         reopen_captcha,
     ):
         page = MagicMock()
