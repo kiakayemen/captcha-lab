@@ -50,6 +50,7 @@ from flows.captcha_flow import (
     disclaimer_dialog_visible,
     find_true_captcha_label,
     find_true_captcha_label_in_scope,
+    get_captcha_tiles_in_scope,
     get_second_captcha_scope,
     login_captcha_invalid,
     login_captcha_succeeded,
@@ -74,7 +75,6 @@ from flows.selectors import (
     BOOK_NEW_APPOINTMENT_SELECTOR,
     CAPTCHA_LABEL_SELECTOR,
     CAPTCHA_INSTRUCTION_PATTERN,
-    CAPTCHA_TILE_SELECTOR,
     LOGOUT_SELECTOR,
     NAV_BOOK_NEW_APPOINTMENT_SELECTOR,
     NO_APPOINTMENTS_MODAL_SELECTOR,
@@ -1223,12 +1223,16 @@ def classify_second_captcha_state(page, verified_label, invalid_label, popup) ->
     return "pending"
 
 
-def second_captcha_challenge_signature(frame) -> str | None:
-    """Fingerprint the rendered grid without storing the CAPTCHA images."""
+def second_captcha_challenge_signature(scope, tiles=None) -> str | None:
+    """Fingerprint the same nine visible tiles used by the solver."""
     try:
-        sources = frame.locator(CAPTCHA_TILE_SELECTOR).evaluate_all(
-            "images => images.map(image => image.currentSrc || image.src || '')"
-        )
+        resolved_tiles = tiles or get_captcha_tiles_in_scope(scope)
+        sources = []
+        for tile in resolved_tiles:
+            image = tile.locator("img").first
+            sources.append(
+                image.evaluate("element => element.currentSrc || element.src || ''")
+            )
         if len(sources) != 9 or not all(sources):
             return None
         return hashlib.sha256(
@@ -1444,7 +1448,10 @@ def _run_second_captcha_attempt(
         decision
     )
 
-    submitted_challenge_signature = second_captcha_challenge_signature(captcha_scope)
+    submitted_challenge_signature = second_captcha_challenge_signature(
+        captcha_scope,
+        tiles_in_frame,
+    )
     selection_started_at = datetime.now(timezone.utc)
     selection_started = time.perf_counter()
     click_selected_captcha_tiles(
@@ -2292,6 +2299,32 @@ def run_scraper(
 
                 logger.error(
                     "HTTP 403 exhausted every available proxy; stopping run."
+                )
+                return ScraperResult(
+                    status=ScraperStatus.FAILED,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=visa_sub_type,
+                    error_type=result.error_type,
+                    error_message=result.error_message,
+                    failure_screenshot=result.failure_screenshot,
+                    first_failure=attempt_failures[0],
+                    attempt_failures=tuple(attempt_failures),
+                    terminal_failure=current_failure,
+                )
+
+            if (
+                proxy_rotator is not None
+                and not proxy_rotator.has_untried_endpoint
+            ):
+                logger.error(
+                    "Subtype attempt failed and every proxy in this run has "
+                    "already been tried; stopping without recycling an IP. "
+                    "Visa subtype=%s | Error=%s: %s",
+                    visa_sub_type,
+                    result.error_type,
+                    result.error_message,
                 )
                 return ScraperResult(
                     status=ScraperStatus.FAILED,

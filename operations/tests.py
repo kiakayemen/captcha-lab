@@ -279,9 +279,9 @@ class ProxyCircuitBreakerTests(TestCase):
         self.assertEqual(selection.proxy_urls, ())
         self.assertFalse(selection.recovery_probe)
 
-    def test_all_quarantined_endpoints_allow_one_due_recovery_probe(self):
+    def test_expired_quarantines_restore_all_endpoints(self):
         now = timezone.now()
-        older = ProxyEndpointHealth.objects.create(
+        ProxyEndpointHealth.objects.create(
             endpoint="http://proxy-1.internal:8888",
             quarantined_until=now - timezone.timedelta(minutes=1),
             last_checked_at=now - timezone.timedelta(minutes=80),
@@ -294,7 +294,36 @@ class ProxyCircuitBreakerTests(TestCase):
 
         selection = select_proxy_pool(now)
 
-        self.assertEqual(selection.proxy_urls, (older.endpoint,))
+        self.assertEqual(
+            selection.proxy_urls,
+            (
+                "http://proxy-1.internal:8888",
+                "http://proxy-2.internal:8888",
+            ),
+        )
+        self.assertTrue(selection.recovery_probe)
+        self.assertFalse(
+            ProxyEndpointHealth.objects.filter(
+                quarantined_until__isnull=False
+            ).exists()
+        )
+
+    def test_expired_quarantine_returns_even_when_an_ip_is_already_healthy(self):
+        now = timezone.now()
+        ProxyEndpointHealth.objects.create(
+            endpoint="http://proxy-1.internal:8888",
+            quarantined_until=now - timezone.timedelta(minutes=1),
+        )
+
+        selection = select_proxy_pool(now)
+
+        self.assertEqual(
+            selection.proxy_urls,
+            (
+                "http://proxy-1.internal:8888",
+                "http://proxy-2.internal:8888",
+            ),
+        )
         self.assertTrue(selection.recovery_probe)
 
     def test_run_events_quarantine_403_and_clear_on_later_200(self):
@@ -375,7 +404,7 @@ class ProxyCircuitBreakerTests(TestCase):
 
     @patch("operations.tasks.update_proxy_health_from_run")
     @patch("operations.tasks.execute_scraper_run")
-    def test_scheduler_launches_only_one_due_recovery_endpoint(
+    def test_scheduler_restores_all_due_recovery_endpoints(
         self,
         execute_run,
         _update_health,
@@ -395,8 +424,14 @@ class ProxyCircuitBreakerTests(TestCase):
         run_scheduled_scraper_task.run()
 
         config = execute_run.call_args.kwargs["config"]
-        self.assertEqual(config.proxy_urls, ("http://proxy-1.internal:8888",))
-        self.assertTrue(config.allow_single_proxy)
+        self.assertEqual(
+            config.proxy_urls,
+            (
+                "http://proxy-1.internal:8888",
+                "http://proxy-2.internal:8888",
+            ),
+        )
+        self.assertFalse(config.allow_single_proxy)
 
 
 class ScraperRunLoggingTests(TestCase):

@@ -257,7 +257,13 @@ class CaptchaAttemptRegressionTests(TestCase):
             )
             stack.enter_context(patch("scraper.service.find_true_captcha_label_in_scope", return_value=(None, "label", "123")))
             stack.enter_context(patch("scraper.service.expect"))
-            stack.enter_context(patch("scraper.service.wait_for_captcha_tiles_ready", return_value=[MagicMock()] * 9))
+            visible_tiles = [MagicMock()] * 9
+            stack.enter_context(
+                patch(
+                    "scraper.service.wait_for_captcha_tiles_ready",
+                    return_value=visible_tiles,
+                )
+            )
             stack.enter_context(patch("scraper.service.save_captcha_crop", return_value=MagicMock()))
             stack.enter_context(patch("scraper.service.record_captcha_stage"))
             stack.enter_context(patch("scraper.service.solve_captcha_image", side_effect=solve))
@@ -271,7 +277,7 @@ class CaptchaAttemptRegressionTests(TestCase):
                     page, gpu=False, output_dir=MagicMock(), reader=MagicMock(), attempt_number=1
                 )
 
-            signature.assert_called_once_with(frame)
+            signature.assert_called_once_with(frame, visible_tiles)
 
 
 class ProxyConfigurationTests(TestCase):
@@ -420,6 +426,16 @@ class ProxyConfigurationTests(TestCase):
                 "http://proxy-2.internal:8888",
             ],
         )
+
+    @patch("scraper.proxy.random.shuffle")
+    def test_rotator_reports_when_every_endpoint_was_tried(self, _shuffle):
+        rotator = PlaywrightProxyRotator(
+            proxy_urls=("http://proxy-1.internal:8888",)
+        )
+
+        self.assertIsNotNone(rotator.choose())
+
+        self.assertFalse(rotator.has_untried_endpoint)
 
     def test_worker_proxy_pool_requires_at_least_two_endpoints(self):
         for urls in ((), ("http://one:8888",)):
@@ -1074,13 +1090,51 @@ class FailureChainTests(TestCase):
         )
 
         result = run_scraper(
-            ScraperConfig(visa_sub_types=("Student Visa",))
+            ScraperConfig(
+                visa_sub_types=("Student Visa",),
+                proxy_urls=(
+                    "http://proxy-1:8888",
+                    "http://proxy-2:8888",
+                    "http://proxy-3:8888",
+                ),
+            )
         )
 
         self.assertEqual(len(result.attempt_failures), 2)
         self.assertEqual(result.first_failure["error_message"], "first")
         self.assertEqual(result.attempt_failures[1]["error_message"], "second")
         self.assertIsNone(result.terminal_failure)
+
+    @patch("scraper.service.interruptible_cooldown")
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_single_proxy_failure_does_not_recycle_same_ip(
+        self,
+        run_attempt,
+        _reader,
+        cooldown,
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.return_value = ScraperResult(
+            status=ScraperStatus.FAILED,
+            started_at=now,
+            finished_at=now,
+            error_type="SecondCaptchaUnconfirmed",
+            error_message="CAPTCHA grid could not be confirmed.",
+        )
+
+        result = run_scraper(
+            ScraperConfig(
+                visa_sub_types=("Student Visa",),
+                proxy_urls=("http://proxy-1:8888",),
+                allow_single_proxy=True,
+            )
+        )
+
+        self.assertEqual(run_attempt.call_count, 1)
+        self.assertEqual(result.error_type, "SecondCaptchaUnconfirmed")
+        self.assertEqual(result.terminal_failure, result.attempt_failures[0])
+        cooldown.assert_not_called()
 
     @patch("flows.captcha_flow.appointment_form_visible", return_value=True)
     def test_background_submit_skips_when_form_is_already_visible(self, _form_visible):
@@ -1339,14 +1393,17 @@ class FailureChainTests(TestCase):
         )
 
     def test_second_captcha_signature_changes_with_rendered_images(self):
-        frame = MagicMock()
+        scope = MagicMock()
         images = [f"data:image/png;base64,{number}" for number in range(9)]
-        frame.locator.return_value.evaluate_all.return_value = images
-        first = second_captcha_challenge_signature(frame)
-        frame.locator.return_value.evaluate_all.return_value = images[:-1] + ["new"]
+        tiles = [MagicMock() for _ in images]
+        for tile, source in zip(tiles, images):
+            tile.locator.return_value.first.evaluate.return_value = source
+
+        first = second_captcha_challenge_signature(scope, tiles)
+        tiles[-1].locator.return_value.first.evaluate.return_value = "new"
 
         self.assertIsNotNone(first)
-        self.assertNotEqual(first, second_captcha_challenge_signature(frame))
+        self.assertNotEqual(first, second_captcha_challenge_signature(scope, tiles))
 
     @patch("scraper.service.site_error_page_visible", return_value=False)
     @patch("scraper.service.http_forbidden_page_visible", return_value=False)

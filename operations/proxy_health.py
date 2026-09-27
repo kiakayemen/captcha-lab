@@ -18,7 +18,7 @@ class ProxyPoolSelection:
 
 
 def select_proxy_pool(now=None) -> ProxyPoolSelection:
-    """Use healthy endpoints, or one due half-open probe if all are blocked."""
+    """Temporarily exclude endpoints until their 403 cooldown expires."""
     now = now or timezone.now()
     configured = configured_proxy_urls()
     if not configured:
@@ -39,36 +39,28 @@ def select_proxy_pool(now=None) -> ProxyPoolSelection:
                 endpoint=endpoint
             )
 
+    expired_quarantines = [
+        health
+        for health in health_by_endpoint.values()
+        if health.quarantined_until is not None
+        and health.quarantined_until <= now
+    ]
+    for health in expired_quarantines:
+        health.quarantined_until = None
+        health.save(update_fields=["quarantined_until", "updated_at"])
+
     healthy_urls = tuple(
         url
         for endpoint, url in urls_by_endpoint.items()
         if health_by_endpoint[endpoint].quarantined_until is None
     )
     if healthy_urls:
-        return ProxyPoolSelection(healthy_urls)
+        return ProxyPoolSelection(
+            healthy_urls,
+            recovery_probe=bool(expired_quarantines),
+        )
 
-    due = [
-        health
-        for health in health_by_endpoint.values()
-        if health.quarantined_until is not None
-        and health.quarantined_until <= now
-    ]
-    if not due:
-        return ProxyPoolSelection(())
-
-    probe = min(
-        due,
-        key=lambda health: (
-            health.last_checked_at or health.quarantined_until,
-            health.endpoint,
-        ),
-    )
-    probe.last_checked_at = now
-    probe.save(update_fields=["last_checked_at", "updated_at"])
-    return ProxyPoolSelection(
-        (urls_by_endpoint[probe.endpoint],),
-        recovery_probe=True,
-    )
+    return ProxyPoolSelection(())
 
 
 @transaction.atomic

@@ -161,6 +161,11 @@ class PlaywrightProxyRotator:
     def has_available_endpoint(self) -> bool:
         return bool(self.proxy_urls)
 
+    @property
+    def has_untried_endpoint(self) -> bool:
+        """Return whether this rotation cycle still has an unused endpoint."""
+        return bool(self._remaining)
+
 
 def choose_playwright_proxy() -> dict[str, str] | None:
     """Choose a proxy for callers that need a single browser."""
