@@ -69,7 +69,12 @@ from scraper.proxy import (
     configured_proxy_urls,
     playwright_proxy_config,
 )
-from scripts.check_proxy_ips import classify_response, safe_endpoint
+from scripts.check_proxy_ips import (
+    classify_response,
+    configured_inventory_routes,
+    load_proxy_inventory,
+    safe_endpoint,
+)
 
 
 class ProxyIpDiagnosticTests(TestCase):
@@ -95,6 +100,34 @@ class ProxyIpDiagnosticTests(TestCase):
         self.assertEqual(
             classify_response(200, "", "anything"),
             ("accessible", False),
+        )
+
+    def test_inventory_records_legacy_route_by_stable_name(self):
+        routes = {route["name"]: route for route in load_proxy_inventory()}
+
+        self.assertEqual(
+            routes["legacy-hamravesh-95-128-194-189"]["expected_egress_ip"],
+            "95.128.194.189",
+        )
+        self.assertNotIn("95.128.194.46", str(routes))
+
+    @patch.dict(
+        "os.environ",
+        {
+            "PROXY_URL_LEGACY_94_184_43_30": (
+                "http://captcha:different-secret@94.184.43.30:8888"
+            )
+        },
+        clear=False,
+    )
+    def test_named_route_resolves_its_own_secret_url(self):
+        configured = configured_inventory_routes(["legacy-94-184-43-30"])
+
+        route, proxy_url = configured[0]
+        self.assertEqual(route["expected_egress_ip"], "94.184.43.30")
+        self.assertEqual(
+            safe_endpoint(proxy_url),
+            "http://94.184.43.30:8888",
         )
 
 

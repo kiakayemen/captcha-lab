@@ -283,6 +283,28 @@ least one endpoint returned HTTP 403, and `2` means one or more results were
 inconclusive or the configuration was invalid. Add `--json` for JSON Lines
 output suitable for capture from the pod logs.
 
+Proxy identities are recorded without credentials in `proxy_inventory.json`.
+Authenticated URLs live in the corresponding secret environment variables
+listed by the inventory, so different providers and Tinyproxy servers can use
+different usernames and passwords without relying on memory. List the routes
+from inside the worker:
+
+```bash
+python scripts/check_proxy_ips.py --list-routes
+```
+
+Test specific routes by stable name without changing `SCRAPER_PROXY_URLS`:
+
+```bash
+python scripts/check_proxy_ips.py --json \
+  --route legacy-94-184-43-30 \
+  --route legacy-hamravesh-95-128-194-189
+```
+
+The output includes the recorded expected egress IP and whether the observed
+egress matches it. Missing credentials are reported by their exact secret
+variable name; secret values are never printed.
+
 Each configured visa subtype is checked in its own fresh browser with the next
 BLS account and proxy endpoint. After login, the scraper opens Book New
 Appointment and accepts either a CAPTCHA-first or a form-first page. Every

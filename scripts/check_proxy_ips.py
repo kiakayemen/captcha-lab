@@ -25,6 +25,7 @@ from playwright.sync_api import sync_playwright
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+INVENTORY_PATH = PROJECT_ROOT / "proxy_inventory.json"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scraper.proxy import configured_proxy_urls, playwright_proxy_config  # noqa: E402
@@ -38,6 +39,10 @@ KNOWN_BLOCK_BODY_SHA256_16 = "8b73b6ccd7091d6d"
 @dataclass
 class ProbeResult:
     proxy_endpoint: str
+    route_name: str | None = None
+    provider: str | None = None
+    expected_egress_ip: str | None = None
+    egress_matches_expected: bool | None = None
     egress_ip: str | None = None
     egress_error: str | None = None
     http_status: int | None = None
@@ -58,6 +63,75 @@ def safe_endpoint(proxy_url: str) -> str:
     if parsed.port is not None:
         host = f"{host}:{parsed.port}"
     return urlunsplit((parsed.scheme, host, "", "", ""))
+
+
+def load_proxy_inventory(path: Path = INVENTORY_PATH) -> tuple[dict[str, str], ...]:
+    """Load the credential-free, named proxy-route inventory."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    routes = tuple(payload.get("routes", ()))
+    required = {
+        "name",
+        "provider",
+        "endpoint",
+        "expected_egress_ip",
+        "url_env",
+        "role",
+    }
+    names: set[str] = set()
+    for route in routes:
+        missing = required - route.keys()
+        if missing:
+            raise ValueError(
+                f"Proxy route is missing fields {sorted(missing)}: {route!r}"
+            )
+        if route["name"] in names:
+            raise ValueError(f"Duplicate proxy route name: {route['name']}")
+        names.add(route["name"])
+    return routes
+
+
+def configured_inventory_routes(
+    route_names: list[str],
+) -> list[tuple[dict[str, str], str]]:
+    """Resolve selected names to authenticated URLs stored in secrets."""
+    inventory = {route["name"]: route for route in load_proxy_inventory()}
+    unknown = [name for name in route_names if name not in inventory]
+    if unknown:
+        raise ValueError(f"Unknown proxy route(s): {', '.join(unknown)}")
+
+    configured: list[tuple[dict[str, str], str]] = []
+    for name in dict.fromkeys(route_names):
+        route = inventory[name]
+        proxy_url = os.getenv(route["url_env"], "").strip()
+        if not proxy_url:
+            raise ValueError(
+                f"{name} requires secret environment variable {route['url_env']}."
+            )
+        if safe_endpoint(proxy_url) != route["endpoint"]:
+            raise ValueError(
+                f"{route['url_env']} points to {safe_endpoint(proxy_url)}, "
+                f"but {name} is recorded as {route['endpoint']}."
+            )
+        configured.append((route, proxy_url))
+    return configured
+
+
+def print_inventory(*, as_json: bool = False) -> None:
+    """Show route identities and secret readiness without revealing credentials."""
+    for route in load_proxy_inventory():
+        configured = bool(os.getenv(route["url_env"], "").strip())
+        if as_json:
+            print(json.dumps({
+                **route,
+                "credentials_configured": configured,
+            }, sort_keys=True))
+        else:
+            state = "configured" if configured else "missing-secret"
+            print(
+                f"{route['name']} | {route['provider']} | "
+                f"egress={route['expected_egress_ip']} | endpoint={route['endpoint']} | "
+                f"role={route['role']} | credentials={state} ({route['url_env']})"
+            )
 
 
 def classify_response(status: int, server: str, body_sha256_16: str) -> tuple[str, bool]:
@@ -166,21 +240,54 @@ def main() -> int:
         help="Per-request timeout; requests are never retried (default: 30).",
     )
     parser.add_argument("--json", action="store_true", help="Print one JSON object per proxy.")
+    parser.add_argument(
+        "--list-routes",
+        action="store_true",
+        help="List named routes and whether their secret URL is configured.",
+    )
+    parser.add_argument(
+        "--route",
+        action="append",
+        default=[],
+        help="Test one named inventory route; repeat to test several routes.",
+    )
     args = parser.parse_args()
     if args.timeout_seconds < 1:
         parser.error("--timeout-seconds must be at least 1")
 
     load_dotenv(PROJECT_ROOT / ".env")
     load_dotenv(PROJECT_ROOT / ".env.secrets")
-    proxy_urls = configured_proxy_urls()
-    if not proxy_urls:
+    if args.list_routes:
+        print_inventory(as_json=args.json)
+        return 0
+
+    try:
+        if args.route:
+            targets = configured_inventory_routes(args.route)
+        else:
+            targets = [(None, url) for url in configured_proxy_urls()]
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    if not targets:
         print("SCRAPER_PROXY_URLS contains no proxy endpoints.", file=sys.stderr)
         return 2
 
     results: list[ProbeResult] = []
     with sync_playwright() as playwright:
-        for proxy_url in proxy_urls:
+        for route, proxy_url in targets:
             result = probe_proxy(playwright, proxy_url, args.timeout_seconds * 1000)
+            if route is not None:
+                result.route_name = route["name"]
+                result.provider = route["provider"]
+                result.expected_egress_ip = route["expected_egress_ip"]
+                if result.egress_ip is not None:
+                    result.egress_matches_expected = (
+                        result.egress_ip == result.expected_egress_ip
+                    )
+                    if not result.egress_matches_expected:
+                        result.verdict = "egress_mismatch"
             results.append(result)
             if args.json:
                 print(json.dumps(asdict(result), sort_keys=True), flush=True)
