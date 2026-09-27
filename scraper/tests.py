@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from contextlib import ExitStack
 from unittest import TestCase
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 from config import BLS_EMAIL, BLS_PASSWORD, configured_bls_accounts
 
@@ -24,6 +24,7 @@ from flows.captcha_flow import (
 from flows.appointment_flow import (
     _select_kendo_option,
     appointment_available_dialog_visible,
+    fill_appointment_form,
     no_appointments_dialog_visible,
 )
 from flows.errors import (
@@ -106,6 +107,38 @@ class AccountConfigurationTests(TestCase):
     def test_rejects_incomplete_second_account(self):
         with self.assertRaisesRegex(RuntimeError, "must both be set"):
             configured_bls_accounts()
+
+
+class AppointmentFormTests(TestCase):
+    @patch("flows.appointment_flow._fill_label_driven_dropdown")
+    def test_form_opens_jurisdiction_without_waiting_for_preloaded_data(
+        self,
+        fill_dropdown,
+    ):
+        fill_appointment_form(
+            MagicMock(),
+            visa_sub_type="Student Visa",
+        )
+
+        self.assertEqual(
+            fill_dropdown.call_args_list,
+            [
+                call(
+                    ANY,
+                    "Appointment Category",
+                    "Normal",
+                    optional=True,
+                ),
+                call(ANY, "Jurisdiction", "Tehran"),
+                call(ANY, "Location", "Tehran"),
+                call(
+                    ANY,
+                    "Visa Type",
+                    "National Visa/ Long Term Visa",
+                ),
+                call(ANY, "Visa Sub Type", "Student Visa"),
+            ],
+        )
 
 
 class CaptchaAttemptRegressionTests(TestCase):

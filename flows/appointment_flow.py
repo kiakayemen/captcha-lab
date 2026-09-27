@@ -141,61 +141,6 @@ def _get_visible_dropdown_id(
     return input_id
 
 
-def _wait_for_kendo_data(
-    page: Page,
-    label_text: str,
-    *,
-    expected_text: str | None = None,
-) -> None:
-    input_id = _get_visible_dropdown_id(
-        page,
-        label_text,
-    )
-    _log(f'waiting for Kendo data for "{label_text}" (id={input_id})')
-
-    page.wait_for_function(
-        """
-        ({ id, expected }) => {
-            const el = document.getElementById(id);
-
-            if (!el || !window.jQuery) {
-                return false;
-            }
-
-            const ddl = window.jQuery(el).data("kendoDropDownList");
-
-            if (!ddl || !ddl.dataSource) {
-                return false;
-            }
-
-            const items = ddl.dataSource.view();
-            if (!items || items.length === 0) {
-                return false;
-            }
-
-            if (!expected) {
-                return true;
-            }
-
-            return items.some(item => {
-                const text =
-                    item.Name ||
-                    item.Text ||
-                    item.text ||
-                    "";
-                return text.trim() === expected;
-            });
-        }
-        """,
-        arg={
-            "id": input_id,
-            "expected": expected_text,
-        },
-        timeout=30_000,
-    )
-    _log(f'Kendo data ready for "{label_text}"')
-
-
 def _select_kendo_option(
     page: Page,
     label_text: str,
@@ -277,6 +222,10 @@ def _select_kendo_option(
 
             option = popup.locator("li.k-item").filter(
                 has_text=option_pattern
+            )
+            option.first.wait_for(
+                state="visible",
+                timeout=interaction_timeout,
             )
             option_count = option.count()
             _log(
@@ -401,12 +350,6 @@ def fill_appointment_form(
         "Appointment Category",
         APPOINTMENT_CATEGORY,
         optional=True,
-    )
-
-    _wait_for_kendo_data(
-        page,
-        "Jurisdiction",
-        expected_text=JURISDICTION,
     )
 
     _fill_label_driven_dropdown(
