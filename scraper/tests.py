@@ -25,6 +25,7 @@ from flows.captcha_flow import (
 )
 from flows.appointment_flow import (
     _dropdown_label_pattern,
+    _visible_required_dropdown_order,
     _select_kendo_option,
     appointment_available_dialog_visible,
     fill_appointment_form,
@@ -120,10 +121,21 @@ class AppointmentFormTests(TestCase):
         self.assertIsNotNone(pattern.fullmatch("Category *"))
         self.assertIsNone(pattern.fullmatch("Visa Category"))
 
+    @patch(
+        "flows.appointment_flow._visible_required_dropdown_order",
+        side_effect=(
+            ["Jurisdiction", "Appointment Category", "Location", "Visa Type", "Visa Sub Type"],
+            ["Appointment Category", "Location", "Visa Type", "Visa Sub Type"],
+            ["Location", "Visa Type", "Visa Sub Type"],
+            ["Visa Type", "Visa Sub Type"],
+            ["Visa Sub Type"],
+        ),
+    )
     @patch("flows.appointment_flow._fill_label_driven_dropdown")
-    def test_form_opens_jurisdiction_without_waiting_for_preloaded_data(
+    def test_form_follows_the_sites_visible_dropdown_order(
         self,
         fill_dropdown,
+        _visible_order,
     ):
         fill_appointment_form(
             MagicMock(),
@@ -133,12 +145,8 @@ class AppointmentFormTests(TestCase):
         self.assertEqual(
             fill_dropdown.call_args_list,
             [
-                call(
-                    ANY,
-                    "Appointment Category",
-                    "Normal",
-                ),
                 call(ANY, "Jurisdiction", "Tehran"),
+                call(ANY, "Appointment Category", "Normal"),
                 call(ANY, "Location", "Tehran"),
                 call(
                     ANY,

@@ -30,6 +30,13 @@ DROPDOWN_LABEL_ALIASES = {
     "Appointment Category": ("Appointment Category", "Category"),
 }
 
+APPOINTMENT_DROPDOWN_VALUES = {
+    "Appointment Category": APPOINTMENT_CATEGORY,
+    "Jurisdiction": JURISDICTION,
+    "Location": LOCATION,
+    "Visa Type": VISA_TYPE,
+}
+
 
 def _log(message: str) -> None:
     logger.info("[appointment] %s", message)
@@ -42,6 +49,35 @@ def _dropdown_label_pattern(label_text: str) -> re.Pattern[str]:
         rf"^\s*(?:{alternatives})\s*\*?\s*$",
         re.IGNORECASE,
     )
+
+
+def _canonical_dropdown_label(visible_label: str) -> str | None:
+    for canonical_label in (
+        "Appointment Category",
+        "Jurisdiction",
+        "Location",
+        "Visa Type",
+        "Visa Sub Type",
+    ):
+        if _dropdown_label_pattern(canonical_label).fullmatch(visible_label):
+            return canonical_label
+    return None
+
+
+def _visible_required_dropdown_order(page: Page) -> list[str]:
+    """Read the site's current top-to-bottom order of required dropdowns."""
+    order: list[str] = []
+    containers = page.locator("div.mb-3:visible")
+    for index in range(containers.count()):
+        label = containers.nth(index).locator("label.form-label:visible")
+        if label.count() == 0:
+            continue
+        canonical_label = _canonical_dropdown_label(
+            label.first.inner_text().strip()
+        )
+        if canonical_label is not None and canonical_label not in order:
+            order.append(canonical_label)
+    return order
 
 
 def _describe_container(container: Locator, label_text: str) -> None:
@@ -355,35 +391,36 @@ def fill_appointment_form(
 
     _log('skipping "Appointment For" because it must remain at its default value')
 
-    _fill_label_driven_dropdown(
-        page,
-        "Appointment Category",
-        APPOINTMENT_CATEGORY,
-    )
+    values = {
+        **APPOINTMENT_DROPDOWN_VALUES,
+        "Visa Sub Type": visa_sub_type,
+    }
+    remaining = set(values)
+    deadline = time.monotonic() + 30
 
-    _fill_label_driven_dropdown(
-        page,
-        "Jurisdiction",
-        JURISDICTION,
-    )
+    while remaining:
+        raise_for_http_forbidden(page)
+        visible_order = _visible_required_dropdown_order(page)
+        next_label = next(
+            (label for label in visible_order if label in remaining),
+            None,
+        )
+        if next_label is None:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "Required appointment dropdowns did not appear: "
+                    + ", ".join(sorted(remaining))
+                )
+            page.wait_for_timeout(250)
+            continue
 
-    _fill_label_driven_dropdown(
-        page,
-        "Location",
-        LOCATION,
-    )
-
-    _fill_label_driven_dropdown(
-        page,
-        "Visa Type",
-        VISA_TYPE,
-    )
-
-    _fill_label_driven_dropdown(
-        page,
-        "Visa Sub Type",
-        visa_sub_type,
-    )
+        _log(
+            "current visible required dropdown order: "
+            + " -> ".join(visible_order)
+        )
+        _fill_label_driven_dropdown(page, next_label, values[next_label])
+        remaining.remove(next_label)
+        deadline = time.monotonic() + 30
 
     _log("appointment form filled successfully")
 
