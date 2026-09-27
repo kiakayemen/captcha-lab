@@ -239,10 +239,35 @@ it does not install the browser binary. `playwright install chromium` is
 required before running `playwright_smoke.py`, Celery scraper tasks, or any
 other browser automation.
 
-For a visible manual run from the laptop's own connection, use
-`python playwright_smoke.py --direct`. This explicit option ignores
-`SCRAPER_PROXY_URLS` for that run. The standalone script does not need a
-database; scheduled runs still require their configured proxy pool.
+## Local direct runs (no proxy)
+
+Use `--direct` whenever you want a manual run to use the laptop's own Internet
+connection instead of any endpoint in `SCRAPER_PROXY_URLS`.
+
+Run the standalone Playwright scraper with a visible browser:
+
+```bash
+python playwright_smoke.py --direct
+```
+
+Run the same standalone scraper headlessly:
+
+```bash
+python playwright_smoke.py --direct --headless
+```
+
+Run the Django-managed scraper locally and persist the run in the configured
+database:
+
+```bash
+python manage.py run_scraper --direct
+```
+
+Add `--headless` to the management command when no browser window is wanted.
+The `--direct` option explicitly ignores `SCRAPER_PROXY_URLS` for that manual
+run. It is intentionally available only on these manual entry points;
+scheduled runs remain fail-closed and require their configured proxy pool. The
+standalone `playwright_smoke.py` command does not require a database.
 
 To check every configured proxy from the worker's actual network path without
 logging in or submitting a CAPTCHA, run this inside the worker pod:
