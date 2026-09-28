@@ -516,6 +516,47 @@ class ScraperRunLoggingTests(TestCase):
         self.assertEqual(rows[0]["level"], "WARNING")
         self.assertEqual(rows[0]["message"], 'large, quoted "message"')
 
+    def test_selected_run_log_action_exports_only_selected_runs(self):
+        selected_run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.MANUAL,
+        )
+        unselected_run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.MANUAL,
+        )
+        ScraperRunLog.objects.create(run=self.run, message="selected first")
+        ScraperRunLog.objects.create(
+            run=selected_run,
+            message="selected second",
+        )
+        ScraperRunLog.objects.create(
+            run=unselected_run,
+            message="not selected",
+        )
+        admin = ScraperRunAdmin(ScraperRun, None)
+
+        response = admin.download_selected_logs(
+            RequestFactory().post("/admin/operations/scraperrun/"),
+            ScraperRun.objects.filter(pk__in=(self.run.pk, selected_run.pk)),
+        )
+
+        self.assertTrue(response.streaming)
+        self.assertEqual(
+            response["Content-Disposition"],
+            (
+                'attachment; filename="selected_scraper_run_logs_'
+                f'{timezone.localdate()}_to_{timezone.localdate()}.csv"'
+            ),
+        )
+        rows = list(
+            csv.DictReader(
+                StringIO(b"".join(response.streaming_content).decode())
+            )
+        )
+        self.assertEqual(
+            {row["message"] for row in rows},
+            {"selected first", "selected second"},
+        )
+
     def test_single_run_log_filename_includes_actual_date_range(self):
         first = ScraperRunLog.objects.create(run=self.run, message="first")
         last = ScraperRunLog.objects.create(run=self.run, message="last")

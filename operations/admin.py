@@ -314,6 +314,10 @@ class ScraperRunAdmin(
         "-created_at",
     )
 
+    actions = (
+        "download_selected_logs",
+    )
+
     def get_queryset(self, request):
         return super().get_queryset(request).prefetch_related(
             Prefetch(
@@ -637,6 +641,27 @@ class ScraperRunAdmin(
         )
         logs = self._filter_logs_by_date(logs, form)
         filename = self._logs_filename(logs, form, "scraper_run_logs")
+        return self._logs_csv_response(logs, filename)
+
+    @admin.action(description="Download logs for selected scraper runs")
+    def download_selected_logs(
+        self,
+        request: HttpRequest,
+        queryset,
+    ) -> StreamingHttpResponse:
+        logs = self._logs_for_export(
+            ScraperRunLog.objects.filter(run__in=queryset).order_by(
+                "run__created_at",
+                "id",
+            )
+        )
+        form = LogDateRangeForm({})
+        form.is_valid()
+        filename = self._logs_filename(
+            logs,
+            form,
+            "selected_scraper_run_logs",
+        )
         return self._logs_csv_response(logs, filename)
 
     def download_run_logs_view(
