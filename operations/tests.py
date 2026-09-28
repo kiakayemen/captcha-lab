@@ -516,7 +516,12 @@ class ScraperRunLoggingTests(TestCase):
         self.assertEqual(rows[0]["level"], "WARNING")
         self.assertEqual(rows[0]["message"], 'large, quoted "message"')
 
-    def test_selected_run_log_action_exports_only_selected_runs(self):
+    @override_settings(MIDDLEWARE=[
+        "django.contrib.sessions.middleware.SessionMiddleware",
+        "django.contrib.auth.middleware.AuthenticationMiddleware",
+        "django.contrib.messages.middleware.MessageMiddleware",
+    ])
+    def test_selected_run_log_action_redirects_to_get_csv_for_selected_runs(self):
         selected_run = ScraperRun.objects.create(
             trigger=ScraperRun.Trigger.MANUAL,
         )
@@ -532,13 +537,28 @@ class ScraperRunLoggingTests(TestCase):
             run=unselected_run,
             message="not selected",
         )
-        admin = ScraperRunAdmin(ScraperRun, None)
+        user = get_user_model().objects.create_superuser(
+            username="selected-log-export-admin",
+            email="selected-export@example.com",
+            password="test-password",
+        )
+        self.client.force_login(user)
 
-        response = admin.download_selected_logs(
-            RequestFactory().post("/admin/operations/scraperrun/"),
-            ScraperRun.objects.filter(pk__in=(self.run.pk, selected_run.pk)),
+        action_response = self.client.post(
+            "/admin/operations/scraperrun/",
+            {
+                "action": "download_selected_logs",
+                "_selected_action": [str(self.run.pk), str(selected_run.pk)],
+                "index": "0",
+            },
+        )
+        self.assertEqual(action_response.status_code, 302)
+        self.assertIn(
+            "/admin/operations/scraperrun/download-selected-logs/",
+            action_response["Location"],
         )
 
+        response = self.client.get(action_response["Location"])
         self.assertTrue(response.streaming)
         self.assertEqual(
             response["Content-Disposition"],

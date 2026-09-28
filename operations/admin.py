@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import secrets
 from datetime import datetime, time, timedelta
 
 from django.contrib import (
@@ -526,6 +527,16 @@ class ScraperRunAdmin(
                 ),
             ),
             path(
+                "download-selected-logs/",
+                self.admin_site.admin_view(
+                    self.download_selected_logs_view
+                ),
+                name=(
+                    "operations_"
+                    "scraperrun_download_selected_logs"
+                ),
+            ),
+            path(
                 (
                     "<uuid:run_id>/"
                     "download-logs/"
@@ -648,9 +659,40 @@ class ScraperRunAdmin(
         self,
         request: HttpRequest,
         queryset,
-    ) -> StreamingHttpResponse:
+    ) -> HttpResponse:
+        # Admin actions are submitted with POST. Some browser download
+        # managers retry an attachment URL with GET, which loses the selected
+        # IDs and downloads the changelist HTML instead. Save the selection in
+        # this admin session and redirect to a stable GET download endpoint,
+        # matching the calendar export's behavior.
+        selection_token = secrets.token_urlsafe(16)
+        request.session["scraper_run_log_export"] = {
+            "token": selection_token,
+            "run_ids": [
+                str(run_id)
+                for run_id in queryset.values_list("pk", flat=True)
+            ],
+        }
+        download_url = reverse(
+            "admin:operations_scraperrun_download_selected_logs"
+        )
+        return redirect(f"{download_url}?selection={selection_token}")
+
+    def download_selected_logs_view(
+        self,
+        request: HttpRequest,
+    ) -> HttpResponse:
+        selection = request.session.get("scraper_run_log_export", {})
+        if (
+            not request.GET.get("selection")
+            or request.GET["selection"] != selection.get("token")
+        ):
+            return HttpResponseBadRequest("Invalid or expired scraper run selection.")
+
         logs = self._logs_for_export(
-            ScraperRunLog.objects.filter(run__in=queryset).order_by(
+            ScraperRunLog.objects.filter(
+                run_id__in=selection.get("run_ids", [])
+            ).order_by(
                 "run__created_at",
                 "id",
             )
