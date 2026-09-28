@@ -107,6 +107,31 @@ class ScraperEventTests(TestCase):
         admin = ScraperRunAdmin(ScraperRun, None)
         self.assertEqual(admin.student_visa_result(self.run), "Possible appointment")
 
+    def test_admin_counts_distinct_observed_egress_ips(self):
+        for egress_ip in (
+            "203.0.113.10",
+            "203.0.113.11",
+            "203.0.113.10",
+        ):
+            ScraperEvent.objects.create(
+                run=self.run,
+                event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+                data={"egress_ip": egress_ip},
+            )
+        ScraperEvent.objects.create(
+            run=self.run,
+            event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+            data={"egress_lookup_error": "probe failed"},
+        )
+
+        admin = ScraperRunAdmin(ScraperRun, None)
+        request = RequestFactory().get("/admin/operations/scraperrun/")
+        run = admin.get_queryset(request).get(pk=self.run.pk)
+
+        self.assertEqual(admin.ips_used(run), 2)
+        with self.assertNumQueries(0):
+            self.assertEqual(admin.ips_used(run), 2)
+
     def test_proxy_403_report_groups_by_route_and_endpoint(self):
         for url in (
             "https://example.test/Global/NewCaptcha/GenerateCaptcha?one=1",

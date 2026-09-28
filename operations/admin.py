@@ -220,6 +220,7 @@ class ScraperRunAdmin(
         "student_visa_result",
         "non_working_residence_result",
         "duration_seconds",
+        "ips_used",
         "log_count",
         "download_logs",
     )
@@ -330,7 +331,14 @@ class ScraperRunAdmin(
                     )
                 ).order_by("created_at", "id"),
                 to_attr="subtype_outcome_events",
-            )
+            ),
+            Prefetch(
+                "events",
+                queryset=ScraperEvent.objects.filter(
+                    event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+                ).only("run_id", "data"),
+                to_attr="ip_usage_events",
+            ),
         )
 
     @staticmethod
@@ -403,6 +411,20 @@ class ScraperRunAdmin(
     @admin.display(description="Non-working residence visa")
     def non_working_residence_result(self, obj: ScraperRun) -> str:
         return self._subtype_result(obj, "Non-Working Residence Visa")
+
+    @admin.display(description="IPs used")
+    def ips_used(self, obj: ScraperRun) -> int:
+        events = getattr(obj, "ip_usage_events", None)
+        if events is None:
+            events = obj.events.filter(
+                event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+            ).only("data")
+
+        return len({
+            event.data.get("egress_ip")
+            for event in events
+            if event.data.get("egress_ip")
+        })
 
     @admin.display(
         description="Logs"
