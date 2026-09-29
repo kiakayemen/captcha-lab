@@ -307,19 +307,21 @@ variable name; secret values are never printed.
 
 ### Proxy route reference
 
-This is the human-readable reference for every known route. The secret variable
-contains that route's complete authenticated URL, including its own username
-and password. Never copy the credential value into this file.
+This is the human-readable reference for every owned proxy address. For active
+and diagnostic routes, the secret variable contains the complete authenticated
+URL, including its username and password. Never copy credential values into
+this file.
 
-| Route name | Provider/location | Proxy endpoint | Expected outbound IP | Role | Authenticated URL secret |
+| IP name | Provider resource | Proxy endpoint | Outbound IP | Role | Authenticated URL secret |
 | --- | --- | --- | --- | --- | --- |
-| `hamravesh-157-119-191-249` | Hamravesh | `07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888` | `157.119.191.249` | Active | `PROXY_URL_HAMRAVESH_157_119_191_249` |
-| `parspack-tehran16-94-184-43-110` | ParsPack Tehran16 | `94.184.43.110:8888` | `94.184.43.110` | Active | `PROXY_URL_PARSPACK_94_184_43_110` |
-| `parspack-tehran3-185-239-3-80` | ParsPack Tehran3 | `185.239.3.80:8888` | `185.239.3.80` | Active | `PROXY_URL_PARSPACK_185_239_3_80` |
-| `parspack-tehran3-185-239-3-145` | ParsPack Tehran3 | `185.239.3.145:8888` | `185.239.3.145` | Active | `PROXY_URL_PARSPACK_185_239_3_145` |
-| `parspack-tehran11-212-23-201-85` | ParsPack Tehran11 | `212.23.201.85:8888` | `212.23.201.85` | Active | `PROXY_URL_PARSPACK_212_23_201_85` |
-| `legacy-94-184-43-30` | ParsPack Tehran16 | `94.184.43.30:8888` | `94.184.43.30` | Diagnostic; confirmed blocked on 2026-09-27 | `PROXY_URL_LEGACY_94_184_43_30` |
-| `legacy-hamravesh-95-128-194-189` | Hamravesh | `011ea9fd-5343-4ed6-a37f-57097720366b.hsvc.ir:25767` | `95.128.194.189` | Diagnostic; confirmed blocked on 2026-09-27 | `PROXY_URL_LEGACY_HAMRAVESH_95_128_194_189` |
+| Hamravesh Tinyproxy 1 — active | `tinyproxy-1` | `07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888` | `157.119.191.249` | Active | `PROXY_URL_HAMRAVESH_157_119_191_249` |
+| ParsPack proxy 1 reserved — active | `captcha-proxy-1` | `94.184.43.110:8888` | `94.184.43.110` | Active | `PROXY_URL_PARSPACK_94_184_43_110` |
+| ParsPack proxy 2 primary — active | `captcha-proxy-2` | `185.239.3.80:8888` | `185.239.3.80` | Active | `PROXY_URL_PARSPACK_185_239_3_80` |
+| ParsPack proxy 2 reserved — active | `captcha-proxy-2` | `185.239.3.145:8888` | `185.239.3.145` | Active | `PROXY_URL_PARSPACK_185_239_3_145` |
+| ParsPack proxy 3 primary — active | `captcha-proxy-3` | `212.23.201.85:8888` | `212.23.201.85` | Active | `PROXY_URL_PARSPACK_212_23_201_85` |
+| ParsPack proxy 1 primary — obsolete/blocked | `captcha-proxy-1` | `94.184.43.30:8888` | `94.184.43.30` | Diagnostic; confirmed blocked on 2026-09-27 | `PROXY_URL_LEGACY_94_184_43_30` |
+| Hamravesh Tinyproxy static 1 — obsolete/blocked | `tinyproxy-static-ip-1` | `011ea9fd-5343-4ed6-a37f-57097720366b.hsvc.ir:25767` | `95.128.194.189` | Diagnostic; confirmed blocked on 2026-09-27 | `PROXY_URL_LEGACY_HAMRAVESH_95_128_194_189` |
+| ParsPack spare reserved — unused | Unassigned | — | `94.184.45.246` | Unassigned; not used by the scraper | — |
 
 The two legacy checks returned the same known BLS block response: HTTP `403`,
 server `awselb/2.0`, 520-byte body, and fingerprint

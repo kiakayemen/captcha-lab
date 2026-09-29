@@ -75,6 +75,10 @@ from scripts.check_proxy_ips import (
     load_proxy_inventory,
     safe_endpoint,
 )
+from scraper.proxy_inventory import (
+    proxy_identity_for_ip,
+    proxy_label_for_endpoint,
+)
 
 
 class ProxyIpDiagnosticTests(TestCase):
@@ -110,6 +114,25 @@ class ProxyIpDiagnosticTests(TestCase):
             "95.128.194.189",
         )
         self.assertNotIn("95.128.194.46", str(routes))
+
+    def test_inventory_names_every_owned_ip(self):
+        routes = load_proxy_inventory()
+
+        self.assertEqual(len(routes), 8)
+        self.assertEqual(
+            proxy_identity_for_ip("94.184.45.246")["label"],
+            "ParsPack spare reserved — unused",
+        )
+        self.assertEqual(
+            proxy_label_for_endpoint("http://user:secret@185.239.3.145:8888"),
+            "ParsPack proxy 2 reserved — active",
+        )
+
+    def test_unassigned_ip_cannot_be_selected_as_a_proxy_route(self):
+        with self.assertRaisesRegex(ValueError, "unassigned IP"):
+            configured_inventory_routes(
+                ["unassigned-parspack-94-184-45-246"]
+            )
 
     @patch.dict(
         "os.environ",

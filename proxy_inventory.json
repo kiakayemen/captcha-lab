@@ -2,7 +2,9 @@
   "routes": [
     {
       "name": "hamravesh-157-119-191-249",
+      "label": "Hamravesh Tinyproxy 1 — active",
       "provider": "Hamravesh",
+      "resource": "tinyproxy-1",
       "endpoint": "http://07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888",
       "expected_egress_ip": "157.119.191.249",
       "url_env": "PROXY_URL_HAMRAVESH_157_119_191_249",
@@ -10,7 +12,9 @@
     },
     {
       "name": "parspack-tehran16-94-184-43-110",
+      "label": "ParsPack proxy 1 reserved — active",
       "provider": "ParsPack Tehran16",
+      "resource": "captcha-proxy-1",
       "endpoint": "http://94.184.43.110:8888",
       "expected_egress_ip": "94.184.43.110",
       "url_env": "PROXY_URL_PARSPACK_94_184_43_110",
@@ -18,7 +22,9 @@
     },
     {
       "name": "parspack-tehran3-185-239-3-80",
+      "label": "ParsPack proxy 2 primary — active",
       "provider": "ParsPack Tehran3",
+      "resource": "captcha-proxy-2",
       "endpoint": "http://185.239.3.80:8888",
       "expected_egress_ip": "185.239.3.80",
       "url_env": "PROXY_URL_PARSPACK_185_239_3_80",
@@ -26,7 +32,9 @@
     },
     {
       "name": "parspack-tehran3-185-239-3-145",
+      "label": "ParsPack proxy 2 reserved — active",
       "provider": "ParsPack Tehran3",
+      "resource": "captcha-proxy-2",
       "endpoint": "http://185.239.3.145:8888",
       "expected_egress_ip": "185.239.3.145",
       "url_env": "PROXY_URL_PARSPACK_185_239_3_145",
@@ -34,7 +42,9 @@
     },
     {
       "name": "parspack-tehran11-212-23-201-85",
+      "label": "ParsPack proxy 3 primary — active",
       "provider": "ParsPack Tehran11",
+      "resource": "captcha-proxy-3",
       "endpoint": "http://212.23.201.85:8888",
       "expected_egress_ip": "212.23.201.85",
       "url_env": "PROXY_URL_PARSPACK_212_23_201_85",
@@ -42,7 +52,9 @@
     },
     {
       "name": "legacy-94-184-43-30",
+      "label": "ParsPack proxy 1 primary — obsolete/blocked",
       "provider": "ParsPack Tehran16",
+      "resource": "captcha-proxy-1",
       "endpoint": "http://94.184.43.30:8888",
       "expected_egress_ip": "94.184.43.30",
       "url_env": "PROXY_URL_LEGACY_94_184_43_30",
@@ -50,11 +62,23 @@
     },
     {
       "name": "legacy-hamravesh-95-128-194-189",
+      "label": "Hamravesh Tinyproxy static 1 — obsolete/blocked",
       "provider": "Hamravesh",
+      "resource": "tinyproxy-static-ip-1",
       "endpoint": "http://011ea9fd-5343-4ed6-a37f-57097720366b.hsvc.ir:25767",
       "expected_egress_ip": "95.128.194.189",
       "url_env": "PROXY_URL_LEGACY_HAMRAVESH_95_128_194_189",
       "role": "diagnostic"
+    },
+    {
+      "name": "unassigned-parspack-94-184-45-246",
+      "label": "ParsPack spare reserved — unused",
+      "provider": "ParsPack Tehran16",
+      "resource": "unassigned",
+      "endpoint": "",
+      "expected_egress_ip": "94.184.45.246",
+      "url_env": "",
+      "role": "unassigned"
     }
   ]
 }

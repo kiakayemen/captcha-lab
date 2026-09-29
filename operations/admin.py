@@ -29,6 +29,11 @@ from django.utils import timezone
 from django.utils.html import format_html
 from django.db.models import Max, Min, Prefetch
 
+from scraper.proxy_inventory import (
+    proxy_label_for_endpoint,
+    proxy_label_for_ip,
+)
+
 from .models import (
     ProxyEndpointHealth,
     ScraperEvent,
@@ -175,6 +180,7 @@ class ScraperScheduleAdmin(
 @admin.register(ProxyEndpointHealth)
 class ProxyEndpointHealthAdmin(admin.ModelAdmin):
     list_display = (
+        "proxy_name",
         "endpoint",
         "is_quarantined",
         "quarantined_until",
@@ -183,6 +189,7 @@ class ProxyEndpointHealthAdmin(admin.ModelAdmin):
         "last_success_at",
     )
     readonly_fields = (
+        "proxy_name",
         "endpoint",
         "quarantined_until",
         "consecutive_403",
@@ -194,6 +201,10 @@ class ProxyEndpointHealthAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         return False
+
+    @admin.display(description="Name")
+    def proxy_name(self, obj: ProxyEndpointHealth) -> str:
+        return proxy_label_for_endpoint(obj.endpoint)
 
     def has_delete_permission(self, request: HttpRequest, obj=None) -> bool:
         return False
@@ -221,6 +232,7 @@ class ScraperRunAdmin(
         "non_working_residence_result",
         "duration_seconds",
         "ips_used",
+        "ip_names",
         "log_count",
         "download_logs",
     )
@@ -425,6 +437,24 @@ class ScraperRunAdmin(
             for event in events
             if event.data.get("egress_ip")
         })
+
+    @admin.display(description="IP names")
+    def ip_names(self, obj: ScraperRun) -> str:
+        events = getattr(obj, "ip_usage_events", None)
+        if events is None:
+            events = obj.events.filter(
+                event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+            ).only("data")
+
+        addresses = dict.fromkeys(
+            event.data.get("egress_ip")
+            for event in events
+            if event.data.get("egress_ip")
+        )
+        return (
+            ", ".join(proxy_label_for_ip(address) for address in addresses)
+            or "—"
+        )
 
     @admin.display(
         description="Logs"

@@ -132,6 +132,26 @@ class ScraperEventTests(TestCase):
         with self.assertNumQueries(0):
             self.assertEqual(admin.ips_used(run), 2)
 
+    def test_admin_shows_owned_ip_names_for_a_run(self):
+        for egress_ip in ("185.239.3.80", "94.184.43.110"):
+            ScraperEvent.objects.create(
+                run=self.run,
+                event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+                data={"egress_ip": egress_ip},
+            )
+
+        admin = ScraperRunAdmin(ScraperRun, None)
+        request = RequestFactory().get("/admin/operations/scraperrun/")
+        run = admin.get_queryset(request).get(pk=self.run.pk)
+
+        self.assertEqual(
+            admin.ip_names(run),
+            "ParsPack proxy 2 primary — active, "
+            "ParsPack proxy 1 reserved — active",
+        )
+        with self.assertNumQueries(0):
+            admin.ip_names(run)
+
     def test_proxy_403_report_groups_by_route_and_endpoint(self):
         for url in (
             "https://example.test/Global/NewCaptcha/GenerateCaptcha?one=1",
