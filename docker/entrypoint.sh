@@ -23,6 +23,9 @@ case "${1:-web}" in
   beat)
     exec celery -A control_panel beat -l "${CELERY_LOG_LEVEL:-info}"
     ;;
+  beat-controller)
+    exec python /app/docker/beat_controller.py
+    ;;
   migrate)
     exec python manage.py migrate --noinput
     ;;
