@@ -32,6 +32,7 @@ class ScraperRun(models.Model):
     class Trigger(models.TextChoices):
         MANUAL = "manual", "Manual"
         SCHEDULED = "scheduled", "Scheduled"
+        BACK_TO_BACK = "back_to_back", "Back to back"
 
     id = models.UUIDField(
         primary_key=True,
@@ -298,6 +299,13 @@ class ScraperSchedule(models.Model):
         ),
     )
 
+    last_back_to_back_finished_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="Finish time of the most recent back-to-back scraper run.",
+    )
+
     consecutive_403_runs = models.PositiveIntegerField(
         default=0,
         editable=False,
@@ -329,9 +337,16 @@ class ScraperSchedule(models.Model):
         """Estimated next dispatch time used by the admin UI."""
         if not self.enabled:
             return None
-        if self.last_dispatched_at is None:
+        anchor = max(
+            (value for value in (
+                self.last_dispatched_at,
+                self.last_back_to_back_finished_at,
+            ) if value is not None),
+            default=None,
+        )
+        if anchor is None:
             return timezone.now()
-        return self.last_dispatched_at + timedelta(
+        return anchor + timedelta(
             minutes=self.interval_minutes
         )
 

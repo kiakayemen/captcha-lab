@@ -6,6 +6,7 @@ from pathlib import Path
 
 import dj_database_url
 from dotenv import load_dotenv
+from celery.schedules import crontab
 from django.core.exceptions import ImproperlyConfigured
 
 
@@ -360,10 +361,7 @@ CELERY_RESULT_SERIALIZER = (
 )
 
 
-CELERY_TIMEZONE = os.getenv(
-    "CELERY_TIMEZONE",
-    "UTC",
-)
+CELERY_TIMEZONE = "Asia/Tehran"
 
 
 CELERY_ENABLE_UTC = True
@@ -373,6 +371,11 @@ CELERY_TASK_ACKS_LATE = True
 
 
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+CELERY_TASK_ROUTES = {
+    "operations.run_scheduled_scraper": {"queue": "control"},
+    "operations.run_scraper": {"queue": "scraper"},
+}
 
 
 # ------------------------------------------------------------------
@@ -392,5 +395,13 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": timedelta(
             minutes=1
         ),
+    },
+    "prepare-back-to-back-window": {
+        "task": "operations.run_scheduled_scraper",
+        "schedule": crontab(hour=9, minute=50),
+    },
+    "start-back-to-back-window": {
+        "task": "operations.run_scheduled_scraper",
+        "schedule": crontab(hour=10, minute=0),
     },
 }

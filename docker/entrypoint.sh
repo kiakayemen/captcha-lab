@@ -12,8 +12,13 @@ case "${1:-web}" in
     ;;
   worker)
     exec celery -A control_panel worker -l "${CELERY_LOG_LEVEL:-info}" \
+      --queues=scraper \
       --pool="${CELERY_POOL:-solo}" \
       --concurrency="${CELERY_CONCURRENCY:-1}"
+    ;;
+  controller)
+    exec celery -A control_panel worker -l "${CELERY_LOG_LEVEL:-info}" \
+      --queues=control --pool=solo --concurrency=1
     ;;
   beat)
     exec celery -A control_panel beat -l "${CELERY_LOG_LEVEL:-info}"

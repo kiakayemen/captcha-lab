@@ -3,6 +3,7 @@ import contextvars
 import csv
 import logging
 import threading
+import time
 from io import StringIO
 from datetime import datetime
 from unittest.mock import patch
@@ -32,14 +33,146 @@ from .admin import LogDateRangeForm, ScraperRunAdmin
 from .jalali import parse_jalali_date
 from .run_logging import ScraperRunDatabaseHandler
 from .proxy_health import select_proxy_pool, update_proxy_health_from_run
-from .tasks import run_scheduled_scraper_task, update_scheduled_403_streak
+from .tasks import run_scraper_task, run_scheduled_scraper_task, schedule_phase, update_scheduled_403_streak
 from .services import (
     ScraperRunAlreadyStarted,
     active_scraper_runs,
     execute_scraper_run,
     recover_stale_scraper_runs,
     request_scraper_stop,
+    monitor_stop_requests,
+    serialize_scraper_config,
 )
+
+
+class StopMonitorTests(TransactionTestCase):
+    def test_cooperative_stop_does_not_exit_worker(self):
+        run = ScraperRun.objects.create(status=ScraperRun.Status.RUNNING)
+        with patch("operations.services.STOP_GRACE_SECONDS", 0.05), patch(
+            "operations.services.os._exit"
+        ) as exit_worker:
+            with monitor_stop_requests(run.pk) as should_stop:
+                request_scraper_stop(run)
+                deadline = time.monotonic() + 3
+                while not should_stop() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(should_stop())
+            exit_worker.assert_not_called()
+
+    def test_stuck_scraper_exits_after_explicit_stop(self):
+        run = ScraperRun.objects.create(status=ScraperRun.Status.RUNNING)
+        exit_called = threading.Event()
+        with patch("operations.services.STOP_GRACE_SECONDS", 0.05), patch(
+            "operations.services.os._exit", side_effect=lambda _code: exit_called.set()
+        ) as exit_worker:
+            with monitor_stop_requests(run.pk) as should_stop:
+                request_scraper_stop(run)
+                self.assertTrue(exit_called.wait(3))
+                self.assertTrue(should_stop())
+            exit_worker.assert_called_once_with(1)
+
+
+@patch.dict("os.environ", {"SCRAPER_PROXY_URLS": "http://proxy-1.internal:8888,http://proxy-2.internal:8888"})
+class BackToBackScheduleTests(TestCase):
+    def setUp(self):
+        ScraperSchedule.objects.create(enabled=True, interval_minutes=30)
+
+    @staticmethod
+    def at(hour, minute):
+        return timezone.make_aware(
+            datetime(2026, 10, 12, hour, minute), ZoneInfo("Asia/Tehran")
+        )
+
+    def test_window_uses_tehran_time_and_ends_at_eleven(self):
+        self.assertEqual(schedule_phase(self.at(9, 49)), "interval")
+        self.assertEqual(schedule_phase(self.at(9, 50)), "prepare")
+        self.assertEqual(schedule_phase(self.at(10, 0)), "back_to_back")
+        self.assertEqual(schedule_phase(self.at(10, 59)), "back_to_back")
+        self.assertEqual(schedule_phase(self.at(11, 0)), "interval")
+
+    @patch("operations.tasks.run_scraper_task.delay")
+    def test_preparation_requests_stop_and_launches_nothing(self, enqueue_run):
+        run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            status=ScraperRun.Status.RUNNING,
+            started_at=self.at(9, 40),
+            heartbeat_at=self.at(9, 49),
+        )
+        with patch("operations.tasks.timezone.now", return_value=self.at(9, 50)):
+            result = run_scheduled_scraper_task.run()
+        run.refresh_from_db()
+        self.assertEqual(result, "preparing")
+        self.assertEqual(run.status, ScraperRun.Status.STOP_REQUESTED)
+        enqueue_run.assert_not_called()
+
+    @patch("operations.tasks.run_scraper_task.delay")
+    def test_ten_oclock_launches_one_burst_run(self, enqueue_run):
+        with patch("operations.tasks.timezone.now", return_value=self.at(10, 0)):
+            with self.captureOnCommitCallbacks(execute=True):
+                first = run_scheduled_scraper_task.run()
+            second = run_scheduled_scraper_task.run()
+        self.assertEqual(ScraperRun.objects.get(pk=first).trigger, ScraperRun.Trigger.BACK_TO_BACK)
+        self.assertEqual(second, f"active:{first}")
+        enqueue_run.assert_called_once()
+
+    @patch("operations.tasks.run_scraper_task.delay")
+    def test_last_burst_finish_anchors_regular_interval(self, enqueue_run):
+        schedule = ScraperSchedule.load()
+        schedule.last_dispatched_at = self.at(9, 30)
+        schedule.last_back_to_back_finished_at = self.at(11, 5)
+        schedule.save(update_fields=["last_dispatched_at", "last_back_to_back_finished_at"])
+        with patch("operations.tasks.timezone.now", return_value=self.at(11, 34)):
+            self.assertEqual(run_scheduled_scraper_task.run(), "not_due")
+        with patch("operations.tasks.timezone.now", return_value=self.at(11, 35)):
+            with self.captureOnCommitCallbacks(execute=True):
+                run_id = run_scheduled_scraper_task.run()
+        self.assertEqual(ScraperRun.objects.get(pk=run_id).trigger, ScraperRun.Trigger.SCHEDULED)
+        enqueue_run.assert_called_once()
+
+    @patch("operations.tasks.run_scraper_task.delay")
+    def test_run_finishing_before_eleven_starts_another_burst(self, enqueue_run):
+        with patch("operations.tasks.timezone.now", return_value=self.at(10, 59)):
+            with self.captureOnCommitCallbacks(execute=True):
+                run_id = run_scheduled_scraper_task.run()
+        self.assertEqual(ScraperRun.objects.get(pk=run_id).trigger, ScraperRun.Trigger.BACK_TO_BACK)
+        enqueue_run.assert_called_once()
+
+    @patch("operations.tasks.run_scraper_task.delay")
+    def test_active_final_burst_is_left_running_after_eleven(self, enqueue_run):
+        run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.BACK_TO_BACK,
+            status=ScraperRun.Status.RUNNING,
+            started_at=self.at(10, 59),
+            heartbeat_at=self.at(11, 0),
+        )
+        with patch("operations.tasks.timezone.now", return_value=self.at(11, 0)):
+            result = run_scheduled_scraper_task.run()
+        run.refresh_from_db()
+        self.assertEqual(result, f"active:{run.pk}")
+        self.assertEqual(run.status, ScraperRun.Status.RUNNING)
+        enqueue_run.assert_not_called()
+
+    @patch("operations.tasks.run_scheduled_scraper_task.delay")
+    @patch("operations.tasks.update_scheduled_403_streak")
+    @patch("operations.tasks.update_proxy_health_from_run")
+    @patch("operations.tasks.execute_scraper_run")
+    def test_burst_completion_records_finish_and_requests_next_check(
+        self, execute_run, _health, _streak, next_check
+    ):
+        run = ScraperRun.objects.create(trigger=ScraperRun.Trigger.BACK_TO_BACK)
+        finished = self.at(11, 5)
+
+        def complete(**kwargs):
+            db_run = kwargs["db_run"]
+            db_run.status = ScraperRun.Status.NO_APPOINTMENT
+            db_run.finished_at = finished
+            db_run.save(update_fields=["status", "finished_at"])
+
+        execute_run.side_effect = complete
+        run_scraper_task.run(str(run.pk), serialize_scraper_config(ScraperConfig()))
+        schedule = ScraperSchedule.load()
+        self.assertEqual(schedule.last_back_to_back_finished_at, finished)
+        next_check.assert_called_once()
 
 
 class ScraperEventTests(TestCase):
@@ -405,12 +538,12 @@ class ProxyCircuitBreakerTests(TestCase):
         self.assertIsNone(health.quarantined_until)
         self.assertIsNotNone(health.last_success_at)
 
-    @patch("operations.tasks.update_proxy_health_from_run")
-    @patch("operations.tasks.execute_scraper_run")
+    @patch("operations.tasks.schedule_phase", return_value="interval")
+    @patch("operations.tasks.run_scraper_task.delay")
     def test_scheduler_continues_with_remaining_healthy_endpoint(
         self,
-        execute_run,
-        _update_health,
+        enqueue_run,
+        _phase,
     ):
         ProxyEndpointHealth.objects.create(
             endpoint="http://proxy-1.internal:8888",
@@ -418,17 +551,20 @@ class ProxyCircuitBreakerTests(TestCase):
         )
         ScraperSchedule.objects.create(enabled=True, interval_minutes=40)
 
-        result = run_scheduled_scraper_task.run()
+        with self.captureOnCommitCallbacks(execute=True):
+            result = run_scheduled_scraper_task.run()
 
         self.assertTrue(result)
-        config = execute_run.call_args.kwargs["config"]
-        self.assertEqual(config.proxy_urls, ("http://proxy-2.internal:8888",))
-        self.assertTrue(config.allow_single_proxy)
+        payload = enqueue_run.call_args.args[1]
+        self.assertEqual(payload["proxy_urls"], ["http://proxy-2.internal:8888"])
+        self.assertTrue(payload["allow_single_proxy"])
 
-    @patch("operations.tasks.execute_scraper_run")
+    @patch("operations.tasks.schedule_phase", return_value="interval")
+    @patch("operations.tasks.run_scraper_task.delay")
     def test_scheduler_does_not_launch_full_run_while_all_probes_cooling_down(
         self,
-        execute_run,
+        enqueue_run,
+        _phase,
     ):
         future = timezone.now() + timezone.timedelta(minutes=40)
         for endpoint in (
@@ -444,15 +580,15 @@ class ProxyCircuitBreakerTests(TestCase):
         result = run_scheduled_scraper_task.run()
 
         self.assertEqual(result, "circuit_open")
-        execute_run.assert_not_called()
+        enqueue_run.assert_not_called()
         self.assertFalse(ScraperRun.objects.exists())
 
-    @patch("operations.tasks.update_proxy_health_from_run")
-    @patch("operations.tasks.execute_scraper_run")
+    @patch("operations.tasks.schedule_phase", return_value="interval")
+    @patch("operations.tasks.run_scraper_task.delay")
     def test_scheduler_restores_all_due_recovery_endpoints(
         self,
-        execute_run,
-        _update_health,
+        enqueue_run,
+        _phase,
     ):
         now = timezone.now()
         for index, endpoint in enumerate((
@@ -466,17 +602,18 @@ class ProxyCircuitBreakerTests(TestCase):
             )
         ScraperSchedule.objects.create(enabled=True, interval_minutes=40)
 
-        run_scheduled_scraper_task.run()
+        with self.captureOnCommitCallbacks(execute=True):
+            run_scheduled_scraper_task.run()
 
-        config = execute_run.call_args.kwargs["config"]
+        config = enqueue_run.call_args.args[1]
         self.assertEqual(
-            config.proxy_urls,
-            (
+            config["proxy_urls"],
+            [
                 "http://proxy-1.internal:8888",
                 "http://proxy-2.internal:8888",
-            ),
+            ],
         )
-        self.assertFalse(config.allow_single_proxy)
+        self.assertFalse(config["allow_single_proxy"])
 
 
 class ScraperRunLoggingTests(TestCase):

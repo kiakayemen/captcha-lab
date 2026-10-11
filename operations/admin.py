@@ -50,7 +50,7 @@ from .services import (
     request_scraper_stop,
     serialize_scraper_config,
 )
-from .tasks import run_scraper_task
+from .tasks import run_scraper_task, schedule_phase
 
 
 class JalaliDateField(forms.Field):
@@ -136,6 +136,7 @@ class ScraperScheduleAdmin(
         "enabled",
         "interval_minutes",
         "last_dispatched_at",
+        "last_back_to_back_finished_at",
         "next_run",
         "updated_at",
     )
@@ -144,18 +145,26 @@ class ScraperScheduleAdmin(
         "enabled",
         "interval_minutes",
         "last_dispatched_at",
+        "last_back_to_back_finished_at",
         "next_run",
         "updated_at",
     )
 
     readonly_fields = (
         "last_dispatched_at",
+        "last_back_to_back_finished_at",
         "next_run",
         "updated_at",
     )
 
     @admin.display(description="Next scraper run")
     def next_run(self, obj: ScraperSchedule):
+        if obj.enabled:
+            phase = schedule_phase(timezone.now())
+            if phase == "prepare":
+                return "Back-to-back starts at 10:00 Tehran time"
+            if phase == "back_to_back":
+                return "Back-to-back runs until 11:00 Tehran time"
         next_run_at = obj.next_run_at
         if next_run_at is None:
             return "Disabled"
@@ -930,6 +939,15 @@ class ScraperRunAdmin(
                     "scraperrun_changelist"
                 )
             )
+
+        if schedule_phase(timezone.now()) in {"prepare", "back_to_back"}:
+            self.message_user(
+                request,
+                "Manual runs are paused from 09:50 to 11:00 Tehran time "
+                "so the 10:00 back-to-back schedule can start on time.",
+                level=messages.WARNING,
+            )
+            return redirect(reverse("admin:operations_scraperrun_changelist"))
 
         recover_stale_scraper_runs()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from celery import shared_task
 from django.db import transaction
@@ -21,6 +22,8 @@ from .services import (
     deserialize_scraper_config,
     execute_scraper_run,
     recover_stale_scraper_runs,
+    request_scraper_stop,
+    serialize_scraper_config,
 )
 
 
@@ -29,6 +32,18 @@ logger = logging.getLogger(
 )
 
 CONSECUTIVE_403_LIMIT = 10
+TEHRAN = ZoneInfo("Asia/Tehran")
+
+
+def schedule_phase(now):
+    """Select the daily schedule using Tehran wall-clock time."""
+    local = timezone.localtime(now, TEHRAN)
+    minute_of_day = local.hour * 60 + local.minute
+    if 9 * 60 + 50 <= minute_of_day < 10 * 60:
+        return "prepare"
+    if 10 * 60 <= minute_of_day < 11 * 60:
+        return "back_to_back"
+    return "interval"
 
 
 def update_scheduled_403_streak(run: ScraperRun) -> int:
@@ -67,11 +82,7 @@ def run_scraper_task(
     run_id: str,
     config_data: dict,
 ) -> str:
-    """
-    Execute a scraper run that has already been created.
-
-    This is currently used by the manual Django Admin action.
-    """
+    """Execute one queued manual, interval, or back-to-back scraper run."""
 
     db_run = ScraperRun.objects.get(
         pk=run_id,
@@ -97,10 +108,26 @@ def run_scraper_task(
         trigger=db_run.trigger,
         db_run=db_run,
     )
+    if db_run.trigger == ScraperRun.Trigger.BACK_TO_BACK:
+        # Save the finish before optional health checks so the next regular
+        # interval stays correct even if a post-run check fails.
+        ScraperSchedule.objects.filter(pk=1).update(
+            last_back_to_back_finished_at=db_run.finished_at,
+        )
     update_proxy_health_from_run(
         db_run,
         cooldown_minutes=ScraperSchedule.load().interval_minutes,
     )
+
+    if db_run.trigger in {
+        ScraperRun.Trigger.SCHEDULED,
+        ScraperRun.Trigger.BACK_TO_BACK,
+    }:
+        db_run.refresh_from_db(fields=["error_type", "finished_at"])
+        update_scheduled_403_streak(db_run)
+
+    if db_run.trigger == ScraperRun.Trigger.BACK_TO_BACK:
+        run_scheduled_scraper_task.delay()
 
     return str(
         db_run.pk
@@ -112,12 +139,8 @@ def run_scraper_task(
 )
 def run_scheduled_scraper_task() -> str:
     """
-    Celery Beat calls this task once per minute.
-
-    This task decides whether the configured scraper interval
-    has actually elapsed.
-
-    It also prevents overlapping Playwright scraper runs.
+    Run on the separate control worker so a busy browser cannot block the
+    clock or a stop request. The scraper itself runs on the scraper queue.
     """
 
     recovered = (
@@ -153,29 +176,7 @@ def run_scheduled_scraper_task() -> str:
 
             return "disabled"
 
-        if (
-            schedule.last_dispatched_at
-            is not None
-        ):
-            next_run_at = (
-                schedule.last_dispatched_at
-                + timedelta(
-                    minutes=(
-                        schedule.interval_minutes
-                    )
-                )
-            )
-
-            if now < next_run_at:
-                logger.debug(
-                    "Scheduled scraper check: "
-                    "not due yet. "
-                    "Next run=%s",
-                    next_run_at,
-                )
-
-                return "not_due"
-
+        phase = schedule_phase(now)
         active_run = (
             ScraperRun.objects
             .filter(
@@ -186,6 +187,15 @@ def run_scheduled_scraper_task() -> str:
             )
             .first()
         )
+
+        if phase == "prepare":
+            if active_run is not None and active_run.trigger != ScraperRun.Trigger.BACK_TO_BACK:
+                request_scraper_stop(active_run)
+                logger.warning(
+                    "Requested stop before 10:00 back-to-back window. Run ID=%s",
+                    active_run.pk,
+                )
+            return "preparing"
 
         if active_run is not None:
             logger.info(
@@ -200,6 +210,19 @@ def run_scheduled_scraper_task() -> str:
                 "active:"
                 f"{active_run.pk}"
             )
+
+        if phase == "interval":
+            anchor = max(
+                (value for value in (
+                    schedule.last_dispatched_at,
+                    schedule.last_back_to_back_finished_at,
+                ) if value is not None),
+                default=None,
+            )
+            if anchor is not None and now < anchor + timedelta(
+                minutes=schedule.interval_minutes
+            ):
+                return "not_due"
 
         config = build_default_scraper_config()
         proxy_selection = select_proxy_pool(now)
@@ -220,20 +243,22 @@ def run_scheduled_scraper_task() -> str:
         #
         # This prevents two scheduler checks from launching
         # duplicate runs at approximately the same time.
-        schedule.last_dispatched_at = now
-
-        schedule.save(
-            update_fields=[
-                "last_dispatched_at",
-                "updated_at",
-            ]
-        )
+        if phase == "interval":
+            schedule.last_dispatched_at = now
+            schedule.save(update_fields=["last_dispatched_at", "updated_at"])
 
         db_run = create_scraper_run(
             config=config,
             trigger=(
-                ScraperRun.Trigger.SCHEDULED
+                ScraperRun.Trigger.BACK_TO_BACK
+                if phase == "back_to_back"
+                else ScraperRun.Trigger.SCHEDULED
             ),
+        )
+
+        payload = serialize_scraper_config(config)
+        transaction.on_commit(
+            lambda: run_scraper_task.delay(str(db_run.pk), payload)
         )
 
     logger.info(
@@ -244,20 +269,6 @@ def run_scheduled_scraper_task() -> str:
         len(proxy_selection.proxy_urls),
         proxy_selection.recovery_probe,
     )
-
-    execute_scraper_run(
-        config=config,
-        trigger=(
-            ScraperRun.Trigger.SCHEDULED
-        ),
-        db_run=db_run,
-    )
-    update_proxy_health_from_run(
-        db_run,
-        cooldown_minutes=schedule.interval_minutes,
-    )
-    db_run.refresh_from_db(fields=["error_type"])
-    update_scheduled_403_streak(db_run)
 
     return str(
         db_run.pk

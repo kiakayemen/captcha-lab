@@ -16,12 +16,17 @@ The repository includes a single production image in `Dockerfile`. Configure the
 ```text
 web: web
 worker: worker
+controller: controller
 beat: beat
 ```
 
 Set `DJANGO_DEBUG=False`, a strong `DJANGO_SECRET_KEY`, the public hostname in `DJANGO_ALLOWED_HOSTS`, and Redis URLs for `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`. SQLite is suitable only when persistent storage is attached; PostgreSQL is recommended for production.
 
-For local container testing, copy `.env.example` to `.env` and `.env.secrets.example` to `.env.secrets`, fill in the secrets file, then run `docker compose up --build`. Keep `.env.secrets` out of source control. The Compose stack includes Redis, the Celery worker, and Celery Beat; the admin panel is available at `http://localhost:8000/admin/`.
+For local container testing, copy `.env.example` to `.env` and `.env.secrets.example` to `.env.secrets`, fill in the secrets file, then run `docker compose up --build`. Keep `.env.secrets` out of source control. The Compose stack includes Redis, the scraper worker, the separate schedule controller, and Celery Beat; the admin panel is available at `http://localhost:8000/admin/`.
+
+Deploy exactly one `controller` process with the same database and Redis settings as the worker. It consumes the `control` queue; the browser worker consumes the `scraper` queue. Deploy the controller before switching Beat to this version, or Beat's schedule checks will wait unprocessed on the control queue. The controller needs no proxy credentials or browser access.
+
+The interval schedule stops launching runs at 09:50 Tehran time. Any active run receives a stop request then, leaving the scraper worker free for the first back-to-back run at 10:00. Runs continue one at a time while their start time is before 11:00. A run active at 11:00 finishes normally. The next interval run is due one configured interval after that final run finishes. The existing schedule enable switch and proxy circuit breaker apply to both modes.
 
 When running Python commands directly, the application loads both `.env` and `.env.secrets`; platform-provided environment variables continue to work unchanged.
 

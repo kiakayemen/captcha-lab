@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from django.utils import timezone
 from django.db import close_old_connections
-import os
 
 from scraper.models import ScraperConfig, ScraperStatus
 from scraper.service import run_scraper
@@ -32,6 +33,10 @@ RUNNING_STALE_AFTER = timedelta(
 STOP_REQUESTED_STALE_AFTER = timedelta(
     minutes=5
 )
+
+# A stop is normally cooperative. If Playwright never returns from a browser
+# call, the solo Celery worker cannot run another task or observe that stop.
+STOP_GRACE_SECONDS = 120
 
 
 class ScraperRunAlreadyStarted(RuntimeError):
@@ -79,7 +84,7 @@ def request_scraper_stop(run: ScraperRun) -> ScraperRun:
 
 @contextmanager
 def monitor_stop_requests(run_id):
-    """Poll in a normal thread and expose a DB-free cancellation callback."""
+    """Poll for cancellation and bound a stuck solo worker after a stop."""
     stop_event = threading.Event()
     monitor_finished = threading.Event()
 
@@ -87,12 +92,35 @@ def monitor_stop_requests(run_id):
         close_old_connections()
         try:
             while not monitor_finished.is_set():
-                if ScraperRun.objects.filter(
-                    pk=run_id,
-                    status=ScraperRun.Status.STOP_REQUESTED,
-                ).exists():
+                try:
+                    requested = ScraperRun.objects.filter(
+                        pk=run_id,
+                        status=ScraperRun.Status.STOP_REQUESTED,
+                    ).exists()
+                except Exception:
+                    logger.exception("Could not poll scraper stop request. Run ID=%s", run_id)
+                    close_old_connections()
+                    monitor_finished.wait(1)
+                    continue
+                if requested:
                     stop_event.set()
-                    return
+                    deadline = time.monotonic() + STOP_GRACE_SECONDS
+                    while not monitor_finished.is_set():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        monitor_finished.wait(min(1, remaining))
+                    if monitor_finished.is_set():
+                        return
+                    # The scrape is still blocked after an explicit operator
+                    # request. The worker runs one task in a solo process; an
+                    # immediate exit lets the supervisor restart it. The
+                    # scheduled recovery task then finalizes the run row.
+                    logger.critical(
+                        "Scraper did not stop within %ss; exiting stuck worker. "
+                        "Run ID=%s", STOP_GRACE_SECONDS, run_id,
+                    )
+                    os._exit(1)
                 monitor_finished.wait(1)
         finally:
             close_old_connections()
