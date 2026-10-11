@@ -11,7 +11,6 @@ from django.utils import timezone
 from django.db import close_old_connections
 
 from scraper.models import ScraperConfig, ScraperStatus
-from scraper.service import run_scraper
 from datetime import timedelta
 
 from .models import ScraperRun
@@ -404,6 +403,10 @@ def execute_scraper_run(
                         stderr_writer
                     ),
                 ):
+                    # Only the scraper worker needs browser and OCR imports.
+                    # Keep the schedule controller small enough to share Beat's pod.
+                    from scraper.service import run_scraper
+
                     result = run_scraper(
                         config,
                         should_stop=should_stop,
