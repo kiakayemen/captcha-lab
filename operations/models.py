@@ -280,6 +280,14 @@ class ScraperSchedule(models.Model):
         ),
     )
 
+    back_to_back_enabled = models.BooleanField(
+        default=True,
+        help_text=(
+            "Run the scraper back to back from 10:00 to 11:00 Tehran time. "
+            "When disabled, the interval schedule runs normally all day."
+        ),
+    )
+
     interval_minutes = models.PositiveIntegerField(
         default=30,
         validators=[

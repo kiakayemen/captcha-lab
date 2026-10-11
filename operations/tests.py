@@ -16,6 +16,7 @@ from django.test import RequestFactory
 from django.contrib.auth import get_user_model
 from django.contrib.staticfiles import finders
 from django.utils import timezone
+from django.urls import reverse
 
 from scraper.models import ScraperConfig
 from notifications import notify_consecutive_403
@@ -89,6 +90,43 @@ class BackToBackScheduleTests(TestCase):
         self.assertEqual(schedule_phase(self.at(10, 0)), "back_to_back")
         self.assertEqual(schedule_phase(self.at(10, 59)), "back_to_back")
         self.assertEqual(schedule_phase(self.at(11, 0)), "interval")
+        self.assertEqual(
+            schedule_phase(self.at(10, 0), back_to_back_enabled=False),
+            "interval",
+        )
+
+    @patch("operations.tasks.run_scraper_task.delay")
+    def test_inactive_burst_does_not_stop_interval_run(self, enqueue_run):
+        schedule = ScraperSchedule.load()
+        schedule.back_to_back_enabled = False
+        schedule.save(update_fields=["back_to_back_enabled"])
+        run = ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.SCHEDULED,
+            status=ScraperRun.Status.RUNNING,
+            started_at=self.at(9, 40),
+            heartbeat_at=self.at(9, 49),
+        )
+        with patch("operations.tasks.timezone.now", return_value=self.at(9, 50)):
+            result = run_scheduled_scraper_task.run()
+        run.refresh_from_db()
+        self.assertEqual(result, f"active:{run.pk}")
+        self.assertEqual(run.status, ScraperRun.Status.RUNNING)
+        enqueue_run.assert_not_called()
+
+    @patch("operations.tasks.run_scraper_task.delay")
+    def test_inactive_burst_allows_due_interval_run_at_ten(self, enqueue_run):
+        schedule = ScraperSchedule.load()
+        schedule.back_to_back_enabled = False
+        schedule.last_dispatched_at = self.at(9, 30)
+        schedule.save(update_fields=["back_to_back_enabled", "last_dispatched_at"])
+        with patch("operations.tasks.timezone.now", return_value=self.at(10, 0)):
+            with self.captureOnCommitCallbacks(execute=True):
+                run_id = run_scheduled_scraper_task.run()
+        self.assertEqual(
+            ScraperRun.objects.get(pk=run_id).trigger,
+            ScraperRun.Trigger.SCHEDULED,
+        )
+        enqueue_run.assert_called_once()
 
     @patch("operations.tasks.run_scraper_task.delay")
     def test_preparation_requests_stop_and_launches_nothing(self, enqueue_run):
@@ -173,6 +211,44 @@ class BackToBackScheduleTests(TestCase):
         schedule = ScraperSchedule.load()
         self.assertEqual(schedule.last_back_to_back_finished_at, finished)
         next_check.assert_called_once()
+
+
+class BackToBackAdminButtonTests(TestCase):
+    def setUp(self):
+        self.schedule = ScraperSchedule.load()
+        admin_user = get_user_model().objects.create_superuser(
+            username="schedule-admin", email="schedule-admin@example.com", password="test-password"
+        )
+        self.client.force_login(admin_user)
+        self.change_url = reverse(
+            "admin:operations_scraperschedule_change", args=[self.schedule.pk]
+        )
+        self.toggle_url = reverse(
+            "admin:operations_scraperschedule_set_back_to_back", args=[self.schedule.pk]
+        )
+
+    def test_button_deactivates_and_reactivates_schedule(self):
+        response = self.client.get(self.change_url)
+        self.assertContains(response, "Deactivate back-to-back schedule")
+
+        response = self.client.post(self.toggle_url, {"enabled": "0"})
+        self.assertRedirects(response, self.change_url)
+        self.schedule.refresh_from_db()
+        self.assertFalse(self.schedule.back_to_back_enabled)
+
+        response = self.client.get(self.change_url)
+        self.assertContains(response, "Activate back-to-back schedule")
+
+        response = self.client.post(self.toggle_url, {"enabled": "1"})
+        self.assertRedirects(response, self.change_url)
+        self.schedule.refresh_from_db()
+        self.assertTrue(self.schedule.back_to_back_enabled)
+
+    def test_get_request_cannot_change_schedule(self):
+        response = self.client.get(self.toggle_url)
+        self.assertEqual(response.status_code, 405)
+        self.schedule.refresh_from_db()
+        self.assertTrue(self.schedule.back_to_back_enabled)
 
 
 class ScraperEventTests(TestCase):

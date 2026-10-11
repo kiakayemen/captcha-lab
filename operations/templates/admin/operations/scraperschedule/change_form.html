@@ -1,0 +1,16 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+    {% if original and has_change_permission %}
+        <li>
+            <form method="post" action="{% url 'admin:operations_scraperschedule_set_back_to_back' original.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="enabled" value="{% if original.back_to_back_enabled %}0{% else %}1{% endif %}">
+                <button type="submit" class="button" style="cursor:pointer;">
+                    {% if original.back_to_back_enabled %}Deactivate back-to-back schedule{% else %}Activate back-to-back schedule{% endif %}
+                </button>
+            </form>
+        </li>
+    {% endif %}
+    {{ block.super }}
+{% endblock %}

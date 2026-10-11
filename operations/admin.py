@@ -14,6 +14,7 @@ from django.http import (
     HttpRequest,
     HttpResponse,
     HttpResponseBadRequest,
+    HttpResponseNotAllowed,
     JsonResponse,
     StreamingHttpResponse,
 )
@@ -21,6 +22,7 @@ from django.shortcuts import (
     get_object_or_404,
     redirect,
 )
+from django.core.exceptions import PermissionDenied
 from django.urls import (
     path,
     reverse,
@@ -132,8 +134,11 @@ class ScraperEventAdmin(admin.ModelAdmin):
 class ScraperScheduleAdmin(
     admin.ModelAdmin
 ):
+    change_form_template = "admin/operations/scraperschedule/change_form.html"
+
     list_display = (
         "enabled",
+        "back_to_back_enabled",
         "interval_minutes",
         "last_dispatched_at",
         "last_back_to_back_finished_at",
@@ -143,6 +148,7 @@ class ScraperScheduleAdmin(
 
     fields = (
         "enabled",
+        "back_to_back_status",
         "interval_minutes",
         "last_dispatched_at",
         "last_back_to_back_finished_at",
@@ -151,16 +157,52 @@ class ScraperScheduleAdmin(
     )
 
     readonly_fields = (
+        "back_to_back_status",
         "last_dispatched_at",
         "last_back_to_back_finished_at",
         "next_run",
         "updated_at",
     )
 
+    @admin.display(description="Back-to-back schedule")
+    def back_to_back_status(self, obj: ScraperSchedule) -> str:
+        return "Active" if obj.back_to_back_enabled else "Inactive"
+
+    def get_urls(self):
+        return [
+            path(
+                "<int:object_id>/set-back-to-back/",
+                self.admin_site.admin_view(self.set_back_to_back_view),
+                name="operations_scraperschedule_set_back_to_back",
+            ),
+        ] + super().get_urls()
+
+    def set_back_to_back_view(self, request: HttpRequest, object_id: int) -> HttpResponse:
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+        desired = request.POST.get("enabled")
+        if desired not in {"0", "1"}:
+            return HttpResponseBadRequest("Invalid back-to-back state.")
+        schedule = get_object_or_404(ScraperSchedule, pk=object_id)
+        schedule.back_to_back_enabled = desired == "1"
+        schedule.save(update_fields=["back_to_back_enabled", "updated_at"])
+        self.message_user(
+            request,
+            "Back-to-back schedule activated."
+            if schedule.back_to_back_enabled
+            else "Back-to-back schedule deactivated.",
+            level=messages.SUCCESS,
+        )
+        return redirect(
+            reverse("admin:operations_scraperschedule_change", args=[schedule.pk])
+        )
+
     @admin.display(description="Next scraper run")
     def next_run(self, obj: ScraperSchedule):
-        if obj.enabled:
-            phase = schedule_phase(timezone.now())
+        if obj.enabled and obj.back_to_back_enabled:
+            phase = schedule_phase(timezone.now(), back_to_back_enabled=True)
             if phase == "prepare":
                 return "Back-to-back starts at 10:00 Tehran time"
             if phase == "back_to_back":
@@ -940,7 +982,10 @@ class ScraperRunAdmin(
                 )
             )
 
-        if schedule_phase(timezone.now()) in {"prepare", "back_to_back"}:
+        schedule = ScraperSchedule.load()
+        if schedule.enabled and schedule_phase(
+            timezone.now(), back_to_back_enabled=schedule.back_to_back_enabled
+        ) in {"prepare", "back_to_back"}:
             self.message_user(
                 request,
                 "Manual runs are paused from 09:50 to 11:00 Tehran time "

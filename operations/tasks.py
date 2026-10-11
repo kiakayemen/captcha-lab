@@ -35,8 +35,10 @@ CONSECUTIVE_403_LIMIT = 10
 TEHRAN = ZoneInfo("Asia/Tehran")
 
 
-def schedule_phase(now):
+def schedule_phase(now, *, back_to_back_enabled=True):
     """Select the daily schedule using Tehran wall-clock time."""
+    if not back_to_back_enabled:
+        return "interval"
     local = timezone.localtime(now, TEHRAN)
     minute_of_day = local.hour * 60 + local.minute
     if 9 * 60 + 50 <= minute_of_day < 10 * 60:
@@ -176,7 +178,9 @@ def run_scheduled_scraper_task() -> str:
 
             return "disabled"
 
-        phase = schedule_phase(now)
+        phase = schedule_phase(
+            now, back_to_back_enabled=schedule.back_to_back_enabled
+        )
         active_run = (
             ScraperRun.objects
             .filter(
