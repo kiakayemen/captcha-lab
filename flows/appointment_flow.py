@@ -4,7 +4,7 @@ import logging
 import re
 import time
 
-from playwright.sync_api import Locator, Page, expect
+from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError, expect
 
 from .selectors import (
     NO_APPOINTMENTS_BODY_SELECTOR,
@@ -42,6 +42,40 @@ NO_AVAILABILITY_PATTERN = re.compile(
     r"no\s+available\s+(?:appointments?|(?:time\s+)?slots?))\b",
     re.IGNORECASE,
 )
+
+
+class StudentVisaNoticeDismissalError(RuntimeError):
+    """The BLS student visa notice cannot be closed safely."""
+
+
+def dismiss_student_visa_notice(page: Page) -> None:
+    """Close the notice BLS shows after selecting Student Visa."""
+    notice = page.locator("#StudentVisaPopup")
+    if not notice.is_visible():
+        return
+
+    close_button = notice.locator(
+        'button[data-bs-dismiss="modal"]:visible, '
+        'button[data-dismiss="modal"]:visible, '
+        'button.btn-close:visible, '
+        'button[aria-label="Close"]:visible, '
+        'button:has-text("Close"):visible, '
+        'button:has-text("OK"):visible, '
+        'button:has-text("Got it"):visible'
+    ).first
+    if close_button.count() == 0:
+        raise StudentVisaNoticeDismissalError(
+            "Visible BLS student visa notice has no close button"
+        )
+
+    _log("closing BLS student visa notice before continuing the form")
+    try:
+        close_button.click(timeout=10_000)
+        expect(notice).to_be_hidden(timeout=10_000)
+    except PlaywrightTimeoutError as error:
+        raise StudentVisaNoticeDismissalError(
+            "BLS student visa notice did not close"
+        ) from error
 
 
 def _log(message: str) -> None:
@@ -256,6 +290,8 @@ def _select_kendo_option(
             f"(id={input_id}, option={option_text!r})"
         )
         try:
+            if label_text == "Appointment Category":
+                dismiss_student_visa_notice(page)
             widget.scroll_into_view_if_needed(timeout=interaction_timeout)
             _log(f'clicking "{label_text}" dropdown handle')
             widget.click(timeout=interaction_timeout)
@@ -340,6 +376,8 @@ def _select_kendo_option(
             )
             return True
         except HTTP403Forbidden:
+            raise
+        except StudentVisaNoticeDismissalError:
             raise
         except Exception as error:
             raise_for_http_forbidden(page)

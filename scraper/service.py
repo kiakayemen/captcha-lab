@@ -32,6 +32,7 @@ from config import (
     configured_bls_accounts,
 )
 from flows.appointment_flow import (
+    StudentVisaNoticeDismissalError,
     appointment_available_dialog_visible,
     fill_appointment_form,
     no_appointments_dialog_visible,
@@ -2282,9 +2283,12 @@ def run_scraper(
             )
             attempt_failures.append(current_failure)
 
-            if result.error_type == LoginNoticeDismissalError.__name__:
+            if result.error_type in {
+                LoginNoticeDismissalError.__name__,
+                StudentVisaNoticeDismissalError.__name__,
+            }:
                 logger.error(
-                    "BLS login notice could not be dismissed; stopping "
+                    "BLS notice could not be dismissed; stopping "
                     "without trying another proxy."
                 )
                 return ScraperResult(

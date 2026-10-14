@@ -24,10 +24,12 @@ from flows.captcha_flow import (
     SITE_ERROR_PATTERN,
 )
 from flows.appointment_flow import (
+    StudentVisaNoticeDismissalError,
     _dropdown_label_pattern,
     _visible_required_dropdown_order,
     _select_kendo_option,
     appointment_available_dialog_visible,
+    dismiss_student_visa_notice,
     fill_appointment_form,
     no_appointments_dialog_visible,
 )
@@ -196,6 +198,29 @@ class AccountConfigurationTests(TestCase):
 
 
 class AppointmentFormTests(TestCase):
+    @patch("flows.appointment_flow.expect")
+    def test_student_visa_notice_is_closed_before_category(self, expect):
+        page = MagicMock()
+        notice = page.locator.return_value
+        notice.is_visible.return_value = True
+        close_button = notice.locator.return_value.first
+        close_button.count.return_value = 1
+
+        dismiss_student_visa_notice(page)
+
+        page.locator.assert_called_once_with("#StudentVisaPopup")
+        close_button.click.assert_called_once_with(timeout=10_000)
+        expect.return_value.to_be_hidden.assert_called_once_with(timeout=10_000)
+
+    def test_unclosable_student_visa_notice_fails_closed(self):
+        page = MagicMock()
+        notice = page.locator.return_value
+        notice.is_visible.return_value = True
+        notice.locator.return_value.first.count.return_value = 0
+
+        with self.assertRaises(StudentVisaNoticeDismissalError):
+            dismiss_student_visa_notice(page)
+
     def test_appointment_category_accepts_both_site_labels(self):
         pattern = _dropdown_label_pattern("Appointment Category")
 
@@ -1031,6 +1056,26 @@ class FailureChainTests(TestCase):
         run_attempt.assert_called_once()
         self.assertEqual(result.status, ScraperStatus.FAILED)
         self.assertEqual(result.error_type, LoginNoticeDismissalError.__name__)
+
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_unclosable_student_visa_notice_stops_before_another_proxy(
+        self, run_attempt, _reader
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.return_value = ScraperResult(
+            status=ScraperStatus.FAILED,
+            started_at=now,
+            finished_at=now,
+            error_type=StudentVisaNoticeDismissalError.__name__,
+            error_message="BLS student visa notice did not close",
+        )
+
+        result = run_scraper(ScraperConfig(visa_sub_types=("Student Visa",)))
+
+        run_attempt.assert_called_once()
+        self.assertEqual(result.status, ScraperStatus.FAILED)
+        self.assertEqual(result.error_type, StudentVisaNoticeDismissalError.__name__)
 
     @patch("scraper.service.get_reader")
     @patch("scraper.service._run_single_subtype_attempt")
