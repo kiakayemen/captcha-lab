@@ -2,13 +2,13 @@
   "routes": [
     {
       "name": "hamravesh-157-119-191-249",
-      "label": "Hamravesh Tinyproxy 1 — active",
+      "label": "Hamravesh Tinyproxy 1 — permanently blocked",
       "provider": "Hamravesh",
       "resource": "tinyproxy-1",
       "endpoint": "http://07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888",
       "expected_egress_ip": "157.119.191.249",
       "url_env": "PROXY_URL_HAMRAVESH_157_119_191_249",
-      "role": "active"
+      "role": "diagnostic"
     },
     {
       "name": "parspack-tehran16-94-184-43-110",

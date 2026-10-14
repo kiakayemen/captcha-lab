@@ -26,7 +26,7 @@ For local container testing, copy `.env.example` to `.env` and `.env.secrets.exa
 
 Deploy exactly one `controller` process with the same database and Redis settings as the worker. It consumes the `control` queue; the browser worker consumes the `scraper` queue. If a separate controller service is unavailable, run the Beat service with the `beat-controller` entrypoint argument to host Beat and the control worker in the same container. The controller needs no browser access. Do not run both options at once.
 
-The scraper schedule's Django admin page has an **Activate/Deactivate back-to-back schedule** button for the daily 10:00–11:00 Tehran window. It defaults to active to preserve the current schedule. When deactivated, interval runs continue normally throughout the day, including that hour; no preparation stop is requested. When active, the interval schedule stops launching runs at 09:50. Any active run receives a stop request then, leaving the scraper worker free for the first back-to-back run at 10:00. Runs continue one at a time while their start time is before 11:00. A run active at 11:00 finishes normally. The next interval run is due one configured interval after that final run finishes. The main schedule enable switch and proxy circuit breaker apply to both modes.
+The scraper schedule's Django admin page has an **Activate/Deactivate back-to-back schedule** button for the daily 10:00–11:00 Tehran window. It defaults to active to preserve the current schedule. When deactivated, interval runs continue normally throughout the day, including that hour; no preparation stop is requested. When active, the interval schedule stops launching runs at 09:50. Any active run receives a stop request then, leaving the scraper worker free for the first back-to-back run at 10:00. Runs continue one at a time while their start time is before 11:00. After a failed, stopped, or server-error back-to-back run, the next run waits at least the configured interval; successful runs remain back to back. A run active at 11:00 finishes normally. The next interval run is due one configured interval after that final run finishes. The main schedule enable switch and proxy circuit breaker apply to both modes.
 
 When running Python commands directly, the application loads both `.env` and `.env.secrets`; platform-provided environment variables continue to work unchanged.
 
@@ -319,7 +319,7 @@ this file.
 
 | IP name | Provider resource | Proxy endpoint | Outbound IP | Role | Authenticated URL secret |
 | --- | --- | --- | --- | --- | --- |
-| Hamravesh Tinyproxy 1 — active | `tinyproxy-1` | `07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888` | `157.119.191.249` | Active | `PROXY_URL_HAMRAVESH_157_119_191_249` |
+| Hamravesh Tinyproxy 1 — permanently blocked | `tinyproxy-1` | `07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888` | `157.119.191.249` | Diagnostic only; excluded from scraper runs | `PROXY_URL_HAMRAVESH_157_119_191_249` |
 | ParsPack proxy 1 reserved — active | `captcha-proxy-1` | `94.184.43.110:8888` | `94.184.43.110` | Active | `PROXY_URL_PARSPACK_94_184_43_110` |
 | ParsPack proxy 2 primary — active | `captcha-proxy-2` | `185.239.3.80:8888` | `185.239.3.80` | Active | `PROXY_URL_PARSPACK_185_239_3_80` |
 | ParsPack proxy 2 reserved — active | `captcha-proxy-2` | `185.239.3.145:8888` | `185.239.3.145` | Active | `PROXY_URL_PARSPACK_185_239_3_145` |

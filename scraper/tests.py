@@ -341,6 +341,31 @@ class ProxyConfigurationTests(TestCase):
         "os.environ",
         {
             "SCRAPER_PROXY_URLS": (
+                "http://user:secret@07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir:30888,"
+                "http://185.239.3.80:8888,http://185.239.3.145:8888"
+            )
+        },
+    )
+    def test_permanently_blocked_route_is_excluded_from_default_pool(self):
+        self.assertEqual(
+            configured_proxy_urls(),
+            ("http://185.239.3.80:8888", "http://185.239.3.145:8888"),
+        )
+
+    def test_explicit_pool_cannot_restore_permanently_blocked_route(self):
+        rotator = PlaywrightProxyRotator(
+            proxy_urls=(
+                "http://157.119.191.249:8888",
+                "http://185.239.3.80:8888",
+            )
+        )
+        with self.assertRaises(ProxyConfigurationError):
+            rotator.validate_required_pool()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "SCRAPER_PROXY_URLS": (
                 "http://proxy-1.internal:8888,\n"
                 "http://proxy-2.internal:8888"
             )

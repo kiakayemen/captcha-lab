@@ -96,6 +96,25 @@ class BackToBackScheduleTests(TestCase):
         )
 
     @patch("operations.tasks.run_scraper_task.delay")
+    def test_failed_back_to_back_run_cools_down_before_next_dispatch(self, enqueue_run):
+        ScraperRun.objects.create(
+            trigger=ScraperRun.Trigger.BACK_TO_BACK,
+            status=ScraperRun.Status.FAILED,
+            finished_at=self.at(10, 1),
+            error_type="Error",
+        )
+        with patch("operations.tasks.timezone.now", return_value=self.at(10, 2)):
+            result = run_scheduled_scraper_task.run()
+        self.assertEqual(result, "back_to_back_cooldown")
+        enqueue_run.assert_not_called()
+
+        with patch("operations.tasks.timezone.now", return_value=self.at(10, 31)):
+            with self.captureOnCommitCallbacks(execute=True):
+                result = run_scheduled_scraper_task.run()
+        self.assertTrue(result)
+        enqueue_run.assert_called_once()
+
+    @patch("operations.tasks.run_scraper_task.delay")
     def test_inactive_burst_does_not_stop_interval_run(self, enqueue_run):
         schedule = ScraperSchedule.load()
         schedule.back_to_back_enabled = False

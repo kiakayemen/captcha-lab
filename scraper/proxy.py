@@ -11,6 +11,10 @@ SUPPORTED_PROXY_SCHEMES = {
     "https",
 }
 MINIMUM_PROXY_COUNT = 2
+PERMANENTLY_BLOCKED_PROXY_HOSTS = frozenset({
+    "07159158-5248-428d-8b80-663bb88bf8af.hsvc.ir",
+    "157.119.191.249",
+})
 
 
 class ProxyConfigurationError(RuntimeError):
@@ -35,8 +39,15 @@ def configured_proxy_urls() -> tuple[str, ...]:
     # Repeating an endpoint in the environment must not give that IP
     # additional weight in the rotation.
     return tuple(dict.fromkeys(
-        value.rstrip("/") for value in values if value
+        value.rstrip("/")
+        for value in values
+        if value and not is_permanently_blocked_proxy_url(value)
     ))
+
+
+def is_permanently_blocked_proxy_url(proxy_url: str) -> bool:
+    """Keep a confirmed blocked egress route out of every scraper run."""
+    return urlsplit(proxy_url).hostname in PERMANENTLY_BLOCKED_PROXY_HOSTS
 
 
 def playwright_proxy_config(
@@ -110,6 +121,10 @@ class PlaywrightProxyRotator:
     )
 
     def validate_required_pool(self, *, allow_single_proxy: bool = False) -> None:
+        if any(is_permanently_blocked_proxy_url(url) for url in self.proxy_urls):
+            raise ProxyConfigurationError(
+                "The proxy pool contains a permanently blocked endpoint."
+            )
         minimum = 1 if allow_single_proxy else MINIMUM_PROXY_COUNT
         if len(self.proxy_urls) < minimum:
             raise ProxyConfigurationError(

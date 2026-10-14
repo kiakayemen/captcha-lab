@@ -215,6 +215,34 @@ def run_scheduled_scraper_task() -> str:
                 f"{active_run.pk}"
             )
 
+        if phase == "back_to_back":
+            last_back_to_back = (
+                ScraperRun.objects.filter(
+                    trigger=ScraperRun.Trigger.BACK_TO_BACK,
+                    finished_at__isnull=False,
+                )
+                .order_by("-finished_at")
+                .first()
+            )
+            if (
+                last_back_to_back is not None
+                and last_back_to_back.status in {
+                    ScraperRun.Status.FAILED,
+                    ScraperRun.Status.SERVER_ERROR,
+                    ScraperRun.Status.STOPPED,
+                }
+                and now < last_back_to_back.finished_at + timedelta(
+                    minutes=schedule.interval_minutes
+                )
+            ):
+                logger.warning(
+                    "Back-to-back scraper paused after unsuccessful run. "
+                    "Run ID=%s | Cooldown=%s minute(s)",
+                    last_back_to_back.pk,
+                    schedule.interval_minutes,
+                )
+                return "back_to_back_cooldown"
+
         if phase == "interval":
             anchor = max(
                 (value for value in (
