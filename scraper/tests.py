@@ -36,6 +36,7 @@ from flows.errors import (
     http_forbidden_page_visible,
     track_http_forbidden_responses,
 )
+from flows.login_flow import LoginNoticeDismissalError, dismiss_login_notice
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
     SecondCaptchaUnconfirmed,
@@ -152,6 +153,31 @@ class ProxyIpDiagnosticTests(TestCase):
             safe_endpoint(proxy_url),
             "http://94.184.43.30:8888",
         )
+
+
+class LoginNoticeTests(TestCase):
+    @patch("flows.login_flow.expect")
+    def test_visible_login_notice_is_closed_before_form_clicks(self, expect):
+        page = MagicMock()
+        notice = page.locator.return_value
+        notice.is_visible.return_value = True
+        close_button = notice.locator.return_value.first
+        close_button.count.return_value = 1
+
+        dismiss_login_notice(page)
+
+        close_button.click.assert_called_once_with(timeout=10_000)
+        expect.assert_called_once_with(notice)
+        expect.return_value.to_be_hidden.assert_called_once_with(timeout=10_000)
+
+    def test_unknown_login_notice_fails_instead_of_clicking_through_it(self):
+        page = MagicMock()
+        notice = page.locator.return_value
+        notice.is_visible.return_value = True
+        notice.locator.return_value.first.count.return_value = 0
+
+        with self.assertRaisesRegex(RuntimeError, "no close button"):
+            dismiss_login_notice(page)
 
 
 class AccountConfigurationTests(TestCase):
@@ -985,6 +1011,26 @@ class FailureChainTests(TestCase):
 
         self.assertEqual(result.status, ScraperStatus.STOPPED)
         get_reader.assert_not_called()
+
+    @patch("scraper.service.get_reader")
+    @patch("scraper.service._run_single_subtype_attempt")
+    def test_unclosable_login_notice_stops_before_using_another_proxy(
+        self, run_attempt, _reader
+    ):
+        now = datetime.now(timezone.utc)
+        run_attempt.return_value = ScraperResult(
+            status=ScraperStatus.FAILED,
+            started_at=now,
+            finished_at=now,
+            error_type=LoginNoticeDismissalError.__name__,
+            error_message="BLS login notice did not close",
+        )
+
+        result = run_scraper(ScraperConfig(visa_sub_types=("Student Visa",)))
+
+        run_attempt.assert_called_once()
+        self.assertEqual(result.status, ScraperStatus.FAILED)
+        self.assertEqual(result.error_type, LoginNoticeDismissalError.__name__)
 
     @patch("scraper.service.get_reader")
     @patch("scraper.service._run_single_subtype_attempt")

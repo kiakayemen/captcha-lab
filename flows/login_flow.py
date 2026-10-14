@@ -12,6 +12,40 @@ from .selectors import EMAIL_INPUT_SELECTOR, LOGIN_FORM_SELECTOR, VERIFY_BUTTON_
 logger = logging.getLogger("captcha_lab")
 
 
+class LoginNoticeDismissalError(RuntimeError):
+    """The login notice cannot be closed safely."""
+
+
+def dismiss_login_notice(page: Page) -> None:
+    """Close BLS's login notice before interacting with the form behind it."""
+    notice = page.locator("#LoginNoticePopup")
+    if not notice.is_visible():
+        return
+
+    close_button = notice.locator(
+        'button[data-bs-dismiss="modal"]:visible, '
+        'button[data-dismiss="modal"]:visible, '
+        'button.btn-close:visible, '
+        'button[aria-label="Close"]:visible, '
+        'button:has-text("Close"):visible, '
+        'button:has-text("OK"):visible, '
+        'button:has-text("Got it"):visible'
+    ).first
+    if close_button.count() == 0:
+        raise LoginNoticeDismissalError(
+            "Visible BLS login notice has no close button"
+        )
+
+    logger.info("Closing BLS login notice before Verify.")
+    try:
+        close_button.click(timeout=10_000)
+        expect(notice).to_be_hidden(timeout=10_000)
+    except PlaywrightTimeoutError as error:
+        raise LoginNoticeDismissalError(
+            "BLS login notice did not close"
+        ) from error
+
+
 def submit_email(page: Page, email: str = BLS_EMAIL) -> None:
     raise_for_http_forbidden(page)
     logger.info("Waiting for the login form...")
@@ -41,6 +75,7 @@ def submit_email(page: Page, email: str = BLS_EMAIL) -> None:
     expect(verify_button).to_be_visible(timeout=30_000)
     expect(verify_button).to_be_enabled(timeout=30_000)
 
+    dismiss_login_notice(page)
     logger.info("Clicking Verify...")
     previous_url = page.url
     verify_button.click()

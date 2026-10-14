@@ -59,6 +59,7 @@ from flows.captcha_flow import (
     wait_for_captcha_tiles_ready,
 )
 from flows.login_flow import (
+    LoginNoticeDismissalError,
     fill_visible_password,
     submit_email,
 )
@@ -2280,6 +2281,25 @@ def run_scraper(
                 ),
             )
             attempt_failures.append(current_failure)
+
+            if result.error_type == LoginNoticeDismissalError.__name__:
+                logger.error(
+                    "BLS login notice could not be dismissed; stopping "
+                    "without trying another proxy."
+                )
+                return ScraperResult(
+                    status=ScraperStatus.FAILED,
+                    started_at=overall_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    page_url=result.page_url,
+                    visa_sub_type=visa_sub_type,
+                    error_type=result.error_type,
+                    error_message=result.error_message,
+                    failure_screenshot=result.failure_screenshot,
+                    first_failure=attempt_failures[0],
+                    attempt_failures=tuple(attempt_failures),
+                    terminal_failure=current_failure,
+                )
 
             if result.error_type == "HTTP403Forbidden":
                 if proxy_rotator is not None and proxy_config is not None:
