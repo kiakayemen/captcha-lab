@@ -13,7 +13,7 @@ from django.db import close_old_connections
 from scraper.models import ScraperConfig, ScraperStatus
 from datetime import timedelta
 
-from .models import ScraperRun
+from .models import ScraperRun, ScraperSchedule
 from .events import record_scraper_event
 from .models import ScraperEvent
 from .run_logging import bind_scraper_run_logging
@@ -314,6 +314,15 @@ def execute_scraper_run(
             "ScraperRun has already started and cannot be executed again. "
             f"Run ID={db_run.pk} | Status={db_run.status}"
         )
+
+    schedule = ScraperSchedule.objects.filter(pk=1).first()
+    if schedule and schedule.rate_limited_until and timezone.now() < schedule.rate_limited_until:
+        db_run.status = ScraperRun.Status.FAILED
+        db_run.finished_at = timezone.now()
+        db_run.error_type = "HTTP429Cooldown"
+        db_run.error_message = f"Scraper paused until {schedule.rate_limited_until.isoformat()} after HTTP 429."
+        db_run.save(update_fields=["status", "finished_at", "error_type", "error_message"])
+        return db_run
 
     now = timezone.now()
 

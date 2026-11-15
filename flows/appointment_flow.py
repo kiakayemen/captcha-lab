@@ -11,7 +11,7 @@ from .selectors import (
     NO_APPOINTMENTS_HEADER_SELECTOR,
     NO_APPOINTMENTS_MODAL_SELECTOR,
 )
-from .errors import HTTP403Forbidden, raise_for_http_forbidden
+from .errors import HTTP403Forbidden, HTTP429RateLimited, raise_for_http_forbidden
 
 
 logger = logging.getLogger("captcha_lab")
@@ -262,7 +262,7 @@ def _select_kendo_option(
         expect(widget).to_be_visible(
             timeout=interaction_timeout
         )
-    except HTTP403Forbidden:
+    except (HTTP403Forbidden, HTTP429RateLimited):
         raise
     except Exception as error:
         if not optional:

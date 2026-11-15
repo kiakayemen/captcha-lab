@@ -110,6 +110,12 @@ def run_scraper_task(
         trigger=db_run.trigger,
         db_run=db_run,
     )
+    db_run.refresh_from_db()
+    if db_run.started_at and db_run.status in {ScraperRun.Status.NO_APPOINTMENT, ScraperRun.Status.APPOINTMENT_FOUND,
+                         ScraperRun.Status.POSSIBLE_APPOINTMENT}:
+        ScraperSchedule.objects.filter(pk=1, rate_limit_last_seen_at__lte=db_run.started_at).update(
+            rate_limit_streak=0
+        )
     if db_run.trigger == ScraperRun.Trigger.BACK_TO_BACK:
         # Save the finish before optional health checks so the next regular
         # interval stays correct even if a post-run check fails.
@@ -178,6 +184,9 @@ def run_scheduled_scraper_task() -> str:
 
             return "disabled"
 
+        if schedule.rate_limited_until and now < schedule.rate_limited_until:
+            return "rate_limited"
+
         phase = schedule_phase(
             now, back_to_back_enabled=schedule.back_to_back_enabled
         )
@@ -215,7 +224,7 @@ def run_scheduled_scraper_task() -> str:
                 f"{active_run.pk}"
             )
 
-        if phase == "back_to_back":
+        if phase == "back_to_back" and not schedule.rate_limit_retry_pending:
             last_back_to_back = (
                 ScraperRun.objects.filter(
                     trigger=ScraperRun.Trigger.BACK_TO_BACK,
@@ -243,7 +252,7 @@ def run_scheduled_scraper_task() -> str:
                 )
                 return "back_to_back_cooldown"
 
-        if phase == "interval":
+        if phase == "interval" and not schedule.rate_limit_retry_pending:
             anchor = max(
                 (value for value in (
                     schedule.last_dispatched_at,
@@ -277,7 +286,8 @@ def run_scheduled_scraper_task() -> str:
         # duplicate runs at approximately the same time.
         if phase == "interval":
             schedule.last_dispatched_at = now
-            schedule.save(update_fields=["last_dispatched_at", "updated_at"])
+        schedule.rate_limit_retry_pending = False
+        schedule.save(update_fields=["last_dispatched_at", "rate_limit_retry_pending", "updated_at"])
 
         db_run = create_scraper_run(
             config=config,

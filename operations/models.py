@@ -280,6 +280,11 @@ class ScraperSchedule(models.Model):
         ),
     )
 
+    rate_limited_until = models.DateTimeField(null=True, blank=True)
+    rate_limit_last_seen_at = models.DateTimeField(null=True, blank=True)
+    rate_limit_streak = models.PositiveIntegerField(default=0)
+    rate_limit_retry_pending = models.BooleanField(default=False)
+
     back_to_back_enabled = models.BooleanField(
         default=True,
         help_text=(

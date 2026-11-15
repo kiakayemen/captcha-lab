@@ -66,6 +66,7 @@ from flows.login_flow import (
 )
 from flows.errors import (
     HTTP403Forbidden,
+    HTTP429RateLimited,
     HTTP_FORBIDDEN_MESSAGE,
     http_forbidden_page_visible,
     http_forbidden_response_state,
@@ -88,6 +89,7 @@ from notifications import (
 )
 from operations.events import record_scraper_event
 from operations.models import ScraperEvent
+from operations.rate_limit import note_rate_limit
 from ocr import get_reader
 
 from scraper.models import (
@@ -202,6 +204,8 @@ def inspect_page_state(page) -> dict[str, bool]:
             continue
         try:
             state[name] = check() is True
+        except HTTP429RateLimited:
+            raise
         except Exception:
             state[name] = False
     return state
@@ -1756,7 +1760,21 @@ def _run_single_subtype_attempt(
             egress_ip, egress_ip_hash, egress_lookup_error = resolve_egress_ip(context)
 
             page = context.new_page()
-            track_http_forbidden_responses(page)
+            def handle_rate_limit(response):
+                try:
+                    retry_after = response.headers.get("retry-after")
+                except (PlaywrightError, AttributeError):
+                    retry_after = None
+                until = note_rate_limit(retry_after)
+                page._captcha_lab_429_recorded = True
+                record_scraper_event(
+                    ScraperEvent.EventType.LOGIN_RESPONSE, status="429",
+                    reason_code="HTTP_429", data={"proxy_endpoint": proxy_endpoint,
+                    "retry_after": retry_after, "cooldown_until": until.isoformat()},
+                )
+                logger.warning("BLS returned HTTP 429; global cooldown until %s", until)
+
+            track_http_forbidden_responses(page, on_rate_limit=handle_rate_limit)
 
             logger.info(
                 "Opening login page: %s",
@@ -1803,6 +1821,11 @@ def _run_single_subtype_attempt(
                     json.dumps(login_response_data, sort_keys=True),
                 )
 
+                if response.status == 429:
+                    if getattr(page, "_captcha_lab_http_429_response", None) is not True:
+                        page._captcha_lab_http_429_response = True
+                        handle_rate_limit(response)
+                    raise HTTP429RateLimited("BLS returned HTTP 429; the scraper is cooling down.")
                 if response.status == 403:
                     message = (
                         "The target site returned HTTP 403 Forbidden. "
@@ -1857,7 +1880,7 @@ def _run_single_subtype_attempt(
             logger.info(
                 "Login CAPTCHA complete. Opening new appointment workflow."
             )
-            return run_authenticated_subtype_check(
+            result = run_authenticated_subtype_check(
                 page,
                 config=config,
                 reader=reader,
@@ -1865,7 +1888,17 @@ def _run_single_subtype_attempt(
                 attempt_number=attempt_number,
                 should_stop=should_stop,
             )
+            raise_for_http_forbidden(page)
+            return result
 
+        except HTTP429RateLimited as error:
+            if getattr(page, "_captcha_lab_429_recorded", None) is not True:
+                note_rate_limit()
+            return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
+                                 finished_at=datetime.now(timezone.utc),
+                                 page_url=page.url if page is not None else None,
+                                 visa_sub_type=visa_sub_type,
+                                 error_type="HTTP429RateLimited", error_message=str(error))
         except ScraperStopRequested as error:
             logger.warning(
                 "Stopping scraper safely and closing browser. Visa subtype=%s",
@@ -1882,6 +1915,12 @@ def _run_single_subtype_attempt(
             )
 
         except PlaywrightTimeoutError as error:
+            if getattr(page, "_captcha_lab_http_429_response", None) is True:
+                if getattr(page, "_captcha_lab_429_recorded", None) is not True:
+                    note_rate_limit()
+                return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
+                                     finished_at=datetime.now(timezone.utc), visa_sub_type=visa_sub_type,
+                                     error_type="HTTP429RateLimited", error_message="BLS returned HTTP 429.")
             page_state = inspect_page_state(page)
             if page_state.get("http_403"):
                 record_detected_http_403(
@@ -1985,6 +2024,12 @@ def _run_single_subtype_attempt(
             OSError,
             AssertionError,
         ) as error:
+            if getattr(page, "_captcha_lab_http_429_response", None) is True:
+                if getattr(page, "_captcha_lab_429_recorded", None) is not True:
+                    note_rate_limit()
+                return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
+                                     finished_at=datetime.now(timezone.utc), visa_sub_type=visa_sub_type,
+                                     error_type="HTTP429RateLimited", error_message="BLS returned HTTP 429.")
             page_state = inspect_page_state(page)
             if page_state.get("http_403"):
                 record_detected_http_403(
@@ -2282,6 +2327,15 @@ def run_scraper(
                 ),
             )
             attempt_failures.append(current_failure)
+
+            if result.error_type == "HTTP429RateLimited":
+                return ScraperResult(status=ScraperStatus.FAILED, started_at=overall_started_at,
+                                     finished_at=datetime.now(timezone.utc), page_url=result.page_url,
+                                     visa_sub_type=visa_sub_type, error_type=result.error_type,
+                                     error_message=result.error_message,
+                                     first_failure=attempt_failures[0],
+                                     attempt_failures=tuple(attempt_failures),
+                                     terminal_failure=current_failure)
 
             if result.error_type in {
                 LoginNoticeDismissalError.__name__,

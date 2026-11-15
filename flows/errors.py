@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from playwright.sync_api import Page
 
@@ -17,9 +18,15 @@ class HTTP403Forbidden(RuntimeError):
     pass
 
 
+class HTTP429RateLimited(RuntimeError):
+    pass
+
+
 def http_forbidden_page_visible(page: Page | None) -> bool:
     if page is None:
         return False
+    if getattr(page, "_captcha_lab_http_429_response", None) is True:
+        raise HTTP429RateLimited("BLS returned HTTP 429; the scraper is cooling down.")
     response_state = getattr(
         page,
         "_captcha_lab_http_403_response",
@@ -48,12 +55,19 @@ def raise_for_http_forbidden(page: Page | None) -> None:
         raise HTTP403Forbidden(HTTP_FORBIDDEN_MESSAGE)
 
 
-def track_http_forbidden_responses(page: Page) -> None:
+def track_http_forbidden_responses(page: Page, on_rate_limit=None) -> None:
     """Remember workflow-level 403 responses for the next state check."""
 
     def remember(response) -> None:
         try:
             resource_type = response.request.resource_type
+            if (response.status == 429 and resource_type in {"document", "xhr", "fetch"}
+                    and urlsplit(response.url).hostname == "iran.blsspainglobal.com"):
+                if getattr(page, "_captcha_lab_http_429_response", None) is not True:
+                    page._captcha_lab_http_429_response = True
+                    if on_rate_limit is not None:
+                        on_rate_limit(response)
+                return
             if response.status == 403 and resource_type in {
                 "document",
                 "xhr",
