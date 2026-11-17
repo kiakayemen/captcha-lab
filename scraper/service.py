@@ -1712,6 +1712,33 @@ def _run_single_subtype_attempt(
             proxy_config.get("server") if proxy_config is not None else None
         )
         login_requested_at = None
+        pending_rate_limits: list[str | None] = []
+
+        def persist_pending_rate_limits() -> None:
+            while pending_rate_limits:
+                retry_after = pending_rate_limits[0]
+                until = note_rate_limit(retry_after)
+                pending_rate_limits.pop(0)
+                page._captcha_lab_429_recorded = True
+                record_scraper_event(
+                    ScraperEvent.EventType.LOGIN_RESPONSE,
+                    status="429",
+                    reason_code="HTTP_429",
+                    data={
+                        "proxy_endpoint": proxy_endpoint,
+                        "retry_after": retry_after,
+                        "cooldown_until": until.isoformat(),
+                    },
+                )
+                logger.warning("BLS returned HTTP 429; global cooldown until %s", until)
+
+        def ensure_rate_limit_recorded() -> None:
+            if pending_rate_limits:
+                # Retry with the original header, including a later response
+                # that arrived after an earlier 429 was already recorded.
+                persist_pending_rate_limits()
+            elif getattr(page, "_captcha_lab_429_recorded", None) is not True:
+                note_rate_limit()
 
         try:
             check_stop_requested(should_stop)
@@ -1765,14 +1792,14 @@ def _run_single_subtype_attempt(
                     retry_after = response.headers.get("retry-after")
                 except (PlaywrightError, AttributeError):
                     retry_after = None
-                until = note_rate_limit(retry_after)
-                page._captcha_lab_429_recorded = True
-                record_scraper_event(
-                    ScraperEvent.EventType.LOGIN_RESPONSE, status="429",
-                    reason_code="HTTP_429", data={"proxy_endpoint": proxy_endpoint,
-                    "retry_after": retry_after, "cooldown_until": until.isoformat()},
-                )
-                logger.warning("BLS returned HTTP 429; global cooldown until %s", until)
+                pending_rate_limits.append(retry_after)
+                try:
+                    persist_pending_rate_limits()
+                except Exception:
+                    # The response handler must not lose the server's wait if
+                    # the database is temporarily unavailable. Retry it before
+                    # returning; if that fails, abort the run with the error.
+                    logger.exception("Could not persist the BLS rate-limit cooldown.")
 
             track_http_forbidden_responses(page, on_rate_limit=handle_rate_limit)
 
@@ -1892,8 +1919,7 @@ def _run_single_subtype_attempt(
             return result
 
         except HTTP429RateLimited as error:
-            if getattr(page, "_captcha_lab_429_recorded", None) is not True:
-                note_rate_limit()
+            ensure_rate_limit_recorded()
             return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
                                  finished_at=datetime.now(timezone.utc),
                                  page_url=page.url if page is not None else None,
@@ -1916,8 +1942,7 @@ def _run_single_subtype_attempt(
 
         except PlaywrightTimeoutError as error:
             if getattr(page, "_captcha_lab_http_429_response", None) is True:
-                if getattr(page, "_captcha_lab_429_recorded", None) is not True:
-                    note_rate_limit()
+                ensure_rate_limit_recorded()
                 return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
                                      finished_at=datetime.now(timezone.utc), visa_sub_type=visa_sub_type,
                                      error_type="HTTP429RateLimited", error_message="BLS returned HTTP 429.")
@@ -2025,8 +2050,7 @@ def _run_single_subtype_attempt(
             AssertionError,
         ) as error:
             if getattr(page, "_captcha_lab_http_429_response", None) is True:
-                if getattr(page, "_captcha_lab_429_recorded", None) is not True:
-                    note_rate_limit()
+                ensure_rate_limit_recorded()
                 return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
                                      finished_at=datetime.now(timezone.utc), visa_sub_type=visa_sub_type,
                                      error_type="HTTP429RateLimited", error_message="BLS returned HTTP 429.")
@@ -2149,6 +2173,11 @@ def _run_single_subtype_attempt(
                     logger.exception(
                         "Failed to close browser cleanly."
                     )
+
+            # A stop or an in-flight response during browser shutdown can leave
+            # a 429 waiting to be recorded. Do not return and lose its header.
+            if pending_rate_limits:
+                persist_pending_rate_limits()
 
             logger.info(
                 "Fresh browser closed. "

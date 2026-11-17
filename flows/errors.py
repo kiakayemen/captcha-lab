@@ -63,10 +63,11 @@ def track_http_forbidden_responses(page: Page, on_rate_limit=None) -> None:
             resource_type = response.request.resource_type
             if (response.status == 429 and resource_type in {"document", "xhr", "fetch"}
                     and urlsplit(response.url).hostname == "iran.blsspainglobal.com"):
-                if getattr(page, "_captcha_lab_http_429_response", None) is not True:
-                    page._captcha_lab_http_429_response = True
-                    if on_rate_limit is not None:
-                        on_rate_limit(response)
+                page._captcha_lab_http_429_response = True
+                # Already in-flight requests can return a longer Retry-After
+                # even after the first response has stopped the workflow.
+                if on_rate_limit is not None:
+                    on_rate_limit(response)
                 return
             if response.status == 403 and resource_type in {
                 "document",

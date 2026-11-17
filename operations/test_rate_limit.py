@@ -34,6 +34,12 @@ class RateLimitTests(TestCase):
         self.assertEqual(retry_after_seconds("invalid", self.now), 0)
         self.assertEqual(retry_after_seconds("Sun, 15 Nov 2026 09:10:00 GMT", self.now.replace(year=2026, month=11, day=15, hour=9, minute=0, second=0, microsecond=0)), 600)
 
+    @patch("operations.rate_limit.random.randint", return_value=0)
+    def test_later_longer_header_extends_active_cooldown(self, _jitter):
+        self.assertEqual(note_rate_limit("240", now=self.now), self.now + timedelta(seconds=240))
+        later = self.now + timedelta(seconds=10)
+        self.assertEqual(note_rate_limit("3600", now=later), later + timedelta(seconds=3600))
+
     @patch("operations.tasks.schedule_phase", return_value="interval")
     @patch("operations.tasks.run_scraper_task.delay")
     @patch.dict("os.environ", {"SCRAPER_PROXY_URLS": "http://one:8888,http://two:8888"})
