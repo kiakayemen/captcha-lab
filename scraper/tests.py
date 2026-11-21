@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 from contextlib import ExitStack
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -46,6 +48,7 @@ from scraper.service import (
     classify_second_captcha_state,
     second_captcha_challenge_signature,
     wait_for_regenerated_second_captcha,
+    capture_captcha_with_safe_retry,
     inspect_page_state,
     run_captcha_step,
     run_second_captcha_step,
@@ -156,6 +159,75 @@ class ProxyIpDiagnosticTests(TestCase):
             safe_endpoint(proxy_url),
             "http://94.184.43.30:8888",
         )
+
+
+class CaptchaCaptureRetryTests(TestCase):
+    @patch("scraper.service.raise_for_http_forbidden")
+    @patch("scraper.service.second_captcha_challenge_signature", return_value="same")
+    def test_recapture_uses_real_image_detection(self, signature, check):
+        import cv2
+        import numpy as np
+
+        page, label = MagicMock(), MagicMock()
+        label.inner_text.return_value = "Please select all boxes with number 123"
+        valid = (Path(__file__).resolve().parent.parent / "images/captcha.png").read_bytes()
+        blank = cv2.imencode(".png", np.zeros((400, 400, 3), dtype=np.uint8))[1].tobytes()
+        page.screenshot.side_effect = [blank, valid]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "crop.png"
+            image = capture_captcha_with_safe_retry(page, page, [MagicMock()] * 9, label, "123", output)
+            self.assertTrue(output.exists())
+            self.assertGreater(image.size, 0)
+        self.assertEqual(page.screenshot.call_count, 2)
+
+    @patch("scraper.service.raise_for_http_forbidden")
+    @patch("scraper.service.second_captcha_challenge_signature", side_effect=["same", "same", "same"])
+    @patch("scraper.service.save_captcha_crop", side_effect=[RuntimeError("eight boxes"), "image"])
+    def test_recaptures_unchanged_challenge_once(self, capture, signature, check):
+        page, scope, label = MagicMock(), MagicMock(), MagicMock()
+        label.inner_text.return_value = "Please select all boxes with number 123"
+        result = capture_captcha_with_safe_retry(page, scope, [MagicMock()] * 9, label, "123", "image.png")
+        self.assertEqual(result, "image")
+        self.assertEqual(capture.call_count, 2)
+        page.wait_for_timeout.assert_called_once_with(500)
+        check.assert_called_once_with(page)
+
+    @patch("scraper.service.raise_for_http_forbidden")
+    @patch("scraper.service.second_captcha_challenge_signature", side_effect=["old", "new"])
+    @patch("scraper.service.save_captcha_crop", side_effect=RuntimeError("eight boxes"))
+    def test_changed_grid_is_never_recaptured(self, capture, signature, check):
+        label = MagicMock()
+        label.inner_text.return_value = "Please select all boxes with number 123"
+        with self.assertRaisesRegex(RuntimeError, "grid changed"):
+            capture_captcha_with_safe_retry(MagicMock(), MagicMock(), [MagicMock()] * 9, label, "123", "image.png")
+        capture.assert_called_once()
+
+    @patch("scraper.service.raise_for_http_forbidden")
+    @patch("scraper.service.second_captcha_challenge_signature", side_effect=["same", "same", "new"])
+    @patch("scraper.service.save_captcha_crop", side_effect=[RuntimeError("eight boxes"), "image"])
+    def test_changed_grid_during_recapture_is_not_used(self, capture, signature, check):
+        label = MagicMock()
+        label.inner_text.return_value = "Please select all boxes with number 123"
+        with self.assertRaisesRegex(RuntimeError, "challenge changed"):
+            capture_captcha_with_safe_retry(MagicMock(), MagicMock(), [MagicMock()] * 9, label, "123", "image.png")
+        self.assertEqual(capture.call_count, 2)
+
+    @patch("scraper.service.second_captcha_challenge_signature", return_value=None)
+    @patch("scraper.service.save_captcha_crop", side_effect=RuntimeError("eight boxes"))
+    def test_unidentifiable_grid_does_not_retry(self, capture, signature):
+        with self.assertRaisesRegex(RuntimeError, "eight boxes"):
+            capture_captcha_with_safe_retry(MagicMock(), MagicMock(), [], MagicMock(), "123", "image.png")
+        capture.assert_called_once()
+
+    @patch("scraper.service.raise_for_http_forbidden")
+    @patch("scraper.service.second_captcha_challenge_signature", return_value="same")
+    @patch("scraper.service.save_captcha_crop", side_effect=RuntimeError("eight boxes"))
+    def test_changed_instruction_does_not_retry(self, capture, signature, check):
+        label = MagicMock()
+        label.inner_text.return_value = "Please select all boxes with number 456"
+        with self.assertRaisesRegex(RuntimeError, "instruction changed"):
+            capture_captcha_with_safe_retry(MagicMock(), MagicMock(), [MagicMock()] * 9, label, "123", "image.png")
+        capture.assert_called_once()
 
 
 class LoginNoticeTests(TestCase):
@@ -413,7 +485,10 @@ class CaptchaAttemptRegressionTests(TestCase):
                     page, gpu=False, output_dir=MagicMock(), reader=MagicMock(), attempt_number=1
                 )
 
-            signature.assert_called_once_with(frame, visible_tiles)
+        self.assertEqual(signature.call_args_list, [
+            call(frame, visible_tiles, require_inline=True),
+            call(frame, visible_tiles),
+        ])
 
 
 class ProxyConfigurationTests(TestCase):
@@ -1605,6 +1680,12 @@ class FailureChainTests(TestCase):
 
         self.assertIsNotNone(first)
         self.assertNotEqual(first, second_captcha_challenge_signature(scope, tiles))
+
+    def test_safe_recapture_rejects_reusable_image_urls(self):
+        tiles = [MagicMock() for _ in range(9)]
+        for tile in tiles:
+            tile.locator.return_value.first.evaluate.return_value = "https://example.test/tile"
+        self.assertIsNone(second_captcha_challenge_signature(MagicMock(), tiles, require_inline=True))
 
     @patch("scraper.service.site_error_page_visible", return_value=False)
     @patch("scraper.service.http_forbidden_page_visible", return_value=False)

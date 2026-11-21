@@ -833,6 +833,31 @@ def restart_unclear_login_captcha(page, account: BLSAccount | None = None) -> bo
     return True
 
 
+def capture_captcha_with_safe_retry(page, scope, tiles, label, target, output_path):
+    """Recapture once only if the same complete challenge remains visible."""
+    signature = second_captcha_challenge_signature(scope, tiles, require_inline=True)
+    try:
+        return save_captcha_crop(page, output_path)
+    except RuntimeError:
+        if signature is None:
+            raise
+        page.wait_for_timeout(500)
+        raise_for_http_forbidden(page)
+        current_label = label.inner_text().strip()
+        match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(current_label)
+        if match is None or match.group(1) != target:
+            raise RuntimeError("CAPTCHA instruction changed during image capture.")
+        if second_captcha_challenge_signature(scope, require_inline=True) != signature:
+            raise RuntimeError("CAPTCHA grid changed during image capture.")
+        logger.warning("CAPTCHA image detection failed; recapturing the unchanged grid once.")
+        image = save_captcha_crop(page, output_path)
+        match = CAPTCHA_INSTRUCTION_PATTERN.fullmatch(label.inner_text().strip())
+        if (match is None or match.group(1) != target
+                or second_captcha_challenge_signature(scope, require_inline=True) != signature):
+            raise RuntimeError("CAPTCHA challenge changed during image recapture.")
+        return image
+
+
 def _run_login_captcha_attempt(
     page,
     *,
@@ -920,7 +945,7 @@ def _run_login_captcha_attempt(
         "Waiting for all 9 login CAPTCHA tiles."
     )
 
-    wait_for_captcha_tiles_ready(
+    login_tiles = wait_for_captcha_tiles_ready(
         page,
         page,
     )
@@ -940,9 +965,8 @@ def _run_login_captcha_attempt(
 
     acquisition_started_at = datetime.now(timezone.utc)
     acquisition_started = time.perf_counter()
-    captcha_image = save_captcha_crop(
-        page,
-        screenshot_path,
+    captcha_image = capture_captcha_with_safe_retry(
+        page, page, login_tiles, true_label_by_id, target, screenshot_path,
     )
     record_captcha_stage(
         captcha="login",
@@ -1230,7 +1254,7 @@ def classify_second_captcha_state(page, verified_label, invalid_label, popup) ->
     return "pending"
 
 
-def second_captcha_challenge_signature(scope, tiles=None) -> str | None:
+def second_captcha_challenge_signature(scope, tiles=None, *, require_inline=False) -> str | None:
     """Fingerprint the same nine visible tiles used by the solver."""
     try:
         resolved_tiles = tiles or get_captcha_tiles_in_scope(scope)
@@ -1241,6 +1265,10 @@ def second_captcha_challenge_signature(scope, tiles=None) -> str | None:
                 image.evaluate("element => element.currentSrc || element.src || ''")
             )
         if len(sources) != 9 or not all(sources):
+            return None
+        # A normal image URL can serve different bytes without changing its URL.
+        # Only inline data identifies the captured contents for safe recapture.
+        if require_inline and not all(source.startswith("data:image/") for source in sources):
             return None
         return hashlib.sha256(
             json.dumps(sources, separators=(",", ":")).encode()
@@ -1382,9 +1410,8 @@ def _run_second_captcha_attempt(
 
     acquisition_started_at = datetime.now(timezone.utc)
     acquisition_started = time.perf_counter()
-    captcha_image = save_captcha_crop(
-        page,
-        screenshot_path,
+    captcha_image = capture_captcha_with_safe_retry(
+        page, captcha_scope, tiles_in_frame, true_label_by_id, target, screenshot_path,
     )
     record_captcha_stage(
         captcha="second",
