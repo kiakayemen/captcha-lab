@@ -77,7 +77,11 @@ def update_proxy_health_from_run(
     for event in events:
         endpoint = event.data.get("proxy_endpoint")
         if endpoint and event.status in {"200", "403"}:
-            latest_by_endpoint[endpoint] = event
+            previous = latest_by_endpoint.get(endpoint)
+            # A later success in this run cannot erase an observed 403.
+            # Probe IPs do not prove which address BLS saw.
+            if previous is None or event.status == "403" or previous.status != "403":
+                latest_by_endpoint[endpoint] = event
 
     for endpoint, event in latest_by_endpoint.items():
         health, _created = ProxyEndpointHealth.objects.select_for_update().get_or_create(

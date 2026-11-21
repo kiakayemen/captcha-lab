@@ -43,15 +43,51 @@ class RateLimitTests(TestCase):
     @patch("operations.tasks.schedule_phase", return_value="interval")
     @patch("operations.tasks.run_scraper_task.delay")
     @patch.dict("os.environ", {"SCRAPER_PROXY_URLS": "http://one:8888,http://two:8888"})
-    def test_scheduler_waits_then_dispatches_without_waiting_full_interval(self, enqueue, _phase):
+    def test_scheduler_waits_for_normal_interval_after_cooldown(self, enqueue, _phase):
         note_rate_limit(now=self.now)
         self.assertEqual(run_scheduled_scraper_task.run(), "rate_limited")
         enqueue.assert_not_called()
         ScraperSchedule.objects.filter(pk=1).update(rate_limited_until=self.now - timedelta(seconds=1))
-        with self.captureOnCommitCallbacks(execute=True):
-            run_scheduled_scraper_task.run()
-        enqueue.assert_called_once()
-        self.assertFalse(ScraperSchedule.objects.get(pk=1).rate_limit_retry_pending)
+        self.assertEqual(run_scheduled_scraper_task.run(), 'not_due')
+        enqueue.assert_not_called()
+
+    def test_finished_run_blocks_new_execution_for_twenty_minutes(self):
+        ScraperRun.objects.create(status=ScraperRun.Status.NO_APPOINTMENT,
+            started_at=self.now - timedelta(minutes=5), finished_at=self.now)
+        with patch('operations.services.timezone.now', return_value=self.now + timedelta(minutes=19)):
+            run = execute_scraper_run(config=ScraperConfig())
+        self.assertEqual(run.error_type, 'RunAdmissionBlocked')
+        self.assertIsNone(run.started_at)
+
+    def test_active_run_blocks_new_execution(self):
+        ScraperRun.objects.create(status=ScraperRun.Status.RUNNING, started_at=self.now)
+        run = execute_scraper_run(config=ScraperConfig())
+        self.assertEqual(run.error_type, 'RunAdmissionBlocked')
+        self.assertIsNone(run.started_at)
+
+    @patch('scraper.service.run_scraper')
+    def test_failed_cooldown_write_keeps_durable_run_blocked(self, scrape):
+        from flows.errors import RateLimitPersistenceError
+        scrape.side_effect = RateLimitPersistenceError('database unavailable')
+        run = ScraperRun.objects.create()
+        with self.assertRaises(RateLimitPersistenceError):
+            execute_scraper_run(config=ScraperConfig(), db_run=run)
+        run.refresh_from_db()
+        self.assertEqual(run.status, ScraperRun.Status.RUNNING)
+        self.assertIsNone(run.finished_at)
+        next_run = execute_scraper_run(config=ScraperConfig())
+        self.assertEqual(next_run.error_type, 'RunAdmissionBlocked')
+
+    def test_stale_running_heartbeat_does_not_allow_a_new_run(self):
+        from .services import recover_stale_scraper_runs
+        old = self.now - timedelta(hours=2)
+        active = ScraperRun.objects.create(status=ScraperRun.Status.RUNNING,
+            started_at=old, heartbeat_at=old)
+        recover_stale_scraper_runs()
+        active.refresh_from_db()
+        self.assertEqual(active.status, ScraperRun.Status.RUNNING)
+        self.assertEqual(execute_scraper_run(config=ScraperConfig()).error_type,
+                         'RunAdmissionBlocked')
 
     def test_manual_or_queued_run_does_not_start_during_cooldown(self):
         note_rate_limit(now=self.now)

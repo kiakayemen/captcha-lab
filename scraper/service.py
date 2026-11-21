@@ -67,6 +67,7 @@ from flows.login_flow import (
 from flows.errors import (
     HTTP403Forbidden,
     HTTP429RateLimited,
+    RateLimitPersistenceError,
     HTTP_FORBIDDEN_MESSAGE,
     http_forbidden_page_visible,
     http_forbidden_response_state,
@@ -1717,7 +1718,10 @@ def _run_single_subtype_attempt(
         def persist_pending_rate_limits() -> None:
             while pending_rate_limits:
                 retry_after = pending_rate_limits[0]
-                until = note_rate_limit(retry_after)
+                try:
+                    until = note_rate_limit(retry_after)
+                except Exception as exc:
+                    raise RateLimitPersistenceError(f"Could not persist 429 cooldown: {exc}") from exc
                 pending_rate_limits.pop(0)
                 page._captcha_lab_429_recorded = True
                 record_scraper_event(
@@ -1726,6 +1730,10 @@ def _run_single_subtype_attempt(
                     reason_code="HTTP_429",
                     data={
                         "proxy_endpoint": proxy_endpoint,
+                        "egress_ip": egress_ip,
+                        "egress_ip_observation": "independent_aws_checkip_probe",
+                        "egress_ip_confirmed_for_bls": False,
+                        "egress_lookup_error": egress_lookup_error,
                         "retry_after": retry_after,
                         "cooldown_until": until.isoformat(),
                     },
@@ -1738,7 +1746,24 @@ def _run_single_subtype_attempt(
                 # that arrived after an earlier 429 was already recorded.
                 persist_pending_rate_limits()
             elif getattr(page, "_captcha_lab_429_recorded", None) is not True:
-                note_rate_limit()
+                try:
+                    note_rate_limit()
+                except Exception as exc:
+                    raise RateLimitPersistenceError(f"Could not persist 429 cooldown: {exc}") from exc
+
+        def inspect_failure_state():
+            try:
+                return inspect_page_state(page)
+            except HTTP429RateLimited:
+                ensure_rate_limit_recorded()
+                return None
+
+        def rate_limited_result():
+            return ScraperResult(
+                status=ScraperStatus.FAILED, started_at=started_at,
+                finished_at=datetime.now(timezone.utc), visa_sub_type=visa_sub_type,
+                error_type="HTTP429RateLimited", error_message="BLS rate limit detected.",
+            )
 
         try:
             check_stop_requested(should_stop)
@@ -1946,7 +1971,9 @@ def _run_single_subtype_attempt(
                 return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
                                      finished_at=datetime.now(timezone.utc), visa_sub_type=visa_sub_type,
                                      error_type="HTTP429RateLimited", error_message="BLS returned HTTP 429.")
-            page_state = inspect_page_state(page)
+            page_state = inspect_failure_state()
+            if page_state is None:
+                return rate_limited_result()
             if page_state.get("http_403"):
                 record_detected_http_403(
                     account=account,
@@ -2054,7 +2081,9 @@ def _run_single_subtype_attempt(
                 return ScraperResult(status=ScraperStatus.FAILED, started_at=started_at,
                                      finished_at=datetime.now(timezone.utc), visa_sub_type=visa_sub_type,
                                      error_type="HTTP429RateLimited", error_message="BLS returned HTTP 429.")
-            page_state = inspect_page_state(page)
+            page_state = inspect_failure_state()
+            if page_state is None:
+                return rate_limited_result()
             if page_state.get("http_403"):
                 record_detected_http_403(
                     account=account,

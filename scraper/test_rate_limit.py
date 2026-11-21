@@ -9,6 +9,62 @@ from scraper.service import ScraperStopRequested, run_scraper, _run_single_subty
 
 
 class RateLimitResponseTests(TestCase):
+    def test_rate_limit_page_without_429_response_stops_workflow(self):
+        page = MagicMock()
+        page._captcha_lab_http_429_response = None
+        page.get_by_role.return_value.first.is_visible.return_value = True
+        with self.assertRaises(HTTP429RateLimited):
+            raise_for_http_forbidden(page)
+
+    @patch("scraper.service.record_scraper_event")
+    @patch("scraper.service.response_diagnostics", return_value={})
+    @patch("scraper.service.resolve_egress_ip", return_value=(None, None, None))
+    @patch("scraper.service.note_rate_limit", return_value=datetime.now(timezone.utc))
+    @patch("scraper.service.sync_playwright")
+    def test_rate_limit_page_persists_cooldown_without_http_429(
+        self, playwright, persist, _ip, _diag, _event
+    ):
+        page = playwright.return_value.__enter__.return_value.chromium.launch.return_value.new_context.return_value.new_page.return_value
+        page._captcha_lab_http_429_response = None
+        page.goto.return_value.status = 200
+        page.get_by_role.return_value.first.is_visible.return_value = True
+
+        result = _run_single_subtype_attempt(
+            account=BLSAccount(email="x@example.com", password="x"),
+            config=ScraperConfig(), visa_sub_type="Student Visa", attempt_number=1,
+            reader=None, proxy_config=None, login_request_state={}, should_stop=None,
+        )
+
+        self.assertEqual(result.error_type, "HTTP429RateLimited")
+        persist.assert_called_once_with()
+
+    @patch("scraper.service.record_scraper_event")
+    @patch("scraper.service.response_diagnostics", return_value={})
+    @patch("scraper.service.resolve_egress_ip", return_value=(None, None, None))
+    @patch("scraper.service.note_rate_limit", return_value=datetime.now(timezone.utc))
+    @patch("scraper.service.sync_playwright")
+    def test_rate_limit_found_during_error_inspection_persists_cooldown(
+        self, playwright, persist, _ip, _diag, _event
+    ):
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        for error in (AssertionError("missing form"), PlaywrightTimeoutError("timeout")):
+            with self.subTest(error=type(error).__name__):
+                page = playwright.return_value.__enter__.return_value.chromium.launch.return_value.new_context.return_value.new_page.return_value
+                page._captcha_lab_http_429_response = None
+                page._captcha_lab_429_recorded = None
+                page.goto.return_value.status = 200
+                page.get_by_role.return_value.first.is_visible.return_value = True
+                with patch("scraper.service.run_login_step", side_effect=error):
+                    result = _run_single_subtype_attempt(
+                        account=BLSAccount(email="x@example.com", password="x"),
+                        config=ScraperConfig(), visa_sub_type="Student Visa", attempt_number=1,
+                        reader=None, proxy_config=None, login_request_state={}, should_stop=None,
+                    )
+                self.assertEqual(result.error_type, "HTTP429RateLimited")
+                persist.assert_called_once_with()
+                persist.reset_mock()
+
     def test_429_document_stops_workflow_and_calls_persistence(self):
         page = MagicMock()
         page._captcha_lab_http_429_response = None

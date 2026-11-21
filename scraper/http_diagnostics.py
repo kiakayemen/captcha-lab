@@ -132,6 +132,7 @@ def response_diagnostics(
         "server_request_id": request_id,
         "egress_ip": egress_ip,
         "egress_ip_observation": "independent_aws_checkip_probe",
+        "egress_ip_confirmed_for_bls": False,
         "egress_ip_hash": egress_ip_hash,
         "egress_lookup_error": egress_lookup_error,
         "proxy_endpoint": proxy_endpoint,

@@ -38,7 +38,8 @@ from flows.errors import (
     http_forbidden_page_visible,
     track_http_forbidden_responses,
 )
-from flows.login_flow import LoginNoticeDismissalError, dismiss_login_notice
+from flows.login_flow import LoginNoticeDismissalError, dismiss_login_notice, submit_email
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from scraper.service import (
     SECOND_CAPTCHA_RETRY_SETTLE_MS,
     SecondCaptchaUnconfirmed,
@@ -158,6 +159,34 @@ class ProxyIpDiagnosticTests(TestCase):
 
 
 class LoginNoticeTests(TestCase):
+    @patch("flows.login_flow.dismiss_login_notice")
+    @patch("flows.login_flow.raise_for_http_forbidden")
+    @patch("flows.login_flow.expect")
+    def test_verify_timeout_checks_navigation_without_clicking_twice(self, expect, check, dismiss):
+        page = MagicMock()
+        page.url = "https://example.test/login"
+        button = page.locator.return_value
+        button.click.side_effect = PlaywrightTimeoutError("navigation is settling")
+
+        submit_email(page, "test@example.test")
+
+        button.click.assert_called_once_with()
+        page.wait_for_url.assert_called_once()
+
+    @patch("flows.login_flow.dismiss_login_notice")
+    @patch("flows.login_flow.raise_for_http_forbidden")
+    @patch("flows.login_flow.expect")
+    def test_verify_timeout_without_navigation_fails_without_second_click(self, expect, check, dismiss):
+        page = MagicMock()
+        page.url = "https://example.test/login"
+        button = page.locator.return_value
+        button.click.side_effect = PlaywrightTimeoutError("click timeout")
+        page.wait_for_url.side_effect = PlaywrightTimeoutError("no navigation")
+
+        with self.assertRaisesRegex(RuntimeError, "URL did not change"):
+            submit_email(page, "test@example.test")
+        button.click.assert_called_once_with()
+
     @patch("flows.login_flow.expect")
     def test_visible_login_notice_is_closed_before_form_clicks(self, expect):
         page = MagicMock()
@@ -804,7 +833,7 @@ class HttpDiagnosticsTests(TestCase):
 
     def test_visible_403_heading_is_detected(self):
         page = MagicMock()
-        page.get_by_role.return_value.first.is_visible.return_value = True
+        page.get_by_role.return_value.first.is_visible.side_effect = [False, True]
 
         self.assertTrue(http_forbidden_page_visible(page))
 
@@ -843,7 +872,7 @@ class HttpDiagnosticsTests(TestCase):
 
     def test_login_captcha_outcome_terminates_on_403(self):
         page = MagicMock()
-        page.get_by_role.return_value.first.is_visible.return_value = True
+        page.get_by_role.return_value.first.is_visible.side_effect = [False, True]
 
         with self.assertRaises(HTTP403Forbidden):
             wait_for_login_captcha_outcome(page)

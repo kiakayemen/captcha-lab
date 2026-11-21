@@ -633,6 +633,27 @@ class ProxyCircuitBreakerTests(TestCase):
         self.assertIsNone(health.quarantined_until)
         self.assertIsNotNone(health.last_success_at)
 
+    def test_shared_probe_ip_does_not_transfer_quarantine(self):
+        run = ScraperRun.objects.create()
+        for endpoint, status in (("http://proxy-1.internal:8888", "403"),
+                                 ("http://proxy-2.internal:8888", "200")):
+            ScraperEvent.objects.create(run=run, event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+                status=status, data={"proxy_endpoint": endpoint, "egress_ip": "203.0.113.1",
+                                     "egress_ip_observation": "independent_aws_checkip_probe"})
+        update_proxy_health_from_run(run, cooldown_minutes=40)
+        self.assertIsNotNone(ProxyEndpointHealth.objects.get(endpoint="http://proxy-1.internal:8888").quarantined_until)
+        self.assertIsNone(ProxyEndpointHealth.objects.get(endpoint="http://proxy-2.internal:8888").quarantined_until)
+
+    def test_changing_probe_ip_does_not_erase_same_run_403(self):
+        run = ScraperRun.objects.create()
+        endpoint = "http://proxy-1.internal:8888"
+        for status, ip in (("403", "203.0.113.1"), ("200", "203.0.113.2")):
+            ScraperEvent.objects.create(run=run, event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
+                status=status, data={"proxy_endpoint": endpoint, "egress_ip": ip,
+                                     "egress_ip_observation": "independent_aws_checkip_probe"})
+        update_proxy_health_from_run(run, cooldown_minutes=40)
+        self.assertIsNotNone(ProxyEndpointHealth.objects.get(endpoint=endpoint).quarantined_until)
+
     @patch("operations.tasks.schedule_phase", return_value="interval")
     @patch("operations.tasks.run_scraper_task.delay")
     def test_scheduler_continues_with_remaining_healthy_endpoint(
@@ -959,7 +980,7 @@ class ScraperRunLoggingTests(TestCase):
 
 
 class StaleStopRecoveryTests(TestCase):
-    def test_stale_stop_request_is_closed_and_no_longer_active(self):
+    def test_stale_stop_request_remains_active_without_proof_of_exit(self):
         old_time = timezone.now() - timezone.timedelta(minutes=6)
         run = ScraperRun.objects.create(
             status=ScraperRun.Status.STOP_REQUESTED,
@@ -969,13 +990,12 @@ class StaleStopRecoveryTests(TestCase):
             stop_requested_at=old_time,
         )
 
-        self.assertEqual(recover_stale_scraper_runs(), 1)
+        self.assertEqual(recover_stale_scraper_runs(), 0)
 
         run.refresh_from_db()
-        self.assertEqual(run.status, ScraperRun.Status.STOPPED)
-        self.assertIsNotNone(run.finished_at)
-        self.assertIsNotNone(run.stopped_at)
-        self.assertFalse(active_scraper_runs().filter(pk=run.pk).exists())
+        self.assertEqual(run.status, ScraperRun.Status.STOP_REQUESTED)
+        self.assertIsNone(run.finished_at)
+        self.assertTrue(active_scraper_runs().filter(pk=run.pk).exists())
 
     def test_live_stop_request_remains_active(self):
         run = ScraperRun.objects.create(

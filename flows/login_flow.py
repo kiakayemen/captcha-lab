@@ -78,7 +78,13 @@ def submit_email(page: Page, email: str = BLS_EMAIL) -> None:
     dismiss_login_notice(page)
     logger.info("Clicking Verify...")
     previous_url = page.url
-    verify_button.click()
+    try:
+        verify_button.click()
+    except PlaywrightTimeoutError:
+        # The click may have been dispatched even if navigation did not settle.
+        # Never click a second time without knowing whether submission occurred.
+        raise_for_http_forbidden(page)
+        logger.warning("Verify click timed out; checking the resulting page before retrying.")
     try:
         page.wait_for_url(
             lambda url: url != previous_url,

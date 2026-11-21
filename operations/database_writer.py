@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, TypeVar
 
 from django.core.exceptions import SynchronousOnlyOperation
-from django.db import close_old_connections
+from django.db import close_old_connections, connections
 
 
 Result = TypeVar("Result")
@@ -26,7 +26,7 @@ def _run_on_database_thread(
         return operation()
     finally:
         _writer_state.active = False
-        close_old_connections()
+        connections.close_all()
 
 
 def run_database_write(

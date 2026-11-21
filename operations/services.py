@@ -8,7 +8,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from django.utils import timezone
-from django.db import close_old_connections
+from django.db import close_old_connections, connections, transaction
 
 from scraper.models import ScraperConfig, ScraperStatus
 from datetime import timedelta
@@ -122,7 +122,7 @@ def monitor_stop_requests(run_id):
                     os._exit(1)
                 monitor_finished.wait(1)
         finally:
-            close_old_connections()
+            connections.close_all()
 
     thread = threading.Thread(
         target=monitor,
@@ -315,59 +315,40 @@ def execute_scraper_run(
             f"Run ID={db_run.pk} | Status={db_run.status}"
         )
 
-    schedule = ScraperSchedule.objects.filter(pk=1).first()
-    if schedule and schedule.rate_limited_until and timezone.now() < schedule.rate_limited_until:
-        db_run.status = ScraperRun.Status.FAILED
-        db_run.finished_at = timezone.now()
-        db_run.error_type = "HTTP429Cooldown"
-        db_run.error_message = f"Scraper paused until {schedule.rate_limited_until.isoformat()} after HTTP 429."
-        db_run.save(update_fields=["status", "finished_at", "error_type", "error_message"])
-        return db_run
-
-    now = timezone.now()
-
-
-    db_run.status = (
-        ScraperRun.Status.RUNNING
-    )
-
-    db_run.started_at = now
-
-    db_run.heartbeat_at = now
-
-    db_run.finished_at = None
-
-    db_run.error_type = ""
-
-    db_run.error_message = ""
-    db_run.first_failure = None
-    db_run.attempt_failures = []
-    db_run.terminal_failure = None
-    db_run.stop_requested_at = None
-    db_run.stopped_at = None
-
-    db_run.save(
-        update_fields=[
-            "status",
-            "started_at",
-            "heartbeat_at",
-            "finished_at",
-            "error_type",
-            "error_message",
-            "first_failure",
-            "attempt_failures",
-            "terminal_failure",
-            "stop_requested_at",
-            "stopped_at",
-        ]
-    )
-
-    db_run.save(
-        update_fields=[
-            "status",
-            "started_at",
-        ]
-    )
+    # Serialize the final admission decision across manual and scheduled workers.
+    # A database error prevents admission rather than allowing an unsafe start.
+    with transaction.atomic():
+        schedule, _ = ScraperSchedule.objects.select_for_update().get_or_create(pk=1)
+        db_run = ScraperRun.objects.select_for_update().get(pk=db_run.pk)
+        if db_run.status != ScraperRun.Status.PENDING or db_run.started_at is not None:
+            raise ScraperRunAlreadyStarted(f"Run already started: {db_run.pk}")
+        now = timezone.now()
+        other = ScraperRun.objects.exclude(pk=db_run.pk).filter(
+            status__in=(ScraperRun.Status.RUNNING, ScraperRun.Status.STOP_REQUESTED),
+        ).exists()
+        last_finish = (ScraperRun.objects.exclude(pk=db_run.pk)
+                       .filter(started_at__isnull=False, finished_at__isnull=False)
+                       .order_by('-finished_at').values_list('finished_at', flat=True).first())
+        until = max((v for v in (schedule.rate_limited_until,
+                    last_finish + timedelta(minutes=20) if last_finish else None) if v), default=None)
+        if other or (until and now < until):
+            db_run.status = ScraperRun.Status.FAILED
+            db_run.finished_at = now
+            db_run.error_type = ('HTTP429Cooldown' if not other and schedule.rate_limited_until
+                                 and now < schedule.rate_limited_until else 'RunAdmissionBlocked')
+            db_run.error_message = 'Another run is active.' if other else f'Run blocked until {until.isoformat()}.'
+            db_run.save(update_fields=['status', 'finished_at', 'error_type', 'error_message'])
+            return db_run
+        db_run.status = ScraperRun.Status.RUNNING
+        db_run.started_at = db_run.heartbeat_at = now
+        db_run.finished_at = None
+        db_run.error_type = db_run.error_message = ''
+        db_run.first_failure = db_run.terminal_failure = None
+        db_run.attempt_failures = []
+        db_run.stop_requested_at = db_run.stopped_at = None
+        db_run.save(update_fields=['status', 'started_at', 'heartbeat_at', 'finished_at',
+            'error_type', 'error_message', 'first_failure', 'attempt_failures',
+            'terminal_failure', 'stop_requested_at', 'stopped_at'])
 
     stdout_writer = _LoggerWriter(
         logger,
@@ -568,6 +549,13 @@ def execute_scraper_run(
             stdout_writer.flush()
             stderr_writer.flush()
 
+            from flows.errors import RateLimitPersistenceError
+            if isinstance(exc, RateLimitPersistenceError):
+                # The durable RUNNING/STOP_REQUESTED row is the safety latch.
+                # Do not finalize it when a server-requested wait may be lost.
+                logger.critical("429 cooldown could not be persisted; run remains blocked for operator recovery.")
+                raise
+
             db_run.status = (
                 ScraperRun.Status.FAILED
             )
@@ -621,13 +609,11 @@ def execute_scraper_run(
 
 def recover_stale_scraper_runs() -> int:
     """
-    Recover abandoned PENDING, RUNNING, and STOP_REQUESTED jobs.
+    Recover abandoned PENDING jobs.
 
     This handles cases such as:
-    - Celery worker dies;
-    - Python/Metal process crashes;
-    - machine restarts;
-    - a queued task is never picked up.
+    Running and stop-requested jobs stay active until an operator confirms
+    their worker has stopped; a stale heartbeat alone cannot establish that.
 
     Returns the number of runs recovered.
     """
@@ -695,124 +681,7 @@ def recover_stale_scraper_runs() -> int:
             run.pk,
         )
 
-    #
-    # RUNNING:
-    # use heartbeat first, then started_at
-    # as the fallback for older rows.
-    #
-    running_cutoff = (
-        now
-        - RUNNING_STALE_AFTER
-    )
-
-    running_runs = (
-        ScraperRun.objects
-        .filter(
-            status=(
-                ScraperRun
-                .Status
-                .RUNNING
-            )
-        )
-    )
-
-    for run in running_runs:
-        last_alive_at = (
-            run.heartbeat_at
-            or run.started_at
-        )
-
-        if last_alive_at is None:
-            continue
-
-        if (
-            last_alive_at
-            >= running_cutoff
-        ):
-            continue
-
-        run.status = (
-            ScraperRun.Status.FAILED
-        )
-
-        run.finished_at = now
-
-        run.error_type = (
-            "StaleRunningRun"
-        )
-
-        run.error_message = (
-            "The scraper stopped "
-            "producing heartbeats for "
-            f"more than "
-            f"{RUNNING_STALE_AFTER}. "
-            "The Celery worker or scraper "
-            "process may have terminated."
-        )
-
-        if run.started_at:
-            run.duration_seconds = (
-                now
-                - run.started_at
-            ).total_seconds()
-
-        run.save(
-            update_fields=[
-                "status",
-                "finished_at",
-                "error_type",
-                "error_message",
-                "duration_seconds",
-            ]
-        )
-
-        recovered += 1
-
-        logger.error(
-            "Recovered stale RUNNING "
-            "scraper run. "
-            "Run ID=%s | "
-            "Last heartbeat=%s",
-            run.pk,
-            last_alive_at,
-        )
-
-    # A live worker keeps heartbeating while it cooperatively stops. If the
-    # heartbeat remains silent, the worker can no longer acknowledge the stop
-    # and the row must not block every future run forever.
-    stop_cutoff = now - STOP_REQUESTED_STALE_AFTER
-    stop_requested_runs = ScraperRun.objects.filter(
-        status=ScraperRun.Status.STOP_REQUESTED,
-    )
-
-    for run in stop_requested_runs:
-        last_alive_at = (
-            run.heartbeat_at
-            or run.stop_requested_at
-            or run.started_at
-        )
-        if last_alive_at is None or last_alive_at >= stop_cutoff:
-            continue
-
-        run.status = ScraperRun.Status.STOPPED
-        run.finished_at = now
-        run.stopped_at = now
-        if run.started_at:
-            run.duration_seconds = (now - run.started_at).total_seconds()
-        run.save(
-            update_fields=[
-                "status",
-                "finished_at",
-                "stopped_at",
-                "duration_seconds",
-            ]
-        )
-        recovered += 1
-        logger.warning(
-            "Recovered stale STOP_REQUESTED scraper run. "
-            "Run ID=%s | Last heartbeat=%s",
-            run.pk,
-            last_alive_at,
-        )
+    # A missed heartbeat cannot prove the browser stopped. Keep RUNNING and
+    # STOP_REQUESTED rows active until an operator confirms termination.
 
     return recovered

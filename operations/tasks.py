@@ -224,6 +224,11 @@ def run_scheduled_scraper_task() -> str:
                 f"{active_run.pk}"
             )
 
+        last_finish = (ScraperRun.objects.filter(started_at__isnull=False, finished_at__isnull=False)
+                       .order_by('-finished_at').values_list('finished_at', flat=True).first())
+        if last_finish and now < last_finish + timedelta(minutes=20):
+            return 'minimum_run_interval'
+
         if phase == "back_to_back" and not schedule.rate_limit_retry_pending:
             last_back_to_back = (
                 ScraperRun.objects.filter(
@@ -252,7 +257,7 @@ def run_scheduled_scraper_task() -> str:
                 )
                 return "back_to_back_cooldown"
 
-        if phase == "interval" and not schedule.rate_limit_retry_pending:
+        if phase == "interval":
             anchor = max(
                 (value for value in (
                     schedule.last_dispatched_at,

@@ -22,11 +22,23 @@ class HTTP429RateLimited(RuntimeError):
     pass
 
 
+class RateLimitPersistenceError(OSError):
+    """Cooldown could not be saved; the run must remain blocked."""
+
+
 def http_forbidden_page_visible(page: Page | None) -> bool:
     if page is None:
         return False
     if getattr(page, "_captcha_lab_http_429_response", None) is True:
         raise HTTP429RateLimited("BLS returned HTTP 429; the scraper is cooling down.")
+    try:
+        heading = page.get_by_role("heading", name=re.compile(r"^Too Many Requests$", re.I)).first
+        if heading.is_visible() is True:
+            raise HTTP429RateLimited("BLS displayed a Too Many Requests page; the scraper is cooling down.")
+    except HTTP429RateLimited:
+        raise
+    except Exception:
+        pass
     response_state = getattr(
         page,
         "_captcha_lab_http_403_response",
