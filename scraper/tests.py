@@ -1969,6 +1969,49 @@ class FailureChainTests(TestCase):
 
 class AppointmentCycleTests(TestCase):
     @patch("scraper.service.site_error_page_visible", return_value=False)
+    @patch("scraper.service.no_appointments_dialog_visible", return_value=True)
+    @patch("scraper.service.raise_for_http_forbidden")
+    @patch("scraper.service.expect")
+    def test_submit_timeout_checks_result_without_resubmitting(self, expect, check, no_appointments, site_error):
+        page = MagicMock()
+        button = page.get_by_role.return_value.first
+        button.click.side_effect = PlaywrightTimeoutError("navigation settling")
+
+        result = submit_appointment_form_and_wait(
+            page, config=ScraperConfig(), reader=None, output_dir=MagicMock(), should_stop=None,
+        )
+
+        self.assertIs(result, ScraperStatus.NO_APPOINTMENT)
+        button.click.assert_called_once_with(timeout=10_000)
+
+    @patch("scraper.service.raise_for_http_forbidden")
+    @patch("scraper.service.expect")
+    def test_submit_timeout_without_result_does_not_resubmit(self, expect, check):
+        page = MagicMock()
+        button = page.get_by_role.return_value.first
+        button.click.side_effect = PlaywrightTimeoutError("navigation settling")
+        with self.assertRaises(AppointmentResultUnconfirmed):
+            submit_appointment_form_and_wait(
+                page, config=ScraperConfig(), reader=None, output_dir=MagicMock(),
+                should_stop=None, timeout_seconds=0,
+            )
+        button.click.assert_called_once_with(timeout=10_000)
+
+    @patch("scraper.service.inspect_page_state", return_value={"appointment_form": False})
+    @patch("scraper.service.raise_for_http_forbidden")
+    def test_missing_destination_logs_path_without_query(self, check, inspect):
+        page = MagicMock()
+        page.url = "https://example.test/home?secret=private"
+        with self.assertLogs("captcha_lab", level="WARNING") as captured:
+            with self.assertRaisesRegex(RuntimeError, "Neither the appointment"):
+                reach_appointment_form(
+                    page, config=ScraperConfig(), reader=None, output_dir=MagicMock(),
+                    should_stop=None, timeout_seconds=0,
+                )
+        self.assertIn("/home", captured.output[0])
+        self.assertNotIn("private", captured.output[0])
+
+    @patch("scraper.service.site_error_page_visible", return_value=False)
     @patch("scraper.service.appointment_form_ready", return_value=True)
     @patch("scraper.service.solve_visible_appointment_captcha")
     def test_direct_form_branch_does_not_force_captcha(

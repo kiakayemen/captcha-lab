@@ -11,6 +11,12 @@ This repository currently reflects a frozen production baseline. The trained fus
 
 ## Docker / PaaS deployment
 
+**Production failure evidence:** This deployment has no CDN or other durable
+storage for screenshots. Screenshot paths in run logs refer to ephemeral
+container files and must not be assumed retrievable later. Diagnose historical
+failures from the exported logs and recorded page states; do not depend on
+recovering past screenshots.
+
 The repository includes a single production image in `Dockerfile`. Configure the PaaS process commands as:
 
 ```text

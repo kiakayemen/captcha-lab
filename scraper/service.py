@@ -338,6 +338,11 @@ def reach_appointment_form(
             click_background_submit(page)
             continue
         page.wait_for_timeout(250)
+    logger.warning(
+        "Appointment destination did not appear. Page path=%s | State=%s",
+        urlparse(str(page.url)).path,
+        inspect_page_state(page),
+    )
     raise RuntimeError(
         "Neither the appointment form nor the appointment CAPTCHA appeared."
     )
@@ -356,7 +361,13 @@ def submit_appointment_form_and_wait(
     submit_button = page.get_by_role("button", name="Submit").first
     expect(submit_button).to_be_visible(timeout=30_000)
     expect(submit_button).to_be_enabled(timeout=30_000)
-    submit_button.click(timeout=10_000)
+    try:
+        submit_button.click(timeout=10_000)
+    except PlaywrightTimeoutError:
+        raise_for_http_forbidden(page)
+        logger.warning(
+            "Appointment Submit timed out; checking for its result without clicking again."
+        )
 
     deadline = time.monotonic() + timeout_seconds
     captcha_solved = False
