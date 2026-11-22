@@ -269,17 +269,17 @@ def run_scheduled_scraper_task() -> str:
 
         config = build_default_scraper_config()
         proxy_selection = select_proxy_pool(now)
-        if not proxy_selection.proxy_urls:
+        if len(proxy_selection.proxy_urls) < 2:
             logger.warning(
                 "Scheduled scraper circuit is open; no proxy endpoint is "
-                "ready for a controlled recovery check."
+                "ready; at least two are required."
             )
             return "circuit_open"
 
         config = replace(
             config,
             proxy_urls=proxy_selection.proxy_urls,
-            allow_single_proxy=(len(proxy_selection.proxy_urls) == 1),
+            allow_single_proxy=False,
         )
 
         # Mark the dispatch before launching the scraper.

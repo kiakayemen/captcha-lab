@@ -136,7 +136,7 @@ class PerProxyRateLimitTests(TestCase):
 
     @patch('scraper.service.run_scraper')
     @patch('operations.rate_limit.random.randint', return_value=0)
-    def test_manual_run_filters_rate_limited_endpoint(self, _jitter, scrape):
+    def test_manual_run_rejects_one_eligible_endpoint(self, _jitter, scrape):
         from scraper.models import ScraperResult, ScraperStatus
         now = timezone.now()
         one, two = 'http://one:8888', 'http://two:8888'
@@ -144,7 +144,7 @@ class PerProxyRateLimitTests(TestCase):
         scrape.return_value = ScraperResult(status=ScraperStatus.NO_APPOINTMENT,
                                             started_at=now, finished_at=now)
         result = execute_scraper_run(config=ScraperConfig(proxy_urls=(one, two)))
-        self.assertEqual(result.status, ScraperRun.Status.NO_APPOINTMENT)
-        used = scrape.call_args.args[0]
-        self.assertEqual(used.proxy_urls, (two,))
-        self.assertTrue(used.allow_single_proxy)
+        self.assertEqual(result.status, ScraperRun.Status.FAILED)
+        self.assertEqual(result.error_type, 'ProxyPoolUnavailable')
+        self.assertIsNone(result.started_at)
+        scrape.assert_not_called()

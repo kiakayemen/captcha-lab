@@ -10,7 +10,7 @@ from pathlib import Path
 from django.utils import timezone
 from django.db import close_old_connections, connections, transaction
 
-from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
+from scraper.models import ScraperConfig, ScraperStatus
 from datetime import timedelta
 
 from .models import ScraperRun, ScraperSchedule
@@ -339,6 +339,21 @@ def execute_scraper_run(
             db_run.error_message = 'Another run is active.' if other else f'Run blocked until {until.isoformat()}.'
             db_run.save(update_fields=['status', 'finished_at', 'error_type', 'error_message'])
             return db_run
+        if not config.direct_connection:
+            from dataclasses import replace
+            from scraper.proxy import configured_proxy_urls
+            from operations.proxy_health import select_proxy_pool
+            candidates = config.proxy_urls if config.proxy_urls is not None else configured_proxy_urls()
+            if candidates:
+                selected = select_proxy_pool(now, proxy_urls=candidates)
+                if len(selected.proxy_urls) < 2:
+                    db_run.status = ScraperRun.Status.FAILED
+                    db_run.finished_at = now
+                    db_run.error_type = "ProxyPoolUnavailable"
+                    db_run.error_message = "At least two eligible proxy endpoints are required to start a run."
+                    db_run.save(update_fields=["status", "finished_at", "error_type", "error_message"])
+                    return db_run
+                config = replace(config, proxy_urls=selected.proxy_urls, allow_single_proxy=False)
         db_run.status = ScraperRun.Status.RUNNING
         db_run.started_at = db_run.heartbeat_at = now
         db_run.finished_at = None
@@ -397,26 +412,7 @@ def execute_scraper_run(
                     # Keep the schedule controller small enough to share Beat's pod.
                     from scraper.service import run_scraper
 
-                    if not config.direct_connection:
-                        from dataclasses import replace
-                        from scraper.proxy import configured_proxy_urls
-                        from operations.proxy_health import select_proxy_pool
-                        candidates = config.proxy_urls if config.proxy_urls is not None else configured_proxy_urls()
-                        if candidates:
-                            selected = select_proxy_pool(proxy_urls=candidates)
-                            if not selected.proxy_urls:
-                                logger.warning("No proxy is available: all are cooling down or quarantined.")
-                                result = ScraperResult(status=ScraperStatus.FAILED, started_at=timezone.now(),
-                                    finished_at=timezone.now(), error_type="ProxyPoolUnavailable",
-                                    error_message="All proxy endpoints are cooling down or quarantined.")
-                            else:
-                                config = replace(config, proxy_urls=selected.proxy_urls,
-                                                 allow_single_proxy=len(selected.proxy_urls) == 1)
-                                result = run_scraper(config, should_stop=should_stop)
-                        else:
-                            result = run_scraper(config, should_stop=should_stop)
-                    else:
-                        result = run_scraper(config, should_stop=should_stop)
+                    result = run_scraper(config, should_stop=should_stop)
 
             stdout_writer.flush()
             stderr_writer.flush()

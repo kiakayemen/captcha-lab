@@ -656,7 +656,7 @@ class ProxyCircuitBreakerTests(TestCase):
 
     @patch("operations.tasks.schedule_phase", return_value="interval")
     @patch("operations.tasks.run_scraper_task.delay")
-    def test_scheduler_continues_with_remaining_healthy_endpoint(
+    def test_scheduler_waits_with_only_one_healthy_endpoint(
         self,
         enqueue_run,
         _phase,
@@ -670,10 +670,9 @@ class ProxyCircuitBreakerTests(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             result = run_scheduled_scraper_task.run()
 
-        self.assertTrue(result)
-        payload = enqueue_run.call_args.args[1]
-        self.assertEqual(payload["proxy_urls"], ["http://proxy-2.internal:8888"])
-        self.assertTrue(payload["allow_single_proxy"])
+        self.assertEqual(result, "circuit_open")
+        enqueue_run.assert_not_called()
+        self.assertFalse(ScraperRun.objects.exists())
 
     @patch("operations.tasks.schedule_phase", return_value="interval")
     @patch("operations.tasks.run_scraper_task.delay")
