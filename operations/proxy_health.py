@@ -17,10 +17,10 @@ class ProxyPoolSelection:
     recovery_probe: bool = False
 
 
-def select_proxy_pool(now=None) -> ProxyPoolSelection:
-    """Temporarily exclude endpoints until their 403 cooldown expires."""
+def select_proxy_pool(now=None, *, proxy_urls=None) -> ProxyPoolSelection:
+    """Exclude proxy endpoints under either a 403 or 429 cooldown."""
     now = now or timezone.now()
-    configured = configured_proxy_urls()
+    configured = configured_proxy_urls() if proxy_urls is None else proxy_urls
     if not configured:
         return ProxyPoolSelection(())
 
@@ -53,6 +53,8 @@ def select_proxy_pool(now=None) -> ProxyPoolSelection:
         url
         for endpoint, url in urls_by_endpoint.items()
         if health_by_endpoint[endpoint].quarantined_until is None
+        and (health_by_endpoint[endpoint].rate_limited_until is None
+             or health_by_endpoint[endpoint].rate_limited_until <= now)
     )
     if healthy_urls:
         return ProxyPoolSelection(

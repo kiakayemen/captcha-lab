@@ -405,6 +405,10 @@ class ProxyEndpointHealth(models.Model):
         db_index=True,
     )
 
+    rate_limited_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    rate_limit_last_seen_at = models.DateTimeField(null=True, blank=True)
+    rate_limit_streak = models.PositiveIntegerField(default=0)
+
     consecutive_403 = models.PositiveIntegerField(
         default=0,
     )

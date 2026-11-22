@@ -1,4 +1,4 @@
-"""Persist a global BLS cooldown across workers and restarts."""
+"""Persist BLS cooldowns by proxy endpoint across workers and restarts."""
 from datetime import timedelta
 from email.utils import parsedate_to_datetime
 import random
@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .database_writer import run_database_write
-from .models import ScraperSchedule
+from .models import ProxyEndpointHealth, ScraperSchedule
 
 BASE_SECONDS = 240
 MAX_BACKOFF_SECONDS = 3600
@@ -29,13 +29,14 @@ def retry_after_seconds(value, now):
         return 0
 
 
-def note_rate_limit(retry_after=None, now=None):
-    """Extend the shared cooldown; never shorten a server-provided wait."""
+def note_rate_limit(retry_after=None, now=None, *, endpoint=None):
+    """Extend an endpoint cooldown, or the direct-connection cooldown."""
     now = now or timezone.now()
 
     def update():
         with transaction.atomic():
-            schedule, _ = ScraperSchedule.objects.select_for_update().get_or_create(pk=1)
+            schedule, _ = (ProxyEndpointHealth.objects.select_for_update().get_or_create(endpoint=endpoint)
+                           if endpoint else ScraperSchedule.objects.select_for_update().get_or_create(pk=1))
             recent = (schedule.rate_limit_last_seen_at is not None and
                       now - schedule.rate_limit_last_seen_at < STREAK_RESET_AFTER)
             # Multiple 429 responses in the same cooldown are one incident.
@@ -46,8 +47,11 @@ def note_rate_limit(retry_after=None, now=None):
             until = now + timedelta(seconds=delay)
             schedule.rate_limited_until = max(filter(None, (schedule.rate_limited_until, until)))
             schedule.rate_limit_last_seen_at = now
-            schedule.rate_limit_retry_pending = True
-            schedule.save(update_fields=["rate_limited_until", "rate_limit_last_seen_at", "rate_limit_streak", "rate_limit_retry_pending", "updated_at"])
+            fields = ["rate_limited_until", "rate_limit_last_seen_at", "rate_limit_streak", "updated_at"]
+            if endpoint is None:
+                schedule.rate_limit_retry_pending = True
+                fields.append("rate_limit_retry_pending")
+            schedule.save(update_fields=fields)
             return schedule.rate_limited_until
 
     return run_database_write(update)

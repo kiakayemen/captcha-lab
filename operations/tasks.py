@@ -184,9 +184,6 @@ def run_scheduled_scraper_task() -> str:
 
             return "disabled"
 
-        if schedule.rate_limited_until and now < schedule.rate_limited_until:
-            return "rate_limited"
-
         phase = schedule_phase(
             now, back_to_back_enabled=schedule.back_to_back_enabled
         )

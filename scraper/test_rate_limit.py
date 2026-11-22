@@ -273,10 +273,27 @@ class RateLimitResponseTests(TestCase):
     @patch.dict("os.environ", {"BLS_EMAIL": "test@example.com", "BLS_PASSWORD": "test", "SCRAPER_PROXY_URLS": "http://one:8888,http://two:8888"})
     @patch("scraper.service.get_reader")
     @patch("scraper.service._run_single_subtype_attempt")
-    def test_rate_limit_stops_run_without_switching_proxy(self, attempt, _reader):
+    def test_rate_limit_stops_after_all_proxies_are_exhausted(self, attempt, _reader):
         now = datetime.now(timezone.utc)
         attempt.return_value = ScraperResult(status=ScraperStatus.FAILED, started_at=now,
                                              finished_at=now, error_type="HTTP429RateLimited")
         result = run_scraper(ScraperConfig(visa_sub_types=("Student Visa",)))
         self.assertEqual(result.error_type, "HTTP429RateLimited")
-        attempt.assert_called_once()
+        self.assertEqual(attempt.call_count, 2)
+        self.assertNotEqual(attempt.call_args_list[0].kwargs["proxy_config"], attempt.call_args_list[1].kwargs["proxy_config"])
+
+    @patch.dict('os.environ', {'BLS_EMAIL': 'test@example.com', 'BLS_PASSWORD': 'test', 'SCRAPER_PROXY_URLS': 'http://one:8888,http://two:8888'})
+    @patch('scraper.service.get_reader')
+    @patch('scraper.service._run_single_subtype_attempt')
+    def test_429_retries_same_subtype_on_another_proxy(self, attempt, _reader):
+        now = datetime.now(timezone.utc)
+        attempt.side_effect = [
+            ScraperResult(status=ScraperStatus.FAILED, started_at=now, finished_at=now, error_type='HTTP429RateLimited'),
+            ScraperResult(status=ScraperStatus.NO_APPOINTMENT, started_at=now, finished_at=now),
+        ]
+        result = run_scraper(ScraperConfig(visa_sub_types=('Student Visa',)))
+        self.assertEqual(result.status, ScraperStatus.NO_APPOINTMENT)
+        self.assertEqual(attempt.call_count, 2)
+        first, second = (c.kwargs for c in attempt.call_args_list)
+        self.assertEqual(first['visa_sub_type'], second['visa_sub_type'])
+        self.assertNotEqual(first['proxy_config']['server'], second['proxy_config']['server'])

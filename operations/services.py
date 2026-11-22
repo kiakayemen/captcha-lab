@@ -10,7 +10,7 @@ from pathlib import Path
 from django.utils import timezone
 from django.db import close_old_connections, connections, transaction
 
-from scraper.models import ScraperConfig, ScraperStatus
+from scraper.models import ScraperConfig, ScraperResult, ScraperStatus
 from datetime import timedelta
 
 from .models import ScraperRun, ScraperSchedule
@@ -329,12 +329,12 @@ def execute_scraper_run(
         last_finish = (ScraperRun.objects.exclude(pk=db_run.pk)
                        .filter(started_at__isnull=False, finished_at__isnull=False)
                        .order_by('-finished_at').values_list('finished_at', flat=True).first())
-        until = max((v for v in (schedule.rate_limited_until,
+        until = max((v for v in (schedule.rate_limited_until if config.direct_connection else None,
                     last_finish + timedelta(minutes=20) if last_finish else None) if v), default=None)
         if other or (until and now < until):
             db_run.status = ScraperRun.Status.FAILED
             db_run.finished_at = now
-            db_run.error_type = ('HTTP429Cooldown' if not other and schedule.rate_limited_until
+            db_run.error_type = ('HTTP429Cooldown' if config.direct_connection and not other and schedule.rate_limited_until
                                  and now < schedule.rate_limited_until else 'RunAdmissionBlocked')
             db_run.error_message = 'Another run is active.' if other else f'Run blocked until {until.isoformat()}.'
             db_run.save(update_fields=['status', 'finished_at', 'error_type', 'error_message'])
@@ -397,10 +397,26 @@ def execute_scraper_run(
                     # Keep the schedule controller small enough to share Beat's pod.
                     from scraper.service import run_scraper
 
-                    result = run_scraper(
-                        config,
-                        should_stop=should_stop,
-                    )
+                    if not config.direct_connection:
+                        from dataclasses import replace
+                        from scraper.proxy import configured_proxy_urls
+                        from operations.proxy_health import select_proxy_pool
+                        candidates = config.proxy_urls if config.proxy_urls is not None else configured_proxy_urls()
+                        if candidates:
+                            selected = select_proxy_pool(proxy_urls=candidates)
+                            if not selected.proxy_urls:
+                                logger.warning("No proxy is available: all are cooling down or quarantined.")
+                                result = ScraperResult(status=ScraperStatus.FAILED, started_at=timezone.now(),
+                                    finished_at=timezone.now(), error_type="ProxyPoolUnavailable",
+                                    error_message="All proxy endpoints are cooling down or quarantined.")
+                            else:
+                                config = replace(config, proxy_urls=selected.proxy_urls,
+                                                 allow_single_proxy=len(selected.proxy_urls) == 1)
+                                result = run_scraper(config, should_stop=should_stop)
+                        else:
+                            result = run_scraper(config, should_stop=should_stop)
+                    else:
+                        result = run_scraper(config, should_stop=should_stop)
 
             stdout_writer.flush()
             stderr_writer.flush()

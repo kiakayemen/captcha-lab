@@ -1757,7 +1757,8 @@ def _run_single_subtype_attempt(
             while pending_rate_limits:
                 retry_after = pending_rate_limits[0]
                 try:
-                    until = note_rate_limit(retry_after)
+                    until = (note_rate_limit(retry_after, endpoint=proxy_endpoint)
+                             if proxy_endpoint else note_rate_limit(retry_after))
                 except Exception as exc:
                     raise RateLimitPersistenceError(f"Could not persist 429 cooldown: {exc}") from exc
                 pending_rate_limits.pop(0)
@@ -1776,7 +1777,7 @@ def _run_single_subtype_attempt(
                         "cooldown_until": until.isoformat(),
                     },
                 )
-                logger.warning("BLS returned HTTP 429; global cooldown until %s", until)
+                logger.warning("BLS returned HTTP 429; proxy %s cooldown until %s", proxy_endpoint, until)
 
         def ensure_rate_limit_recorded() -> None:
             if pending_rate_limits:
@@ -1785,7 +1786,7 @@ def _run_single_subtype_attempt(
                 persist_pending_rate_limits()
             elif getattr(page, "_captcha_lab_429_recorded", None) is not True:
                 try:
-                    note_rate_limit()
+                    note_rate_limit(endpoint=proxy_endpoint) if proxy_endpoint else note_rate_limit()
                 except Exception as exc:
                     raise RateLimitPersistenceError(f"Could not persist 429 cooldown: {exc}") from exc
 
@@ -2425,6 +2426,11 @@ def run_scraper(
             attempt_failures.append(current_failure)
 
             if result.error_type == "HTTP429RateLimited":
+                if proxy_rotator is not None and proxy_config is not None:
+                    proxy_rotator.quarantine(proxy_config["server"])
+                    if attempt_number < MAX_SUBTYPE_ATTEMPTS and proxy_rotator.has_available_endpoint:
+                        logger.warning("HTTP 429 cooled down proxy %s; retrying with another endpoint.", proxy_config["server"])
+                        continue
                 return ScraperResult(status=ScraperStatus.FAILED, started_at=overall_started_at,
                                      finished_at=datetime.now(timezone.utc), page_url=result.page_url,
                                      visa_sub_type=visa_sub_type, error_type=result.error_type,

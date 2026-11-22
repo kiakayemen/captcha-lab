@@ -45,7 +45,7 @@ class RateLimitTests(TestCase):
     @patch.dict("os.environ", {"SCRAPER_PROXY_URLS": "http://one:8888,http://two:8888"})
     def test_scheduler_waits_for_normal_interval_after_cooldown(self, enqueue, _phase):
         note_rate_limit(now=self.now)
-        self.assertEqual(run_scheduled_scraper_task.run(), "rate_limited")
+        self.assertEqual(run_scheduled_scraper_task.run(), "not_due")
         enqueue.assert_not_called()
         ScraperSchedule.objects.filter(pk=1).update(rate_limited_until=self.now - timedelta(seconds=1))
         self.assertEqual(run_scheduled_scraper_task.run(), 'not_due')
@@ -92,7 +92,59 @@ class RateLimitTests(TestCase):
     def test_manual_or_queued_run_does_not_start_during_cooldown(self):
         note_rate_limit(now=self.now)
         run = ScraperRun.objects.create()
-        result = execute_scraper_run(config=ScraperConfig(), db_run=run)
+        result = execute_scraper_run(config=ScraperConfig(direct_connection=True), db_run=run)
         self.assertEqual(result.error_type, "HTTP429Cooldown")
         self.assertEqual(result.status, ScraperRun.Status.FAILED)
         self.assertIsNone(result.started_at)
+
+class PerProxyRateLimitTests(TestCase):
+    @patch('operations.rate_limit.random.randint', return_value=0)
+    def test_cooldowns_are_independent_and_never_shortened(self, _jitter):
+        from .models import ProxyEndpointHealth
+        now = timezone.now()
+        one = 'http://one:8888'
+        two = 'http://two:8888'
+        self.assertEqual(note_rate_limit('600', now=now, endpoint=one), now + timedelta(seconds=600))
+        self.assertEqual(note_rate_limit('1', now=now + timedelta(seconds=1), endpoint=one), now + timedelta(seconds=600))
+        self.assertFalse(ProxyEndpointHealth.objects.filter(endpoint=two).exists())
+        self.assertFalse(ScraperSchedule.objects.exists())
+
+    @patch('operations.rate_limit.random.randint', return_value=0)
+    def test_pool_excludes_only_rate_limited_proxy_and_restores_it(self, _jitter):
+        from .proxy_health import select_proxy_pool
+        now = timezone.now()
+        proxies = ('http://one:8888', 'http://two:8888')
+        note_rate_limit(now=now, endpoint=proxies[0])
+        self.assertEqual(select_proxy_pool(now, proxy_urls=proxies).proxy_urls, (proxies[1],))
+        self.assertEqual(select_proxy_pool(now + timedelta(seconds=241), proxy_urls=proxies).proxy_urls, proxies)
+        note_rate_limit(now=now, endpoint=proxies[1])
+        self.assertEqual(select_proxy_pool(now, proxy_urls=proxies).proxy_urls, ())
+
+    @patch('operations.rate_limit.random.randint', return_value=0)
+    @patch('operations.tasks.run_scraper_task.delay')
+    @patch.dict('os.environ', {'SCRAPER_PROXY_URLS': 'http://one:8888,http://two:8888'})
+    def test_scheduler_waits_when_every_proxy_is_rate_limited(self, enqueue, _jitter):
+        now = timezone.now()
+        ScraperSchedule.objects.create(enabled=True, interval_minutes=45,
+                                       last_dispatched_at=now - timedelta(hours=1))
+        note_rate_limit(now=now, endpoint='http://one:8888')
+        note_rate_limit(now=now, endpoint='http://two:8888')
+        with patch('operations.tasks.timezone.now', return_value=now), \
+             patch('operations.tasks.schedule_phase', return_value='interval'):
+            self.assertEqual(run_scheduled_scraper_task.run(), 'circuit_open')
+        enqueue.assert_not_called()
+
+    @patch('scraper.service.run_scraper')
+    @patch('operations.rate_limit.random.randint', return_value=0)
+    def test_manual_run_filters_rate_limited_endpoint(self, _jitter, scrape):
+        from scraper.models import ScraperResult, ScraperStatus
+        now = timezone.now()
+        one, two = 'http://one:8888', 'http://two:8888'
+        note_rate_limit(now=now, endpoint=one)
+        scrape.return_value = ScraperResult(status=ScraperStatus.NO_APPOINTMENT,
+                                            started_at=now, finished_at=now)
+        result = execute_scraper_run(config=ScraperConfig(proxy_urls=(one, two)))
+        self.assertEqual(result.status, ScraperRun.Status.NO_APPOINTMENT)
+        used = scrape.call_args.args[0]
+        self.assertEqual(used.proxy_urls, (two,))
+        self.assertTrue(used.allow_single_proxy)
