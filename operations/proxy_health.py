@@ -10,6 +10,8 @@ from scraper.proxy import configured_proxy_urls, playwright_proxy_config
 
 from .models import ProxyEndpointHealth, ScraperEvent, ScraperRun
 
+QUARANTINE_DURATION = timedelta(hours=1)
+
 
 @dataclass(frozen=True)
 class ProxyPoolSelection:
@@ -66,11 +68,7 @@ def select_proxy_pool(now=None, *, proxy_urls=None) -> ProxyPoolSelection:
 
 
 @transaction.atomic
-def update_proxy_health_from_run(
-    run: ScraperRun,
-    *,
-    cooldown_minutes: int,
-) -> None:
+def update_proxy_health_from_run(run: ScraperRun) -> None:
     """Persist the last observed HTTP state for every endpoint used by a run."""
     latest_by_endpoint: dict[str, ScraperEvent] = {}
     events = run.events.filter(
@@ -93,9 +91,7 @@ def update_proxy_health_from_run(
         if event.status == "403":
             health.consecutive_403 += 1
             health.last_403_at = event.created_at
-            health.quarantined_until = event.created_at + timedelta(
-                minutes=cooldown_minutes
-            )
+            health.quarantined_until = event.created_at + QUARANTINE_DURATION
             update_fields = [
                 "consecutive_403",
                 "last_checked_at",

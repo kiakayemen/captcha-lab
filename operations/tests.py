@@ -605,17 +605,18 @@ class ProxyCircuitBreakerTests(TestCase):
             visa_sub_types=["Student Visa"],
         )
         endpoint = "http://proxy-1.internal:8888"
-        ScraperEvent.objects.create(
+        event = ScraperEvent.objects.create(
             run=run,
             event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
             status="403",
             data={"proxy_endpoint": endpoint},
         )
 
-        update_proxy_health_from_run(run, cooldown_minutes=40)
+        ScraperSchedule.objects.update_or_create(pk=1, defaults={"interval_minutes": 10})
+        update_proxy_health_from_run(run)
         health = ProxyEndpointHealth.objects.get(endpoint=endpoint)
         self.assertEqual(health.consecutive_403, 1)
-        self.assertIsNotNone(health.quarantined_until)
+        self.assertEqual(health.quarantined_until, event.created_at + timezone.timedelta(hours=1))
 
         recovery_run = ScraperRun.objects.create(
             trigger=ScraperRun.Trigger.SCHEDULED,
@@ -627,7 +628,7 @@ class ProxyCircuitBreakerTests(TestCase):
             status="200",
             data={"proxy_endpoint": endpoint},
         )
-        update_proxy_health_from_run(recovery_run, cooldown_minutes=40)
+        update_proxy_health_from_run(recovery_run)
         health.refresh_from_db()
         self.assertEqual(health.consecutive_403, 0)
         self.assertIsNone(health.quarantined_until)
@@ -640,7 +641,7 @@ class ProxyCircuitBreakerTests(TestCase):
             ScraperEvent.objects.create(run=run, event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
                 status=status, data={"proxy_endpoint": endpoint, "egress_ip": "203.0.113.1",
                                      "egress_ip_observation": "independent_aws_checkip_probe"})
-        update_proxy_health_from_run(run, cooldown_minutes=40)
+        update_proxy_health_from_run(run)
         self.assertIsNotNone(ProxyEndpointHealth.objects.get(endpoint="http://proxy-1.internal:8888").quarantined_until)
         self.assertIsNone(ProxyEndpointHealth.objects.get(endpoint="http://proxy-2.internal:8888").quarantined_until)
 
@@ -651,7 +652,7 @@ class ProxyCircuitBreakerTests(TestCase):
             ScraperEvent.objects.create(run=run, event_type=ScraperEvent.EventType.LOGIN_RESPONSE,
                 status=status, data={"proxy_endpoint": endpoint, "egress_ip": ip,
                                      "egress_ip_observation": "independent_aws_checkip_probe"})
-        update_proxy_health_from_run(run, cooldown_minutes=40)
+        update_proxy_health_from_run(run)
         self.assertIsNotNone(ProxyEndpointHealth.objects.get(endpoint=endpoint).quarantined_until)
 
     @patch("operations.tasks.schedule_phase", return_value="interval")

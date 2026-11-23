@@ -122,10 +122,7 @@ def run_scraper_task(
         ScraperSchedule.objects.filter(pk=1).update(
             last_back_to_back_finished_at=db_run.finished_at,
         )
-    update_proxy_health_from_run(
-        db_run,
-        cooldown_minutes=ScraperSchedule.load().interval_minutes,
-    )
+    update_proxy_health_from_run(db_run)
 
     if db_run.trigger in {
         ScraperRun.Trigger.SCHEDULED,
