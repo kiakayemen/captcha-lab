@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from io import StringIO
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -44,6 +44,32 @@ from .services import (
     monitor_stop_requests,
     serialize_scraper_config,
 )
+
+
+class ScraperAvailabilityAdminTests(TestCase):
+    def test_dashboard_shows_current_restrictions_without_exposing_credentials(self):
+        user = get_user_model().objects.create_superuser(username="availability-admin", password="test")
+        self.client.force_login(user)
+        now = timezone.now()
+        ScraperSchedule.objects.create(enabled=True, interval_minutes=45)
+        ScraperRun.objects.create(started_at=now - timedelta(minutes=8), finished_at=now - timedelta(minutes=5), status=ScraperRun.Status.FAILED)
+        ProxyEndpointHealth.objects.create(endpoint="http://proxy-one:8888", quarantined_until=now + timedelta(minutes=30))
+        ProxyEndpointHealth.objects.create(endpoint="http://proxy-two:8888", rate_limited_until=now - timedelta(minutes=1))
+        ProxyEndpointHealth.objects.create(endpoint="http://old-proxy:8888", rate_limited_until=now + timedelta(minutes=10))
+        with patch.dict("os.environ", {"SCRAPER_PROXY_URLS": "http://user:secret@proxy-one:8888,http://proxy-two:8888"}):
+            response = self.client.get(reverse("admin:operations_scraperrun_changelist"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["proxy_eligible_count"], 1)
+        self.assertEqual(response.context["proxy_configured_count"], 2)
+        self.assertIsNotNone(response.context["run_gap_until"])
+        self.assertContains(response, "403 quarantine")
+        self.assertContains(response, "429 cooldown")
+        self.assertContains(response, "Not in active pool")
+        self.assertNotContains(response, "user:secret")
+        rows = {row["endpoint"]: row for row in response.context["proxy_status_rows"]}
+        self.assertIsNotNone(rows["http://proxy-one:8888"]["quarantine_until"])
+        self.assertIsNone(rows["http://proxy-two:8888"]["cooldown_until"])
+
 
 
 class StopMonitorTests(TransactionTestCase):

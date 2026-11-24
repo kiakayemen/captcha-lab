@@ -9,14 +9,83 @@
         #log-date-export .pardis-calendar-popover { left: auto; right: 0; }
         #log-date-export .pardis-calendar-popover.open { transform: scale(1) translateY(0); }
         #log-date-export input { box-sizing: border-box; width: 100%; }
+        .run-status-panel { clear: both; margin: 1em 0; padding: 1em; border: 1px solid var(--hairline-color); border-radius: 6px; }
+        .run-status-panel h2 { margin: 0 0 .7em; }
+        .run-status-panel table { width: 100%; margin-top: .7em; }
+        .run-status-panel td, .run-status-panel th { padding: .5em; text-align: left; }
     </style>
     <script defer src="{% static 'operations/vendor/pardis-jalali-datepicker/1.0.2/pardis-jalali-datepicker.js' %}"></script>
     <script>
         document.addEventListener("DOMContentLoaded", () => {
             new PardisDatepicker("#log-start-date");
             new PardisDatepicker("#log-end-date");
+            const countdowns = document.querySelectorAll("[data-until]");
+            const updateCountdowns = () => countdowns.forEach((element) => {
+                const seconds = Math.max(0, Math.ceil((Date.parse(element.dataset.until) - Date.now()) / 1000));
+                if (!seconds) { element.textContent = "Expired — refresh to update status"; return; }
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                element.textContent = `${hours}h ${minutes}m ${seconds % 60}s remaining`;
+            });
+            updateCountdowns();
+            setInterval(updateCountdowns, 1000);
         });
     </script>
+{% endblock %}
+
+{% block content %}
+    <section class="run-status-panel" aria-label="Scraper availability">
+        <h2>Scraper availability</h2>
+        <p>Snapshot at {{ proxy_status_now|date:"Y-m-d H:i:s T" }}. Refresh the page for new events and schedule changes.</p>
+        <p>
+            <strong>Minimum gap between runs:</strong>
+            {% if run_gap_until %}
+                until {{ run_gap_until|date:"Y-m-d H:i:s T" }}
+                (<span data-until="{{ run_gap_until|date:'c' }}"></span>)
+            {% else %}No time restriction{% endif %}.
+            {% if run_is_active %}<strong>A scraper run is active or stopping.</strong>{% endif %}
+        </p>
+        <p><strong>Configured proxies available:</strong> {{ proxy_eligible_count }} of {{ proxy_configured_count }}.
+            At least two are required to start a managed run.
+        </p>
+        <p><strong>Automatic schedule:</strong>
+            {% if scheduler_config %}{% if scheduler_config.enabled %}Enabled; interval {{ scheduler_config.interval_minutes }} minutes{% if scheduler_config.back_to_back_enabled %}; back-to-back window enabled{% endif %}{% else %}Disabled{% endif %}
+            {% else %}Not configured{% endif %}.
+        </p>
+        {% if scheduler_config.enabled %}
+            <p><strong>Schedule phase:</strong> {{ schedule_phase }}.
+                {% if schedule_phase == 'interval' %}
+                    {% if interval_due_at %}Interval due at {{ interval_due_at|date:"Y-m-d H:i:s T" }} (<span data-until="{{ interval_due_at|date:'c' }}"></span>).
+                    {% else %}The interval is due.{% endif %}
+                    Dispatch also depends on the restrictions above and the scheduler.
+                {% endif %}
+            </p>
+        {% endif %}
+        {% if back_to_back_cooldown_until %}
+            <p><strong>Back-to-back cooldown after an unsuccessful run:</strong>
+                until {{ back_to_back_cooldown_until|date:"Y-m-d H:i:s T" }}
+                (<span data-until="{{ back_to_back_cooldown_until|date:'c' }}"></span>).
+            </p>
+        {% endif %}
+        <p><strong>Direct connection 429 cooldown:</strong>
+            {% if direct_cooldown_until %}until {{ direct_cooldown_until|date:"Y-m-d H:i:s T" }} (<span data-until="{{ direct_cooldown_until|date:'c' }}"></span>){% else %}None{% endif %}.
+            This applies to direct runs, not the proxy pool.
+        </p>
+        <table>
+            <thead><tr><th>Proxy</th><th>Pool</th><th>403 quarantine</th><th>429 cooldown</th></tr></thead>
+            <tbody>
+            {% for proxy in proxy_status_rows %}
+                <tr>
+                    <td>{{ proxy.name }}<br><small>{{ proxy.endpoint }}</small></td>
+                    <td>{% if proxy.configured %}Configured{% else %}Not in active pool{% endif %}</td>
+                    <td>{% if proxy.quarantine_until %}Until {{ proxy.quarantine_until|date:"Y-m-d H:i:s T" }}<br><span data-until="{{ proxy.quarantine_until|date:'c' }}"></span>{% else %}None{% endif %}</td>
+                    <td>{% if proxy.cooldown_until %}Until {{ proxy.cooldown_until|date:"Y-m-d H:i:s T" }}<br><span data-until="{{ proxy.cooldown_until|date:'c' }}"></span>{% else %}None{% endif %}</td>
+                </tr>
+            {% empty %}<tr><td colspan="4">No proxy endpoints recorded or configured.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {{ block.super }}
 {% endblock %}
 
 {% block object-tools-items %}

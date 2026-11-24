@@ -32,6 +32,7 @@ from django.utils.html import format_html
 from django.db.models import Max, Min, Prefetch
 
 from scraper.proxy_inventory import (
+    load_proxy_inventory,
     proxy_label_for_endpoint,
     proxy_label_for_ip,
 )
@@ -382,6 +383,62 @@ class ScraperRunAdmin(
     actions = (
         "download_selected_logs",
     )
+
+    def changelist_view(self, request, extra_context=None):
+        from scraper.proxy import configured_proxy_urls, playwright_proxy_config
+
+        now = timezone.now()
+        configured = {
+            playwright_proxy_config(url)["server"] for url in configured_proxy_urls()
+        }
+        health = {item.endpoint: item for item in ProxyEndpointHealth.objects.all()}
+        endpoints = []
+        inventoried = {route["endpoint"] for route in load_proxy_inventory() if route["endpoint"]}
+        for endpoint in sorted(configured | set(health) | inventoried):
+            item = health.get(endpoint)
+            endpoints.append({
+                "endpoint": endpoint,
+                "name": proxy_label_for_endpoint(endpoint),
+                "configured": endpoint in configured,
+                "quarantine_until": item.quarantined_until if item and item.quarantined_until and item.quarantined_until > now else None,
+                "cooldown_until": item.rate_limited_until if item and item.rate_limited_until and item.rate_limited_until > now else None,
+            })
+        last_finish = ScraperRun.objects.filter(
+            started_at__isnull=False, finished_at__isnull=False,
+        ).order_by("-finished_at").values_list("finished_at", flat=True).first()
+        next_manual = last_finish + timedelta(minutes=20) if last_finish else None
+        schedule = ScraperSchedule.objects.filter(pk=1).first()
+        phase = schedule_phase(now, back_to_back_enabled=schedule.back_to_back_enabled) if schedule else None
+        interval_due = schedule.next_run_at if schedule and schedule.enabled and phase == "interval" else None
+        back_to_back_until = None
+        if schedule and schedule.enabled and phase == "back_to_back" and not schedule.rate_limit_retry_pending:
+            last_back_to_back = ScraperRun.objects.filter(
+                trigger=ScraperRun.Trigger.BACK_TO_BACK, finished_at__isnull=False,
+            ).order_by("-finished_at").first()
+            if last_back_to_back and last_back_to_back.status in {
+                ScraperRun.Status.FAILED, ScraperRun.Status.SERVER_ERROR, ScraperRun.Status.STOPPED,
+            }:
+                deadline = last_back_to_back.finished_at + timedelta(minutes=schedule.interval_minutes)
+                if deadline > now:
+                    back_to_back_until = deadline
+        context = {
+            **(extra_context or {}),
+            "proxy_status_rows": endpoints,
+            "proxy_status_now": now,
+            "proxy_eligible_count": sum(
+                row["configured"] and not row["quarantine_until"] and not row["cooldown_until"]
+                for row in endpoints
+            ),
+            "proxy_configured_count": len(configured),
+            "run_gap_until": next_manual if next_manual and next_manual > now else None,
+            "run_is_active": ScraperRun.objects.filter(status__in=(ScraperRun.Status.RUNNING, ScraperRun.Status.STOP_REQUESTED)).exists(),
+            "scheduler_config": schedule,
+            "schedule_phase": phase,
+            "interval_due_at": interval_due if interval_due and interval_due > now else None,
+            "back_to_back_cooldown_until": back_to_back_until,
+            "direct_cooldown_until": schedule.rate_limited_until if schedule and schedule.rate_limited_until and schedule.rate_limited_until > now else None,
+        }
+        return super().changelist_view(request, extra_context=context)
 
     def get_queryset(self, request):
         return super().get_queryset(request).prefetch_related(
